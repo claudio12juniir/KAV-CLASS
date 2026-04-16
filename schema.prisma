@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── 1. PROFESSOR (O Dono do Negócio / Inquilino) ───────────────
+model Professor {
+  id            String      @id @default(uuid())
+  nome          String
+  email         String      @unique
+  senha         String      // A palavra-passe será encriptada (bcrypt)
+  telefone      String?
+  codigoConvite String?  
+  cursos        String[]    // Array com as áreas que ensina (ex: ["ingles", "bateria"])
+  
+  reposicoes    Reposicao[]
+
+  // Relações: Tudo o que pertence a este professor
+  alunos        Aluno[]
+  aulas         Aula[]
+  pagamentos    Pagamento[]
+  materiais     Material[]
+  
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+// ─── 2. ALUNO (O Cliente do Professor) ──────────────────────────
+model Aluno {
+  id          String   @id @default(uuid())
+  nome        String
+  email       String   @unique
+  senha       String
+  telefone    String?
+  curso       String?
+  createdAt   DateTime @default(now())
+
+  // Relacionamentos
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+  
+  aulas       Aula[]
+  pagamentos  Pagamento[]
+  reposicoes  Reposicao[]
+}
+
+// ─── 3. AULAS & AGENDA ──────────────────────────────────────────
+model Aula {
+  id          String    @id @default(uuid())
+  tema        String?   // Ex: "Independência dos pés"
+  dataHora    DateTime
+  status      String    @default("AGENDADA") // AGENDADA, CONCLUIDA, CANCELADA
+  tipo        String    @default("REGULAR")  // REGULAR ou REPOSICAO
+
+  // Vinculações obrigatórias
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+  
+  alunoId     String
+  aluno       Aluno     @relation(fields: [alunoId], references: [id])
+
+  materiais   Material[] // ⬅️ LIGAMENTO ADICIONADO: Uma aula pode ter vários materiais
+
+  createdAt   DateTime  @default(now())
+}
+
+// ─── 4. FINANCEIRO & PAGAMENTOS ─────────────────────────────────
+model Pagamento {
+  id             String    @id @default(uuid())
+  valor          Float
+  vencimento     DateTime
+  dataPagamento  DateTime?
+  status         String    @default("PENDENTE") // PENDENTE, PAGO, ATRASADO, EM_ANALISE
+  comprovanteUrl String?   // Link da imagem/pdf do recibo, caso o aluno envie
+  metodo         String?   // PIX, CARTAO, BOLETO
+
+  // Vinculações
+  professorId    String
+  professor      Professor @relation(fields: [professorId], references: [id])
+  alunoId        String
+  aluno          Aluno     @relation(fields: [alunoId], references: [id])
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+// ─── 5. MATERIAIS DIDÁTICOS (Unificado) ─────────────────────────
+model Material {
+  id          String    @id @default(uuid())
+  titulo      String
+  tipo        String    // PDF, VIDEO, AUDIO, TEXTO
+  url         String?   // Link armazenado na nuvem
+  conteudo    String?   // Caso o professor escreva apenas um texto
+
+  // Vinculações
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+
+  alunoId     String?
+
+  // LIGAMENTO DA AULA (Opcional, para materiais soltos ou anexados)
+  aulaId      String?
+  aula        Aula?     @relation(fields: [aulaId], references: [id])
+
+  createdAt   DateTime  @default(now())
+}
+
+// ─── 6. REPOSIÇÕES ──────────────────────────────────────────────
+model Reposicao {
+  id           String   @id @default(uuid())
+  professorId  String
+  alunoId      String
+  dataOriginal String?  // Opcional
+  dataProposta String
+  motivo       String
+  status       String   @default("AGUARDANDO")
+  createdAt    DateTime @default(now())
+
+  // Relacionamentos
+  professor    Professor @relation(fields: [professorId], references: [id])
+  aluno        Aluno     @relation(fields: [alunoId], references: [id])
+}
