@@ -15,22 +15,33 @@ app.get('/ping', (req, res) => {
   res.json({ mensagem: 'Backend do KAV Class está online! 🚀' });
 });
 
-// ─── ROTA DE CADASTRO DE PROFESSOR ──────────────────────────────
-
-app.post('/cadastrar-professor', async (req, res) => {
+//─── ROTA DE CADASTRO DE PROFESSOR (CORRIGIDA) ──────────────────
+app.post('/api/professores/cadastro', async (req, res) => {
   try {
-    const { nome, email, senha, telefone } = req.body; // Não esqueça de pegar os dados do req.body
+    const { nome, email, senha, telefone, dataNascimento, cursos } = req.body;
 
-    // 1. GERAR O CÓDIGO MANUALMENTE (DENTRO DA ROTA)
-    // Geramos aqui para que cada requisição crie um código único
+    // 1. Verifica se o e-mail já existe
+    const professorExiste = await prisma.professor.findUnique({ where: { email: email.toLowerCase() } });
+    if (professorExiste) {
+      return res.status(400).json({ erro: 'Este e-mail já está em uso.' });
+    }
+
+    // 2. CRIPTOGRAFAR A SENHA (Segurança!)
+    const salt = await bcrypt.genSalt(10);
+    const senhaCriptografada = await bcrypt.hash(senha, salt);
+
+    // 3. Gerar Código de Convite Único
     const codigoGerado = 'KAV-' + Math.random().toString(36).substring(2, 6).toUpperCase();
 
+    // 4. Salvar no Banco
     const novoProfessor = await prisma.professor.create({
       data: {
         nome,
-        email: email.toLowerCase(),
-        senha: senha, // Lembre-se de passar a senha criptografada aqui
+        email: email.toLowerCase().trim(),
+        senha: senhaCriptografada,
         telefone,
+        dataNascimento,
+        cursos: cursos, // Certifique-se que no Prisma o campo cursos é um Json ou String[]
         codigoConvite: codigoGerado
       }
     });
