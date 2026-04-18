@@ -6,6 +6,16 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 const app = express();
 
+// Função para gerar um código tipo KAV-A1B2
+function gerarCodigoConvite() {
+  const caracteres = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let resultado = '';
+  for (let i = 0; i < 4; i++) {
+    resultado += caracteres.charAt(Math.floor(Math.random() * caracteres.length));
+  }
+  return `KAV-${resultado}`;
+}
+
 // Middlewares (Para o backend entender JSON e aceitar o App)
 app.use(cors());
 app.use(express.json());
@@ -18,41 +28,34 @@ app.get('/ping', (req, res) => {
 //─── ROTA DE CADASTRO DE PROFESSOR (CORRIGIDA) ──────────────────
 app.post('/api/professores/cadastro', async (req, res) => {
   try {
-    // 1. Pegamos apenas o que importa (ignoramos dataNascimento se vier do App)
     const { nome, email, senha, telefone, cursos } = req.body;
+    
+    // Gerar o código único agora!
+    const codigoUnico = gerarCodigoConvite();
 
-    // 2. Garantimos que "cursos" seja uma lista (Array), mesmo se o app mandar um texto
-    let cursosFormatados = [];
-    if (Array.isArray(cursos)) {
-      cursosFormatados = cursos;
-    } else if (typeof cursos === 'string') {
-      cursosFormatados = [cursos]; // Transforma "Bateria" em ["Bateria"]
-    }
-
-    // 3. Criptografar a senha (Padrão de segurança)
     const salt = await bcrypt.genSalt(10);
     const senhaHash = await bcrypt.hash(senha, salt);
 
-    // 4. Salvar no Supabase EXATAMENTE como o Schema pede
     const novoProfessor = await prisma.professor.create({
       data: {
-        nome: nome,
-        email: email,
+        nome,
+        email,
         senha: senhaHash,
-        telefone: telefone,
-        cursos: cursosFormatados,
+        telefone,
+        cursos: Array.isArray(cursos) ? cursos : [cursos],
+        codigoConvite: codigoUnico // <--- Agora o código entra aqui!
       }
     });
 
+    // IMPORTANTE: Retornar o código para o App exibir na tela
     res.status(201).json({ 
       mensagem: 'Professor criado com sucesso!', 
-      professor: novoProfessor 
+      codigoConvite: novoProfessor.codigoConvite 
     });
 
   } catch (error) {
-    // 🚨 O SEGREDO ESTÁ AQUI: Isso vai forçar o erro a aparecer nos Logs do Render!
-    console.error("ERRO NO CADASTRO DE PROFESSOR:", error); 
-    res.status(500).json({ erro: 'Erro interno no servidor' });
+    console.error(error);
+    res.status(500).json({ erro: 'Erro ao criar professor' });
   }
 });
 // ─── LIGANDO O MOTOR ────────────────────────────────────────────
