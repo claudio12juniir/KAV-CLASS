@@ -230,37 +230,31 @@ app.get('/api/dashboard', async (req, res) => {
   try {
     const { professorId } = req.query;
 
-    // 1. Procurar as aulas (para simplificar o teste, vamos puxar as próximas 5 aulas agendadas)
-    const proximasAulas = await prisma.aula.findMany({
-      where: { professorId: professorId },
-      include: { aluno: { select: { nome: true } } },
-      orderBy: { dataHora: 'asc' },
-      take: 5
+    if (!professorId) {
+      return res.status(400).json({ erro: 'ID do professor não fornecido' });
+    }
+
+    // Busca o professor no banco
+    const professor = await prisma.professor.findUnique({
+      where: { id: professorId }
     });
 
-    // 2. Procurar pagamentos pendentes ou atrasados para gerar alertas
-    const pagamentosPendentes = await prisma.pagamento.findMany({
-      where: { 
-        professorId: professorId,
-        status: { in: ['PENDENTE', 'ATRASADO'] }
-      },
-      include: { aluno: { select: { nome: true } } }
-    });
+    if (!professor) {
+      return res.status(404).json({ erro: 'Professor não encontrado' });
+    }
 
-    // 3. Montar os avisos (Notificações)
-    const alertas = pagamentosPendentes.map(p => ({
-      id: p.id,
-      texto: `Cobrança pendente: ${p.aluno.nome} (R$ ${p.valor})`,
-      tipo: 'financeiro'
-    }));
-
+    // A MÁGICA ACONTECE AQUI: Montamos o pacote com todos os dados
     res.json({
-      aulasHoje: proximasAulas,
-      alertas: alertas
+      nome: professor.nome,
+      // Se o código for null no banco, mandamos uma mensagem provisória
+      codigoConvite: professor.codigoConvite || "KAV-NOVO", 
+      aulasHoje: [],
+      alertas: []
     });
 
-  } catch (erro) {
-    res.status(500).json({ erro: 'Erro ao carregar o dashboard.' });
+  } catch (error) {
+    console.error("Erro ao carregar Dashboard:", error);
+    res.status(500).json({ erro: 'Erro interno ao carregar dados' });
   }
 });
 
