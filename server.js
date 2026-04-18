@@ -549,3 +549,39 @@ app.get('/api/aluno/materiais', async (req, res) => {
     res.status(500).json({ erro: 'Erro ao carregar os materiais.' });
   }
 });
+
+app.get('/api/dashboard', async (req, res) => {
+  const { professorId } = req.query;
+
+  if (!professorId) {
+    return res.status(400).json({ erro: 'ID do professor não fornecido' });
+  }
+
+  try {
+    // Busca o professor no banco de dados usando o ID
+    const professor = await prisma.professor.findUnique({
+      where: { id: professorId },
+      select: {
+        codigoConvite: true,
+        nome: true
+        // Você pode adicionar aulasHoje e alertas aqui no futuro
+      }
+    });
+
+    if (!professor) {
+      return res.status(404).json({ erro: 'Professor não encontrado' });
+    }
+
+    // Devolve os dados para o aplicativo
+    res.json({
+      codigoConvite: professor.codigoConvite,
+      nome: professor.nome,
+      aulasHoje: [], // Por enquanto vazio até criarmos a lógica de aulas
+      alertas: []    // Por enquanto vazio
+    });
+
+  } catch (error) {
+    console.error("Erro ao carregar Dashboard:", error);
+    res.status(500).json({ erro: 'Erro interno ao carregar dados' });
+  }
+});
