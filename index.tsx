@@ -1,19 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
+import * as Clipboard from 'expo-clipboard';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 
-// ⚠️ IP DA SUA MÁQUINA
-const ipDaSuaMaquina = "10.0.0.210"; 
+const API_URL = "https://kav-class-1.onrender.com"; 
 
 export default function ProfessorDashboard() {
   const router = useRouter();
@@ -27,18 +29,22 @@ export default function ProfessorDashboard() {
       const token = await SecureStore.getItemAsync('kav_token');
       const professorId = await SecureStore.getItemAsync('kav_professor_id') || "";
 
-      const resposta = await fetch(`http://${ipDaSuaMaquina}:3000/api/dashboard?professorId=${professorId}`, {
+      // 🚨 Correção da URL: Removido o 'http://' e o ':3000'
+      const resposta = await fetch(`${API_URL}/api/dashboard?professorId=${professorId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 
       if (resposta.ok) {
         const dados = await resposta.json();
-        setAulasHoje(dados.aulasHoje);
-        setAlertas(dados.alertas);
-        setCodigoConvite(dados.codigoConvite || "N/A");
+        setAulasHoje(dados.aulasHoje || []);
+        setAlertas(dados.alertas || []);
+        setCodigoConvite(dados.codigoConvite || "CÓDIGO NÃO ENCONTRADO");
+      } else {
+        setCodigoConvite("KAV-XXXX"); // Fallback visual caso a API não exista ainda
       }
     } catch (error) {
       console.error("Erro no dashboard:", error);
+      setCodigoConvite("ERRO DE REDE");
     } finally {
       setCarregando(false);
     }
@@ -53,6 +59,24 @@ export default function ProfessorDashboard() {
     await SecureStore.deleteItemAsync('kav_professor_id');
     await SecureStore.deleteItemAsync('kav_papel');
     router.replace('/login');
+  };
+
+  // Funções Nativas de Copiar e Compartilhar
+  const copiarCodigo = async () => {
+    if (!codigoConvite || codigoConvite.includes("ERRO")) return;
+    await Clipboard.setStringAsync(codigoConvite);
+    Alert.alert("Sucesso!", "Código copiado para a área de transferência.");
+  };
+
+  const compartilharCodigo = async () => {
+    if (!codigoConvite || codigoConvite.includes("ERRO")) return;
+    try {
+      await Share.share({
+        message: `Olá! Baixe o app KAV-CLASS e use meu código para se matricular nas minhas aulas: ${codigoConvite}`,
+      });
+    } catch (error) {
+      Alert.alert("Erro", "Não foi possível abrir o compartilhamento.");
+    }
   };
 
   if (carregando) {
@@ -74,11 +98,20 @@ export default function ProfessorDashboard() {
           <Text style={styles.saudacao}>Olá, Professor!</Text>
           <Text style={styles.dataHoje}>{new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}</Text>
           
-          {/* Badge de Código Simples e Selecionável */}
-          <View style={styles.badgeCodigo}>
-            <Text style={styles.textoCodigoLabel}>Seu código de convite: </Text>
-            {/* A propriedade selectable={true} faz a mágica nativa acontecer */}
-            <Text style={styles.textoCodigo} selectable={true}>{codigoConvite}</Text>
+          {/* Card Interativo do Código */}
+          <View style={styles.cardCodigo}>
+            <View>
+              <Text style={styles.textoCodigoLabel}>Código de Convite</Text>
+              <Text style={styles.textoCodigo}>{codigoConvite}</Text>
+            </View>
+            <View style={styles.botoesCodigoBox}>
+              <TouchableOpacity style={styles.botaoAcaoIcone} onPress={copiarCodigo}>
+                <Ionicons name="copy-outline" size={20} color="#000000" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.botaoAcaoIcone} onPress={compartilharCodigo}>
+                <Ionicons name="share-social-outline" size={20} color="#000000" />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -166,21 +199,23 @@ const styles = StyleSheet.create({
   saudacao: { color: '#000000', fontSize: 26, fontWeight: 'bold' },
   dataHoje: { color: '#666', fontSize: 14, marginTop: 2, textTransform: 'capitalize' },
   
-  // Estilo do Badge de Código (agora é apenas uma View, não um botão)
-  badgeCodigo: { 
-    flexDirection: 'column', 
-    alignItems: 'flex-start', 
+  // Novo Estilo do Card do Código
+  cardCodigo: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between',
+    alignItems: 'center', 
     backgroundColor: '#F0F4F8', 
-    paddingHorizontal: 12, 
-    paddingVertical: 10, 
+    paddingHorizontal: 15, 
+    paddingVertical: 12, 
     borderRadius: 8, 
     marginTop: 15,
-    alignSelf: 'flex-start',
     borderWidth: 1,
     borderColor: '#D0D8DC'
   },
-  textoCodigoLabel: { fontSize: 13, color: '#555', marginBottom: 2 },
-  textoCodigo: { fontSize: 18, fontWeight: 'bold', color: '#000000', letterSpacing: 1 },
+  textoCodigoLabel: { fontSize: 12, color: '#666', marginBottom: 2, textTransform: 'uppercase', fontWeight: 'bold' },
+  textoCodigo: { fontSize: 20, fontWeight: 'bold', color: '#000000', letterSpacing: 1.5 },
+  botoesCodigoBox: { flexDirection: 'row', gap: 10 },
+  botaoAcaoIcone: { backgroundColor: '#ffffff', padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#D0D8DC' },
   
   botaoSair: { padding: 8, backgroundColor: '#FFEBEE', borderRadius: 8 },
   
