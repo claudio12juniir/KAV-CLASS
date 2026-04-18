@@ -18,45 +18,41 @@ app.get('/ping', (req, res) => {
 //─── ROTA DE CADASTRO DE PROFESSOR (CORRIGIDA) ──────────────────
 app.post('/api/professores/cadastro', async (req, res) => {
   try {
-    const { nome, email, senha, telefone, dataNascimento, cursos } = req.body;
+    // 1. Pegamos apenas o que importa (ignoramos dataNascimento se vier do App)
+    const { nome, email, senha, telefone, cursos } = req.body;
 
-    // 1. Verifica se o e-mail já existe
-    const professorExiste = await prisma.professor.findUnique({ where: { email: email.toLowerCase() } });
-    if (professorExiste) {
-      return res.status(400).json({ erro: 'Este e-mail já está em uso.' });
+    // 2. Garantimos que "cursos" seja uma lista (Array), mesmo se o app mandar um texto
+    let cursosFormatados = [];
+    if (Array.isArray(cursos)) {
+      cursosFormatados = cursos;
+    } else if (typeof cursos === 'string') {
+      cursosFormatados = [cursos]; // Transforma "Bateria" em ["Bateria"]
     }
 
-    // 2. CRIPTOGRAFAR A SENHA (Segurança!)
+    // 3. Criptografar a senha (Padrão de segurança)
     const salt = await bcrypt.genSalt(10);
-    const senhaCriptografada = await bcrypt.hash(senha, salt);
+    const senhaHash = await bcrypt.hash(senha, salt);
 
-    // 3. Gerar Código de Convite Único
-    const codigoGerado = 'KAV-' + Math.random().toString(36).substring(2, 6).toUpperCase();
-
-    // 4. Salvar no Banco
+    // 4. Salvar no Supabase EXATAMENTE como o Schema pede
     const novoProfessor = await prisma.professor.create({
       data: {
-        nome,
-        email: email.toLowerCase().trim(),
-        senha: senhaCriptografada,
-        telefone,
-        dataNascimento,
-        cursos: cursos, // Certifique-se que no Prisma o campo cursos é um Json ou String[]
-        codigoConvite: codigoGerado
+        nome: nome,
+        email: email,
+        senha: senhaHash,
+        telefone: telefone,
+        cursos: cursosFormatados,
       }
     });
 
-    res.status(201).json({
-      mensagem: 'Professor cadastrado com sucesso!',
-      professor: {
-        id: novoProfessor.id,
-        nome: novoProfessor.nome,
-        codigoConvite: novoProfessor.codigoConvite
-      }
+    res.status(201).json({ 
+      mensagem: 'Professor criado com sucesso!', 
+      professor: novoProfessor 
     });
-  } catch (erro) {
-    console.error("Erro no cadastro de professor:", erro);
-    res.status(500).json({ erro: 'Erro interno no servidor.' });
+
+  } catch (error) {
+    // 🚨 O SEGREDO ESTÁ AQUI: Isso vai forçar o erro a aparecer nos Logs do Render!
+    console.error("ERRO NO CADASTRO DE PROFESSOR:", error); 
+    res.status(500).json({ erro: 'Erro interno no servidor' });
   }
 });
 // ─── LIGANDO O MOTOR ────────────────────────────────────────────
