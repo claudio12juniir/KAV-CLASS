@@ -7,78 +7,88 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─── 1. PROFESSOR (O Dono do Negócio / Inquilino) ───────────────
+// ─── 1. PROFESSOR ───────────────────────────────────────────────
 model Professor {
-  id            String      @id @default(uuid())
+  id            String         @id @default(uuid())
   nome          String
-  email         String      @unique
-  senha         String      // A palavra-passe será encriptada (bcrypt)
+  email         String         @unique
+  senha         String
   telefone      String?
-  codigoConvite String?  
-  cursos        String[]    // Array com as áreas que ensina (ex: ["ingles", "bateria"])
-  
-  reposicoes    Reposicao[]
+  codigoConvite String?
+  cursos        String[]
+  expoPushToken        String?
+  chavePix             String?
+  linkPagamentoCartao  String?
 
-  // Relações: Tudo o que pertence a este professor
   alunos        Aluno[]
   aulas         Aula[]
   pagamentos    Pagamento[]
   materiais     Material[]
-  
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  reposicoes    Reposicao[]
+  notificacoes  Notificacao[]
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
-// ─── 2. ALUNO (O Cliente do Professor) ──────────────────────────
+// ─── 2. ALUNO ────────────────────────────────────────────────────
 model Aluno {
-  id          String   @id @default(uuid())
-  nome        String
-  email       String   @unique
-  senha       String
-  telefone    String?
-  curso       String?
-  createdAt   DateTime @default(now())
+  id                   String      @id @default(uuid())
+  nome                 String
+  email                String      @unique
+  senha                String
+  telefone             String?
+  curso                String?
+  expoPushToken        String?     // Token para push notifications
 
-  // Relacionamentos
-  professorId String
-  professor   Professor @relation(fields: [professorId], references: [id])
-  
-  aulas       Aula[]
-  pagamentos  Pagamento[]
-  reposicoes  Reposicao[]
+  status               String      @default("PENDENTE") // PENDENTE, ATIVO, INATIVO
+  valorMensalidade     Float?
+  diaVencimento        Int?
+  recorrenciaAula      String?     // SEMANAL, QUINZENAL, MENSAL
+  diaSemanaAula        String?     // Ex: "Segunda-feira"
+  diaSemanaNumero      Int?        // 0=Dom … 6=Sáb (para geração de aulas)
+  horarioAula          String?     // Ex: "14:30"
+  tempoContrato        Int?        // Em meses
+  dataInicioContrato   DateTime?   // Data de ativação do contrato
+
+  createdAt            DateTime    @default(now())
+
+  professorId          String
+  professor            Professor   @relation(fields: [professorId], references: [id])
+
+  aulas                Aula[]
+  pagamentos           Pagamento[]
+  reposicoes           Reposicao[]
+  mensagens            Mensagem[]
 }
 
-// ─── 3. AULAS & AGENDA ──────────────────────────────────────────
+// ─── 3. AULAS & AGENDA ───────────────────────────────────────────
 model Aula {
-  id          String    @id @default(uuid())
-  tema        String?   // Ex: "Independência dos pés"
+  id          String     @id @default(uuid())
+  tema        String?
   dataHora    DateTime
-  status      String    @default("AGENDADA") // AGENDADA, CONCLUIDA, CANCELADA
-  tipo        String    @default("REGULAR")  // REGULAR ou REPOSICAO
+  status      String     @default("AGENDADA") // AGENDADA, CONCLUIDA, CANCELADA
+  tipo        String     @default("REGULAR")  // REGULAR, REPOSICAO
 
-  // Vinculações obrigatórias
   professorId String
-  professor   Professor @relation(fields: [professorId], references: [id])
-  
+  professor   Professor  @relation(fields: [professorId], references: [id])
   alunoId     String
-  aluno       Aluno     @relation(fields: [alunoId], references: [id])
+  aluno       Aluno      @relation(fields: [alunoId], references: [id])
+  materiais   Material[]
 
-  materiais   Material[] // ⬅️ LIGAMENTO ADICIONADO: Uma aula pode ter vários materiais
-
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime   @default(now())
 }
 
-// ─── 4. FINANCEIRO & PAGAMENTOS ─────────────────────────────────
+// ─── 4. FINANCEIRO & PAGAMENTOS ──────────────────────────────────
 model Pagamento {
   id             String    @id @default(uuid())
   valor          Float
   vencimento     DateTime
   dataPagamento  DateTime?
   status         String    @default("PENDENTE") // PENDENTE, PAGO, ATRASADO, EM_ANALISE
-  comprovanteUrl String?   // Link da imagem/pdf do recibo, caso o aluno envie
+  comprovanteUrl String?
   metodo         String?   // PIX, CARTAO, BOLETO
 
-  // Vinculações
   professorId    String
   professor      Professor @relation(fields: [professorId], references: [id])
   alunoId        String
@@ -88,39 +98,69 @@ model Pagamento {
   updatedAt      DateTime  @updatedAt
 }
 
-// ─── 5. MATERIAIS DIDÁTICOS (Unificado) ─────────────────────────
+// ─── 5. MATERIAIS DIDÁTICOS ──────────────────────────────────────
 model Material {
   id          String    @id @default(uuid())
   titulo      String
   tipo        String    // PDF, VIDEO, AUDIO, TEXTO
-  url         String?   // Link armazenado na nuvem
-  conteudo    String?   // Caso o professor escreva apenas um texto
+  url         String?
+  conteudo    String?
 
-  // Vinculações
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])
-
   alunoId     String?
-
-  // LIGAMENTO DA AULA (Opcional, para materiais soltos ou anexados)
   aulaId      String?
   aula        Aula?     @relation(fields: [aulaId], references: [id])
 
   createdAt   DateTime  @default(now())
 }
 
-// ─── 6. REPOSIÇÕES ──────────────────────────────────────────────
+// ─── 6. MENSAGENS DO CHAT ────────────────────────────────────────
+model Mensagem {
+  id         String   @id @default(uuid())
+  texto      String
+  remetente  String   // "aluno" | "professor"
+  alunoId    String
+  aluno      Aluno    @relation(fields: [alunoId], references: [id])
+  createdAt  DateTime @default(now())
+}
+
+// ─── 7. NOTIFICAÇÕES ─────────────────────────────────────────────
+model Notificacao {
+  id          String    @id @default(uuid())
+  tipo        String    // CONTRATO_EXPIRADO, CONTRATO_EXPIRANDO, NOVO_ALUNO, etc.
+  titulo      String
+  mensagem    String
+  lida        Boolean   @default(false)
+  dadosExtra  String?   // JSON serializado com dados adicionais (alunoId, etc.)
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+
+  createdAt   DateTime  @default(now())
+}
+
+// ─── 8. TOKEN DE REDEFINIÇÃO DE SENHA ───────────────────────────
+model TokenRedefinicaoSenha {
+  id        String   @id @default(uuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  usado     Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// ─── 9. REPOSIÇÕES ───────────────────────────────────────────────
 model Reposicao {
-  id           String   @id @default(uuid())
+  id           String    @id @default(uuid())
   professorId  String
   alunoId      String
-  dataOriginal String?  // Opcional
+  dataOriginal String?
   dataProposta String
   motivo       String
-  status       String   @default("AGUARDANDO")
-  createdAt    DateTime @default(now())
+  status       String    @default("AGUARDANDO")
+  createdAt    DateTime  @default(now())
 
-  // Relacionamentos
   professor    Professor @relation(fields: [professorId], references: [id])
   aluno        Aluno     @relation(fields: [alunoId], references: [id])
 }
