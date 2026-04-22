@@ -446,6 +446,28 @@ app.post('/api/configurar-aluno', async (req, res) => {
     }
     if (pagamentos.length > 0) await prisma.pagamento.createMany({ data: pagamentos });
 
+    // Notifica o aluno que o contrato foi ativado
+    if (aluno.expoPushToken) {
+      await enviarPushNotificacao(
+        aluno.expoPushToken,
+        'Contrato Ativado!',
+        'Seu contrato foi configurado pelo professor. Acesse o app para ver suas aulas.',
+        { tipo: 'CONTRATO_ATIVADO' }
+      );
+    }
+
+    // Cria notificação interna para o professor confirmar a ativação
+    await prisma.notificacao.create({
+      data: {
+        tipo: 'ALUNO_ATIVADO',
+        titulo: 'Aluno Ativado',
+        mensagem: `${aluno.nome} foi configurado com ${novasAulas.length} aula(s) e ${pagamentos.length} cobrança(s).`,
+        professorId: aluno.professorId,
+        dadosExtra: JSON.stringify({ alunoId: aluno.id, alunoNome: aluno.nome, aulasGeradas: novasAulas.length }),
+        lida: false,
+      },
+    });
+
     res.json({
       mensagem: 'Aluno configurado!',
       aulasGeradas: novasAulas.length,
@@ -851,10 +873,21 @@ app.post('/api/aluno/mensagens', async (req, res) => {
   try {
     const { alunoId, texto } = req.body;
     if (!alunoId || !texto) return res.status(400).json({ erro: 'alunoId e texto obrigatórios.' });
+
     const msg = await prisma.mensagem.create({
       data: { alunoId, texto, remetente: 'aluno' },
-      include: { aluno: { select: { nome: true } } },
+      include: { aluno: { select: { nome: true, professorId: true } } },
     });
+
+    // Notifica o professor que recebeu nova mensagem
+    const professor = await prisma.professor.findUnique({
+      where: { id: msg.aluno.professorId },
+      select: { expoPushToken: true },
+    });
+    if (professor?.expoPushToken) {
+      await enviarPushNotificacao(professor.expoPushToken, 'Nova mensagem', `${msg.aluno.nome} enviou uma mensagem.`, { tipo: 'NOVA_MENSAGEM', alunoId });
+    }
+
     res.status(201).json(msg);
   } catch (err) {
     console.error(err);
@@ -863,7 +896,137 @@ app.post('/api/aluno/mensagens', async (req, res) => {
 });
 
 // ============================================================================
-// 6. LIGANDO O MOTOR
+// 7. ROTAS DE MENSAGENS DO PROFESSOR
+// ============================================================================
+
+// Professor vê o histórico de chat com um aluno específico
+app.get('/api/professor/mensagens/:alunoId', async (req, res) => {
+  try {
+    const { alunoId } = req.params;
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+
+    // Garante que o aluno pertence ao professor
+    const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, professorId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a este professor.' });
+
+    const msgs = await prisma.mensagem.findMany({
+      where: { alunoId },
+      orderBy: { createdAt: 'asc' },
+    });
+    res.json(msgs);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// Professor envia mensagem para um aluno
+app.post('/api/professor/mensagens', async (req, res) => {
+  try {
+    const { professorId, alunoId, texto } = req.body;
+    if (!professorId || !alunoId || !texto) return res.status(400).json({ erro: 'professorId, alunoId e texto são obrigatórios.' });
+
+    const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, professorId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a este professor.' });
+
+    const msg = await prisma.mensagem.create({
+      data: { alunoId, texto, remetente: 'professor' },
+    });
+
+    // Notifica o aluno
+    if (aluno.expoPushToken) {
+      const professor = await prisma.professor.findUnique({ where: { id: professorId }, select: { nome: true } });
+      await enviarPushNotificacao(aluno.expoPushToken, 'Nova mensagem', `${professor?.nome ?? 'Seu professor'} enviou uma mensagem.`, { tipo: 'NOVA_MENSAGEM', alunoId });
+    }
+
+    res.status(201).json(msg);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 8. ROTAS DE REPOSIÇÕES DO PROFESSOR
+// ============================================================================
+
+// Professor cria uma proposta de reposição para um aluno
+app.post('/api/reposicoes', async (req, res) => {
+  try {
+    const { professorId, alunoId, dataOriginal, dataProposta, motivo } = req.body;
+    if (!professorId || !alunoId || !dataProposta || !motivo) {
+      return res.status(400).json({ erro: 'professorId, alunoId, dataProposta e motivo são obrigatórios.' });
+    }
+
+    const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, professorId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a este professor.' });
+
+    const reposicao = await prisma.reposicao.create({
+      data: {
+        professorId,
+        alunoId,
+        dataOriginal: dataOriginal ?? null,
+        dataProposta,
+        motivo,
+        status: 'AGUARDANDO',
+      },
+    });
+
+    // Notifica o aluno sobre a proposta de reposição
+    if (aluno.expoPushToken) {
+      await enviarPushNotificacao(aluno.expoPushToken, 'Proposta de Reposição', `Seu professor propôs uma reposição para ${dataProposta}.`, { tipo: 'NOVA_REPOSICAO', reposicaoId: reposicao.id });
+    }
+
+    res.status(201).json({ mensagem: 'Reposição criada!', reposicao });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// Professor vê todas as reposições dos seus alunos
+app.get('/api/professor/reposicoes', async (req, res) => {
+  try {
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+    const reposicoes = await prisma.reposicao.findMany({
+      where: { professorId },
+      include: { aluno: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(reposicoes);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// Professor define nova data depois que aluno solicitou outro horário
+app.put('/api/reposicoes/:id/nova-data', async (req, res) => {
+  try {
+    const { dataProposta } = req.body;
+    if (!dataProposta) return res.status(400).json({ erro: 'dataProposta obrigatório.' });
+
+    const reposicao = await prisma.reposicao.update({
+      where: { id: req.params.id },
+      data: { dataProposta, status: 'AGUARDANDO' },
+      include: { aluno: { select: { nome: true, expoPushToken: true } } },
+    });
+
+    if (reposicao.aluno?.expoPushToken) {
+      await enviarPushNotificacao(reposicao.aluno.expoPushToken, 'Nova data de reposição', `Seu professor propôs ${dataProposta} para a reposição.`, { tipo: 'NOVA_REPOSICAO', reposicaoId: reposicao.id });
+    }
+
+    res.json({ mensagem: 'Nova data enviada!', reposicao });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 9. LIGANDO O MOTOR
 // ============================================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor KAV Class rodando na porta ${PORT}`));
