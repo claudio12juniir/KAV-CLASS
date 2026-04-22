@@ -164,3 +164,4 @@ model Reposicao {
   professor    Professor @relation(fields: [professorId], references: [id])
   aluno        Aluno     @relation(fields: [alunoId], references: [id])
 }
+
