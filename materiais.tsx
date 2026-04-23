@@ -7,8 +7,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { CORES } from '../../constants/theme';
 
-// ⚠️ AJUSTE SEU IP AQUI PARA TESTAR
-const ipDaSuaMaquina = "https://kav-class-1.onrender.com";
+const API_URL = "https://kav-class-1.onrender.com";
 
 interface Anexo {
   id: string;
@@ -38,7 +37,7 @@ export default function MateriaisScreen() {
       const token = await SecureStore.getItemAsync('kav_token');
       const alunoId = await SecureStore.getItemAsync('kav_aluno_id') || "";
 
-      const resposta = await fetch(`${ipDaSuaMaquina}/api/aluno/materiais?alunoId=${alunoId}`, {
+      const resposta = await fetch(`${API_URL}/api/aluno/materiais?alunoId=${alunoId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
 

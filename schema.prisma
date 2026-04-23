@@ -26,6 +26,7 @@ model Professor {
   materiais     Material[]
   reposicoes    Reposicao[]
   notificacoes  Notificacao[]
+  mensagens     Mensagem[]
 
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
@@ -118,12 +119,14 @@ model Material {
 
 // ─── 6. MENSAGENS DO CHAT ────────────────────────────────────────
 model Mensagem {
-  id         String   @id @default(uuid())
-  texto      String
-  remetente  String   // "aluno" | "professor"
-  alunoId    String
-  aluno      Aluno    @relation(fields: [alunoId], references: [id])
-  createdAt  DateTime @default(now())
+  id          String    @id @default(uuid())
+  texto       String
+  remetente   String    // alunoId (UUID) | "professor"
+  alunoId     String?
+  aluno       Aluno?    @relation(fields: [alunoId], references: [id])
+  professorId String?
+  professor   Professor? @relation(fields: [professorId], references: [id])
+  createdAt   DateTime  @default(now())
 }
 
 // ─── 7. NOTIFICAÇÕES ─────────────────────────────────────────────

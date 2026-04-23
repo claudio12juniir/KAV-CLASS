@@ -5,8 +5,7 @@ import * as SecureStore from 'expo-secure-store';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-// ⚠️ IP DA SUA MÁQUINA
-const ipDaSuaMaquina = "https://kav-class-1.onrender.com"; 
+const API_URL = "https://kav-class-1.onrender.com";
 
 export default function RelatoriosProfessorScreen() {
   const navigation = useNavigation();
@@ -21,27 +20,22 @@ export default function RelatoriosProfessorScreen() {
         const token = await SecureStore.getItemAsync('kav_token');
         const professorId = await SecureStore.getItemAsync('kav_professor_id') || "";
 
-        const resposta = await fetch(`${ipDaSuaMaquina}/api/relatorios?professorId=${professorId}`, {
+        const resposta = await fetch(`${API_URL}/api/relatorios?professorId=${professorId}`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
 
         if (resposta.ok) {
           const dados = await resposta.json();
-          setFaturamentoTotal(dados.faturamentoAtual);
-          
-          // Se o faturamento for zero, mostra um gráfico zerado
-          if (dados.faturamentoAtual === 0) {
-            setGrafico([
-              { mes: 'Jan', valor: 0, altura: '10%' },
-              { mes: 'Fev', valor: 0, altura: '10%' },
-              { mes: 'Mar', valor: 0, altura: '10%' },
-              { mes: 'Abr', valor: 0, altura: '10%' },
-            ]);
-          } else {
-            setGrafico(dados.grafico);
-          }
-          
-          setFaltas(dados.faltas);
+          setFaturamentoTotal(dados.faturamentoAtual ?? 0);
+          setGrafico(Array.isArray(dados.grafico) && dados.grafico.length > 0
+            ? dados.grafico
+            : [
+                { mes: 'Jan', valor: 0, altura: '10%' },
+                { mes: 'Fev', valor: 0, altura: '10%' },
+                { mes: 'Mar', valor: 0, altura: '10%' },
+                { mes: 'Abr', valor: 0, altura: '10%' },
+              ]);
+          setFaltas(Array.isArray(dados.faltas) ? dados.faltas : []);
         }
       } catch (error) {
         console.error("Erro ao buscar relatórios:", error);

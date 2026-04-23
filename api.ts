@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 
-const BASE_URL = "http://TEU_IP:3000/api";
+const BASE_URL = "https://kav-class-1.onrender.com/api";
 
 export const apiFetch = async (endpoint: string, options: any = {}) => {
   const token = await SecureStore.getItemAsync('kav_token');

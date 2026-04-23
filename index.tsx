@@ -3,12 +3,16 @@ import { DrawerActions, useNavigation } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import * as Clipboard from 'expo-clipboard';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useState } from 'react';
 import { CORES } from '../../constants/theme';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -30,7 +34,7 @@ const HORARIOS = [
 ];
 const OPCOES_CONTRATO = [3, 6, 12, 24];
 type Recorrencia = 'SEMANAL' | 'QUINZENAL' | 'MENSAL';
-type TipoConteudo = 'TEXTO' | 'LINK' | 'VIDEO' | 'IMAGEM';
+type TipoConteudo = 'TEXTO' | 'LINK' | 'VIDEO' | 'IMAGEM' | 'ARQUIVO';
 
 interface Notificacao {
   id: string;
@@ -89,6 +93,8 @@ export default function ProfessorDashboard() {
   const [tituloConteudo, setTituloConteudo]             = useState('');
   const [tipoConteudo, setTipoConteudo]                 = useState<TipoConteudo>('TEXTO');
   const [valorConteudo, setValorConteudo]               = useState('');
+  const [midiaBase64, setMidiaBase64]                   = useState<string | null>(null);
+  const [nomeArquivo, setNomeArquivo]                   = useState('');
   const [salvandoPresenca, setSalvandoPresenca]         = useState(false);
 
   // — Notificações —
@@ -150,7 +156,81 @@ export default function ProfessorDashboard() {
     setTituloConteudo('');
     setTipoConteudo('TEXTO');
     setValorConteudo('');
+    setMidiaBase64(null);
+    setNomeArquivo('');
     setModalPresencaVisible(true);
+  };
+
+  // — Selecionar imagem (câmera ou galeria) —
+  const selecionarImagem = async (origem: 'camera' | 'galeria') => {
+    const permissao = origem === 'camera'
+      ? await ImagePicker.requestCameraPermissionsAsync()
+      : await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (!permissao.granted) {
+      Alert.alert('Permissão negada', `Acesso à ${origem === 'camera' ? 'câmera' : 'galeria'} não autorizado.`);
+      return;
+    }
+
+    const opcoes: ImagePicker.ImagePickerOptions = {
+      mediaTypes: ['images'],
+      quality: 0.7,
+      base64: true,
+      allowsEditing: false,
+    };
+
+    const resultado = origem === 'camera'
+      ? await ImagePicker.launchCameraAsync(opcoes)
+      : await ImagePicker.launchImageLibraryAsync(opcoes);
+
+    if (!resultado.canceled && resultado.assets[0]) {
+      const asset = resultado.assets[0];
+      const b64 = `data:image/jpeg;base64,${asset.base64}`;
+      setMidiaBase64(b64);
+      setValorConteudo(b64);
+      setNomeArquivo(asset.fileName ?? 'imagem.jpg');
+    }
+  };
+
+  // — Selecionar vídeo da galeria —
+  const selecionarVideo = async () => {
+    const permissao = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permissao.granted) {
+      Alert.alert('Permissão negada', 'Acesso à galeria não autorizado.');
+      return;
+    }
+    const resultado = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['videos'],
+      allowsEditing: false,
+    });
+    if (!resultado.canceled && resultado.assets[0]) {
+      const asset = resultado.assets[0];
+      setValorConteudo(asset.uri);
+      setNomeArquivo(asset.fileName ?? 'video.mp4');
+      Alert.alert(
+        'Vídeo selecionado',
+        'Para compartilhar com alunos de outros dispositivos, faça upload no YouTube/Google Drive e cole o link.',
+        [{ text: 'Entendi' }]
+      );
+    }
+  };
+
+  // — Selecionar arquivo (PDF, doc, etc.) —
+  const selecionarArquivo = async () => {
+    const resultado = await DocumentPicker.getDocumentAsync({
+      copyToCacheDirectory: true,
+    });
+    if (resultado.canceled) return;
+    const arquivo = resultado.assets[0];
+    setNomeArquivo(arquivo.name);
+    try {
+      const b64 = await FileSystem.readAsStringAsync(arquivo.uri, { encoding: 'base64' });
+      const mime = arquivo.mimeType ?? 'application/octet-stream';
+      setMidiaBase64(`data:${mime};base64,${b64}`);
+      setValorConteudo(`data:${mime};base64,${b64}`);
+    } catch {
+      Alert.alert('Erro', 'Não foi possível ler o arquivo. Tente um arquivo menor.');
+    }
   };
 
   // — Registrar presença —
@@ -192,26 +272,35 @@ export default function ProfessorDashboard() {
       Alert.alert('Atenção', 'Informe o título do conteúdo.');
       return;
     }
-    if (!valorConteudo.trim()) {
+    const precisaValor = tipoConteudo === 'TEXTO' || tipoConteudo === 'LINK' || tipoConteudo === 'VIDEO';
+    if (precisaValor && !valorConteudo.trim()) {
       Alert.alert('Atenção', tipoConteudo === 'TEXTO' ? 'Escreva o conteúdo.' : 'Informe o link/URL.');
+      return;
+    }
+    if ((tipoConteudo === 'IMAGEM' || tipoConteudo === 'ARQUIVO') && !valorConteudo) {
+      Alert.alert('Atenção', `Selecione ${tipoConteudo === 'IMAGEM' ? 'uma imagem' : 'um arquivo'}.`);
       return;
     }
     setSalvandoPresenca(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
+      const isTexto = tipoConteudo === 'TEXTO';
+      const isMedia = tipoConteudo === 'IMAGEM' || tipoConteudo === 'ARQUIVO';
       const res = await fetch(`${API_URL}/api/aulas/${aulaParaRegistro!.id}/material`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           titulo: tituloConteudo.trim(),
           tipo: tipoConteudo,
-          conteudo: tipoConteudo === 'TEXTO' ? valorConteudo.trim() : null,
-          url: tipoConteudo !== 'TEXTO' ? valorConteudo.trim() : null,
+          conteudo: isTexto || isMedia ? valorConteudo : null,
+          url: !isTexto && !isMedia ? valorConteudo.trim() : null,
           professorId,
         }),
       });
       if (res.ok) {
         setModalPresencaVisible(false);
+        setMidiaBase64(null);
+        setNomeArquivo('');
         Alert.alert('Salvo!', 'Conteúdo enviado ao aluno.');
       } else {
         Alert.alert('Erro', 'Não foi possível salvar o conteúdo.');
@@ -508,11 +597,11 @@ export default function ProfessorDashboard() {
         <View style={styles.secao}>
           <Text style={styles.tituloSecao}>Acesso Rápido</Text>
           <View style={styles.gridAcessoRapido}>
-            <TouchableOpacity style={styles.botaoAcesso} onPress={() => router.push('/alunos')}>
+            <TouchableOpacity style={styles.botaoAcesso} onPress={() => router.push('/(professor)/alunos')}>
               <Ionicons name="people" size={24} color="#000" />
               <Text style={styles.textoAcesso}>Alunos</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.botaoAcesso} onPress={() => router.push('/pagamento')}>
+            <TouchableOpacity style={styles.botaoAcesso} onPress={() => router.push('/(professor)/pagamento')}>
               <Ionicons name="cash" size={24} color="#000" />
               <Text style={styles.textoAcesso}>Financeiro</Text>
             </TouchableOpacity>
@@ -704,38 +793,112 @@ export default function ProfessorDashboard() {
 
                   <Text style={styles.labelCampo}>Tipo de Conteúdo</Text>
                   <View style={styles.chipRow}>
-                    {(['TEXTO', 'LINK', 'VIDEO', 'IMAGEM'] as TipoConteudo[]).map((t) => (
+                    {([
+                      { tipo: 'TEXTO',   icone: 'document-text-outline' },
+                      { tipo: 'LINK',    icone: 'link-outline' },
+                      { tipo: 'VIDEO',   icone: 'videocam-outline' },
+                      { tipo: 'IMAGEM',  icone: 'image-outline' },
+                      { tipo: 'ARQUIVO', icone: 'attach-outline' },
+                    ] as { tipo: TipoConteudo; icone: any }[]).map(({ tipo: t, icone }) => (
                       <TouchableOpacity
                         key={t}
                         style={[styles.chip, tipoConteudo === t && styles.chipAtivo]}
-                        onPress={() => setTipoConteudo(t)}
+                        onPress={() => { setTipoConteudo(t); setValorConteudo(''); setMidiaBase64(null); setNomeArquivo(''); }}
                       >
-                        <Text style={[styles.textoChip, tipoConteudo === t && styles.textoChipAtivo]}>
+                        <Ionicons name={icone} size={14} color={tipoConteudo === t ? CORES.fundo : CORES.secundaria} />
+                        <Text style={[styles.textoChip, tipoConteudo === t && styles.textoChipAtivo, { marginLeft: 4 }]}>
                           {t}
                         </Text>
                       </TouchableOpacity>
                     ))}
                   </View>
 
-                  <Text style={styles.labelCampo}>
-                    {tipoConteudo === 'TEXTO' ? 'Conteúdo da Aula' : 'Link / URL'}
-                  </Text>
-                  <TextInput
-                    style={[
-                      styles.input,
-                      tipoConteudo === 'TEXTO' && { height: 120, textAlignVertical: 'top', paddingTop: 12 },
-                    ]}
-                    placeholder={
-                      tipoConteudo === 'TEXTO'
-                        ? 'Descreva o conteúdo da aula...'
-                        : 'Cole o link aqui...'
-                    }
-                    placeholderTextColor={CORES.secundaria}
-                    multiline={tipoConteudo === 'TEXTO'}
-                    autoCapitalize="none"
-                    value={valorConteudo}
-                    onChangeText={setValorConteudo}
-                  />
+                  {/* — Campos específicos por tipo — */}
+                  {tipoConteudo === 'TEXTO' && (
+                    <>
+                      <Text style={styles.labelCampo}>Conteúdo da Aula</Text>
+                      <TextInput
+                        style={[styles.input, { height: 120, textAlignVertical: 'top', paddingTop: 12 }]}
+                        placeholder="Descreva o conteúdo da aula..."
+                        placeholderTextColor={CORES.secundaria}
+                        multiline
+                        value={valorConteudo}
+                        onChangeText={setValorConteudo}
+                      />
+                    </>
+                  )}
+
+                  {(tipoConteudo === 'LINK' || tipoConteudo === 'VIDEO') && (
+                    <>
+                      <Text style={styles.labelCampo}>
+                        {tipoConteudo === 'VIDEO' ? 'Link do Vídeo (YouTube / Drive)' : 'Link / URL'}
+                      </Text>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="https://..."
+                        placeholderTextColor={CORES.secundaria}
+                        autoCapitalize="none"
+                        keyboardType="url"
+                        value={valorConteudo}
+                        onChangeText={setValorConteudo}
+                      />
+                      {tipoConteudo === 'VIDEO' && (
+                        <>
+                          <Text style={[styles.labelCampo, { marginTop: 8 }]}>Ou selecione da galeria</Text>
+                          <TouchableOpacity style={styles.botaoMidia} onPress={selecionarVideo}>
+                            <Ionicons name="videocam-outline" size={22} color={CORES.info} />
+                            <Text style={[styles.textoMidia, { color: CORES.info }]}>
+                              {nomeArquivo || 'Galeria de Vídeos'}
+                            </Text>
+                          </TouchableOpacity>
+                        </>
+                      )}
+                    </>
+                  )}
+
+                  {tipoConteudo === 'IMAGEM' && (
+                    <>
+                      <Text style={styles.labelCampo}>Selecionar Imagem</Text>
+                      <View style={styles.rowMidia}>
+                        <TouchableOpacity style={[styles.botaoMidia, { flex: 1 }]} onPress={() => selecionarImagem('camera')}>
+                          <Ionicons name="camera-outline" size={22} color={CORES.acento} />
+                          <Text style={styles.textoMidia}>Câmera</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.botaoMidia, { flex: 1 }]} onPress={() => selecionarImagem('galeria')}>
+                          <Ionicons name="images-outline" size={22} color={CORES.acento} />
+                          <Text style={styles.textoMidia}>Galeria</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {midiaBase64 && (
+                        <Image
+                          source={{ uri: midiaBase64 }}
+                          style={styles.previewImagem}
+                          resizeMode="cover"
+                        />
+                      )}
+                      {nomeArquivo ? (
+                        <Text style={styles.textoNomeArquivo}>{nomeArquivo}</Text>
+                      ) : null}
+                    </>
+                  )}
+
+                  {tipoConteudo === 'ARQUIVO' && (
+                    <>
+                      <Text style={styles.labelCampo}>Selecionar Arquivo</Text>
+                      <TouchableOpacity style={styles.botaoMidia} onPress={selecionarArquivo}>
+                        <Ionicons name="document-attach-outline" size={22} color={CORES.aviso} />
+                        <Text style={[styles.textoMidia, { color: CORES.aviso, flex: 1 }]} numberOfLines={1}>
+                          {nomeArquivo || 'Selecionar PDF / Documento'}
+                        </Text>
+                      </TouchableOpacity>
+                      {midiaBase64 && (
+                        <View style={styles.confirmacaoArquivo}>
+                          <Ionicons name="checkmark-circle" size={18} color={CORES.sucesso} />
+                          <Text style={{ color: CORES.sucesso, fontSize: 13, marginLeft: 6 }}>Arquivo carregado!</Text>
+                        </View>
+                      )}
+                    </>
+                  )}
 
                   <TouchableOpacity
                     style={[styles.botaoSalvar, salvandoPresenca && { opacity: 0.6 }, { marginTop: 24 }]}
@@ -1008,4 +1171,14 @@ const styles = StyleSheet.create({
     backgroundColor: CORES.acento, borderRadius: 12, padding: 16, marginTop: 28, gap: 8,
   },
   textoBotaoSalvar: { color: CORES.fundo, fontWeight: 'bold', fontSize: 16 },
+  rowMidia: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  botaoMidia: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: CORES.fundo, borderRadius: 10, padding: 14,
+    borderWidth: 1, borderColor: CORES.borda, marginBottom: 12,
+  },
+  textoMidia: { fontSize: 14, fontWeight: '600', color: CORES.acento },
+  previewImagem: { width: '100%', height: 180, borderRadius: 10, marginBottom: 10 },
+  textoNomeArquivo: { fontSize: 12, color: CORES.secundaria, marginBottom: 8, fontStyle: 'italic' },
+  confirmacaoArquivo: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
 });

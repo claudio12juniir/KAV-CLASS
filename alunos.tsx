@@ -127,8 +127,8 @@ export default function AlunosProfessorScreen() {
   const abrirPerfil = (aluno: any) => {
     setAlunoSelecionado(aluno);
     setAbaAtiva('historico');
-    setDiaSemana(aluno.diaSemana ?? 1);
-    setHorario(aluno.horario ?? '08:00');
+    setDiaSemana(aluno.diaSemanaNumero ?? 1);
+    setHorario(aluno.horarioAula ?? '08:00');
     setModalPerfilVisivel(true);
   };
 
@@ -155,7 +155,16 @@ export default function AlunosProfessorScreen() {
       const resposta = await fetch(`${API_URL}/api/configurar-aluno`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ alunoId: alunoSelecionado.id, professorId, horarioAula: horario, diaSemana }),
+        body: JSON.stringify({
+          alunoId: alunoSelecionado.id,
+          professorId,
+          horarioAula: horario,
+          diaSemana,
+          valorMensalidade: alunoSelecionado.valorMensalidade ?? 0,
+          diaCobranca: alunoSelecionado.diaVencimento ?? 10,
+          recorrencia: alunoSelecionado.recorrenciaAula ?? 'SEMANAL',
+          tempoContrato: alunoSelecionado.tempoContrato ?? 6,
+        }),
       });
 
       if (resposta.ok) {

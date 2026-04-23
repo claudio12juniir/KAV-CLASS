@@ -1,8 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import * as SecureStore from 'expo-secure-store';
 import React, { useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -13,6 +15,8 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+
+const API_URL = 'https://kav-class-1.onrender.com';
 
 // ─── Catálogo de cursos disponíveis ──────────────────────────────────────────
 const CURSOS_DISPONIVEIS = [
@@ -40,6 +44,7 @@ export default function LoginProfessorScreen() {
   const [senha, setSenha] = useState('');
   const [senhaVisivel, setSenhaVisivel] = useState(false);
   const [cursosSelecionados, setCursosSelecionados] = useState<string[]>([]);
+  const [carregando, setCarregando] = useState(false);
 
   // ── Toggle de curso ───────────────────────────────────────────────────────
   const toggleCurso = (id: string) => {
@@ -54,13 +59,38 @@ export default function LoginProfessorScreen() {
     setCursosSelecionados(prev => [...prev, id]);
   };
 
-  // ── Avançar do login para seleção de cursos ───────────────────────────────
-  const avancarParaCursos = () => {
-    if (!email.trim() || !senha.trim()) {
+  // ── Avançar do login para seleção de cursos (autentica com o servidor) ────
+  const avancarParaCursos = async () => {
+    const emailNorm = email.trim().toLowerCase();
+    if (!emailNorm || !senha.trim()) {
       Alert.alert('Atenção', 'Preencha e-mail e senha para continuar.');
       return;
     }
-    setTela('cursos');
+    setCarregando(true);
+    try {
+      const resposta = await fetch(`${API_URL}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: emailNorm, senha }),
+      });
+      const dados = await resposta.json();
+      if (!resposta.ok) {
+        Alert.alert('Erro de Login', dados.erro || 'E-mail ou senha incorretos.');
+        return;
+      }
+      if (dados.usuario.papel !== 'professor') {
+        Alert.alert('Acesso negado', 'Este portal é exclusivo para professores.');
+        return;
+      }
+      await SecureStore.setItemAsync('kav_token', dados.token);
+      await SecureStore.setItemAsync('kav_professor_id', String(dados.usuario.id));
+      await SecureStore.setItemAsync('kav_papel', 'professor');
+      setTela('cursos');
+    } catch {
+      Alert.alert('Erro de Conexão', 'Não foi possível conectar ao servidor KAV.');
+    } finally {
+      setCarregando(false);
+    }
   };
 
   // ── Finalizar login ───────────────────────────────────────────────────────
@@ -69,7 +99,6 @@ export default function LoginProfessorScreen() {
       Alert.alert('Atenção', 'Selecione pelo menos um curso que você leciona.');
       return;
     }
-    // Aqui salvar cursosSelecionados no contexto/banco antes de navegar
     router.replace('/(professor)');
   };
 
@@ -119,12 +148,22 @@ export default function LoginProfessorScreen() {
             </TouchableOpacity>
           </View>
 
-          <TouchableOpacity style={styles.botaoPrincipal} onPress={avancarParaCursos}>
-            <Text style={styles.textoBotaoPrincipal}>Continuar</Text>
-            <Ionicons name="arrow-forward" size={20} color="#ffffff" />
+          <TouchableOpacity
+            style={[styles.botaoPrincipal, carregando && { opacity: 0.6 }]}
+            onPress={avancarParaCursos}
+            disabled={carregando}
+          >
+            {carregando ? (
+              <ActivityIndicator color="#ffffff" />
+            ) : (
+              <>
+                <Text style={styles.textoBotaoPrincipal}>Continuar</Text>
+                <Ionicons name="arrow-forward" size={20} color="#ffffff" />
+              </>
+            )}
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.linkEsqueci}>
+          <TouchableOpacity style={styles.linkEsqueci} onPress={() => router.push('/esqueceu-senha')}>
             <Text style={styles.textoLinkEsqueci}>Esqueci minha senha</Text>
           </TouchableOpacity>
         </View>

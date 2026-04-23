@@ -20,8 +20,7 @@ const HORARIOS = [
   '13:00','14:00','15:00','16:00','17:00','18:00','19:00','20:00','21:00',
 ];
 
-// ⚠️ IP DA TUA MÁQUINA
-const ipDaSuaMaquina = "https://kav-class-1.onrender.com";
+const API_URL = "https://kav-class-1.onrender.com";
 
 type TipoAula = 'individual' | 'grupo';
 
@@ -47,10 +46,10 @@ export default function AgendamentoScreen() {
         const professorId = await SecureStore.getItemAsync('kav_professor_id') || "";
 
         const [resAlunos, resCursos] = await Promise.all([
-          fetch(`${ipDaSuaMaquina}/api/meus-alunos?professorId=${professorId}`, {
+          fetch(`${API_URL}/api/meus-alunos?professorId=${professorId}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           }),
-          fetch(`${ipDaSuaMaquina}/api/meus-cursos?professorId=${professorId}`, {
+          fetch(`${API_URL}/api/meus-cursos?professorId=${professorId}`, {
             headers: { 'Authorization': `Bearer ${token}` }
           }),
         ]);
@@ -90,17 +89,18 @@ export default function AgendamentoScreen() {
 
     try {
       const token = await SecureStore.getItemAsync('kav_token');
+      const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
 
-      // Prepara o "Envelope de Dados" para o backend
       const payload = {
+        professorId,
         tipo,
         curso,
         diaSemana,
         horario,
-        alunosIds: alunosSelecionados
+        alunosIds: alunosSelecionados,
       };
 
-      const resposta = await fetch(`${ipDaSuaMaquina}/api/aulas`, {
+      const resposta = await fetch(`${API_URL}/api/aulas`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -905,11 +905,10 @@ app.post('/api/aluno/mensagens', async (req, res) => {
     if (!alunoId || !texto) return res.status(400).json({ erro: 'alunoId e texto obrigatórios.' });
 
     const msg = await prisma.mensagem.create({
-      data: { alunoId, texto, remetente: 'aluno' },
+      data: { alunoId, texto, remetente: alunoId },
       include: { aluno: { select: { nome: true, professorId: true } } },
     });
 
-    // Notifica o professor que recebeu nova mensagem
     const professor = await prisma.professor.findUnique({
       where: { id: msg.aluno.professorId },
       select: { expoPushToken: true },
@@ -926,7 +925,81 @@ app.post('/api/aluno/mensagens', async (req, res) => {
 });
 
 // ============================================================================
-// 7. ROTAS DE MENSAGENS DO PROFESSOR
+// 7. MURAL DA TURMA (CHAT EM GRUPO)
+// ============================================================================
+
+// GET /api/mural?professorId=X  ou  /api/mural?alunoId=X
+app.get('/api/mural', async (req, res) => {
+  try {
+    let { professorId, alunoId } = req.query;
+
+    if (!professorId && alunoId) {
+      const aluno = await prisma.aluno.findUnique({ where: { id: alunoId }, select: { professorId: true } });
+      if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
+      professorId = aluno.professorId;
+    }
+    if (!professorId) return res.status(400).json({ erro: 'professorId ou alunoId obrigatório.' });
+
+    const alunos = await prisma.aluno.findMany({ where: { professorId }, select: { id: true } });
+    const alunoIds = alunos.map(a => a.id);
+
+    const [msgsAlunos, msgsProf] = await Promise.all([
+      prisma.mensagem.findMany({
+        where: { alunoId: { in: alunoIds }, remetente: { not: 'professor' } },
+        include: { aluno: { select: { nome: true } } },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.mensagem.findMany({
+        where: { professorId, remetente: 'professor' },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+
+    const todas = [
+      ...msgsAlunos.map(m => ({ id: m.id, texto: m.texto, remetente: m.remetente, nome: m.aluno?.nome ?? 'Aluno', createdAt: m.createdAt })),
+      ...msgsProf.map(m => ({ id: m.id, texto: m.texto, remetente: 'professor', nome: 'Professor(a)', createdAt: m.createdAt })),
+    ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    res.json(todas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/mural — professor envia mensagem para toda a turma
+app.post('/api/mural', async (req, res) => {
+  try {
+    const { professorId, texto } = req.body;
+    if (!professorId || !texto) return res.status(400).json({ erro: 'professorId e texto obrigatórios.' });
+
+    const professor = await prisma.professor.findUnique({ where: { id: professorId }, select: { id: true, nome: true } });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+
+    const msg = await prisma.mensagem.create({
+      data: { professorId, texto, remetente: 'professor' },
+    });
+
+    // Notifica todos os alunos ativos
+    const alunos = await prisma.aluno.findMany({
+      where: { professorId, status: 'ATIVO' },
+      select: { expoPushToken: true },
+    });
+    for (const aluno of alunos) {
+      if (aluno.expoPushToken) {
+        await enviarPushNotificacao(aluno.expoPushToken, `${professor.nome}`, texto, { tipo: 'NOVA_MENSAGEM' });
+      }
+    }
+
+    res.status(201).json({ ...msg, nome: 'Professor(a)' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 8. ROTAS DE MENSAGENS DIRETAS DO PROFESSOR (legado)
 // ============================================================================
 
 // Professor vê o histórico de chat com um aluno específico
@@ -1137,7 +1210,135 @@ app.post('/api/aulas/:id/material', async (req, res) => {
 });
 
 // ============================================================================
-// 10. LIGANDO O MOTOR
+// 10. CURSOS DO PROFESSOR
+// ============================================================================
+
+app.get('/api/meus-cursos', async (req, res) => {
+  try {
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+    const professor = await prisma.professor.findUnique({
+      where: { id: professorId },
+      select: { cursos: true },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    res.json(professor.cursos || []);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 11. AGENDAMENTO AVULSO DE AULA
+// ============================================================================
+
+app.post('/api/aulas', async (req, res) => {
+  try {
+    const { professorId, alunosIds, diaSemana, horario, curso } = req.body;
+    if (!professorId || !Array.isArray(alunosIds) || alunosIds.length === 0) {
+      return res.status(400).json({ erro: 'professorId e alunosIds são obrigatórios.' });
+    }
+
+    const [horas, minutos] = (horario || '08:00').split(':').map(Number);
+    const hoje = new Date();
+    const dataAula = new Date(hoje);
+    const diaAlvo = diaSemana ?? 1;
+    const diff = (diaAlvo - dataAula.getDay() + 7) % 7 || 7;
+    dataAula.setDate(dataAula.getDate() + diff);
+    dataAula.setHours(horas, minutos, 0, 0);
+
+    const aulasParaCriar = alunosIds.map((alunoId) => ({
+      dataHora: new Date(dataAula),
+      status: 'AGENDADA',
+      tipo: alunosIds.length > 1 ? 'GRUPO' : 'REGULAR',
+      tema: curso || null,
+      professorId,
+      alunoId,
+    }));
+
+    await prisma.aula.createMany({ data: aulasParaCriar });
+    res.status(201).json({ mensagem: 'Aula(s) agendada(s)!', aulasGeradas: aulasParaCriar.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao agendar aula.' });
+  }
+});
+
+// ============================================================================
+// 12. RELATÓRIOS
+// ============================================================================
+
+app.get('/api/relatorios', async (req, res) => {
+  try {
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+
+    const hoje = new Date();
+
+    // Faturamento total (pagamentos PAGO)
+    const pagamentosPagos = await prisma.pagamento.findMany({
+      where: { professorId, status: 'PAGO' },
+      select: { valor: true, dataPagamento: true },
+    });
+    const faturamentoAtual = pagamentosPagos.reduce((acc, p) => acc + Number(p.valor), 0);
+
+    // Gráfico: últimos 6 meses
+    const maxMensal = pagamentosPagos.reduce((max, p) => {
+      const v = Number(p.valor);
+      return v > max ? v : max;
+    }, 1);
+
+    const grafico = [];
+    const MESES_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    for (let i = 5; i >= 0; i--) {
+      const ref = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+      const mes = ref.getMonth();
+      const ano = ref.getFullYear();
+      const total = pagamentosPagos
+        .filter(p => {
+          const d = p.dataPagamento ? new Date(p.dataPagamento) : null;
+          return d && d.getMonth() === mes && d.getFullYear() === ano;
+        })
+        .reduce((acc, p) => acc + Number(p.valor), 0);
+      const percentual = Math.max(Math.round((total / maxMensal) * 100), 5);
+      grafico.push({ mes: MESES_PT[mes], valor: total, altura: `${percentual}%` });
+    }
+
+    // Faltas: alunos com ausências nos últimos 30 dias
+    const trintaDiasAtras = new Date(hoje);
+    trintaDiasAtras.setDate(trintaDiasAtras.getDate() - 30);
+
+    const aulasComFalta = await prisma.aula.findMany({
+      where: {
+        professorId,
+        presenca: 'AUSENCIA_ALUNO',
+        dataHora: { gte: trintaDiasAtras },
+      },
+      include: { aluno: { select: { id: true, nome: true } } },
+    });
+
+    const faltasPorAluno = {};
+    for (const aula of aulasComFalta) {
+      const id = aula.aluno.id;
+      if (!faltasPorAluno[id]) faltasPorAluno[id] = { id, nome: aula.aluno.nome, faltas: 0 };
+      faltasPorAluno[id].faltas++;
+    }
+
+    const faltas = Object.values(faltasPorAluno).map(a => ({
+      ...a,
+      status: a.faltas === 0 ? 'Excelente' : a.faltas <= 1 ? 'Bom' : 'Atenção',
+    }));
+
+    res.json({ faturamentoAtual, grafico, faltas });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 13. LIGANDO O MOTOR
 // ============================================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor KAV Class rodando na porta ${PORT}`));
