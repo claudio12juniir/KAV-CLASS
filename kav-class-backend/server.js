@@ -343,17 +343,20 @@ app.get('/api/dashboard', async (req, res) => {
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
 
-    const proximasAulas = await prisma.aula.findMany({
-      where: { professorId, dataHora: { gte: new Date() } },
-      include: { aluno: { select: { nome: true } } },
+    const agora = new Date();
+    const inicioHoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate(), 0, 0, 0);
+    const fimHoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate(), 23, 59, 59);
+
+    const aulasHoje = await prisma.aula.findMany({
+      where: { professorId, dataHora: { gte: inicioHoje, lte: fimHoje } },
+      include: { aluno: { select: { nome: true, id: true } } },
       orderBy: { dataHora: 'asc' },
-      take: 5,
     });
 
     res.json({
       nome: professor.nome,
       codigoConvite: professor.codigoConvite || 'KAV-NOVO',
-      aulasHoje: proximasAulas,
+      aulasHoje,
     });
   } catch (err) {
     console.error(err);
@@ -495,7 +498,12 @@ app.get('/api/meus-alunos', async (req, res) => {
     if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
     const alunos = await prisma.aluno.findMany({
       where: { professorId },
-      include: { aulas: { where: { dataHora: { lte: new Date() } }, orderBy: { dataHora: 'desc' }, take: 10 } },
+      include: {
+        aulas: {
+          orderBy: { dataHora: 'desc' },
+          include: { materiais: true },
+        },
+      },
     });
     res.json(alunos);
   } catch (err) {
@@ -546,6 +554,28 @@ app.put('/api/pagamentos/:id/aprovar', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao aprovar.' });
+  }
+});
+
+app.post('/api/pagamentos/:id/notificar-vencimento', async (req, res) => {
+  try {
+    const pagamento = await prisma.pagamento.findUnique({
+      where: { id: req.params.id },
+      include: { aluno: { select: { nome: true, expoPushToken: true } } },
+    });
+    if (!pagamento) return res.status(404).json({ erro: 'Pagamento não encontrado.' });
+    if (!pagamento.aluno?.expoPushToken) {
+      return res.status(400).json({ erro: 'Aluno não possui token de notificação cadastrado.' });
+    }
+    await enviarPushNotificacao(
+      pagamento.aluno.expoPushToken,
+      'KAV Class — Mensalidade a Vencer',
+      'Olá, nós da KAV class estamos passando rapidinho pra te avisar que sua mensalidade está para vencer, até mais!'
+    );
+    res.json({ mensagem: 'Notificação enviada com sucesso.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao enviar notificação.' });
   }
 });
 
@@ -875,11 +905,10 @@ app.post('/api/aluno/mensagens', async (req, res) => {
     if (!alunoId || !texto) return res.status(400).json({ erro: 'alunoId e texto obrigatórios.' });
 
     const msg = await prisma.mensagem.create({
-      data: { alunoId, texto, remetente: 'aluno' },
+      data: { alunoId, texto, remetente: alunoId },
       include: { aluno: { select: { nome: true, professorId: true } } },
     });
 
-    // Notifica o professor que recebeu nova mensagem
     const professor = await prisma.professor.findUnique({
       where: { id: msg.aluno.professorId },
       select: { expoPushToken: true },
@@ -896,7 +925,81 @@ app.post('/api/aluno/mensagens', async (req, res) => {
 });
 
 // ============================================================================
-// 7. ROTAS DE MENSAGENS DO PROFESSOR
+// 7. MURAL DA TURMA (CHAT EM GRUPO)
+// ============================================================================
+
+// GET /api/mural?professorId=X  ou  /api/mural?alunoId=X
+app.get('/api/mural', async (req, res) => {
+  try {
+    let { professorId, alunoId } = req.query;
+
+    if (!professorId && alunoId) {
+      const aluno = await prisma.aluno.findUnique({ where: { id: alunoId }, select: { professorId: true } });
+      if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
+      professorId = aluno.professorId;
+    }
+    if (!professorId) return res.status(400).json({ erro: 'professorId ou alunoId obrigatório.' });
+
+    const alunos = await prisma.aluno.findMany({ where: { professorId }, select: { id: true } });
+    const alunoIds = alunos.map(a => a.id);
+
+    const [msgsAlunos, msgsProf] = await Promise.all([
+      prisma.mensagem.findMany({
+        where: { alunoId: { in: alunoIds }, remetente: { not: 'professor' } },
+        include: { aluno: { select: { nome: true } } },
+        orderBy: { createdAt: 'asc' },
+      }),
+      prisma.mensagem.findMany({
+        where: { professorId, remetente: 'professor' },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+
+    const todas = [
+      ...msgsAlunos.map(m => ({ id: m.id, texto: m.texto, remetente: m.remetente, nome: m.aluno?.nome ?? 'Aluno', createdAt: m.createdAt })),
+      ...msgsProf.map(m => ({ id: m.id, texto: m.texto, remetente: 'professor', nome: 'Professor(a)', createdAt: m.createdAt })),
+    ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    res.json(todas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/mural — professor envia mensagem para toda a turma
+app.post('/api/mural', async (req, res) => {
+  try {
+    const { professorId, texto } = req.body;
+    if (!professorId || !texto) return res.status(400).json({ erro: 'professorId e texto obrigatórios.' });
+
+    const professor = await prisma.professor.findUnique({ where: { id: professorId }, select: { id: true, nome: true } });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+
+    const msg = await prisma.mensagem.create({
+      data: { professorId, texto, remetente: 'professor' },
+    });
+
+    // Notifica todos os alunos ativos
+    const alunos = await prisma.aluno.findMany({
+      where: { professorId, status: 'ATIVO' },
+      select: { expoPushToken: true },
+    });
+    for (const aluno of alunos) {
+      if (aluno.expoPushToken) {
+        await enviarPushNotificacao(aluno.expoPushToken, `${professor.nome}`, texto, { tipo: 'NOVA_MENSAGEM' });
+      }
+    }
+
+    res.status(201).json({ ...msg, nome: 'Professor(a)' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 8. ROTAS DE MENSAGENS DIRETAS DO PROFESSOR (legado)
 // ============================================================================
 
 // Professor vê o histórico de chat com um aluno específico
@@ -1026,7 +1129,216 @@ app.put('/api/reposicoes/:id/nova-data', async (req, res) => {
 });
 
 // ============================================================================
-// 9. LIGANDO O MOTOR
+// 9. REGISTRO DE PRESENÇA E CONTEÚDO
+// ============================================================================
+
+app.post('/api/aulas/:id/registrar-presenca', async (req, res) => {
+  try {
+    const { presenca, professorId } = req.body;
+    const validos = ['PRESENTE', 'AUSENCIA_PROFESSOR', 'AUSENCIA_ALUNO', 'PENDENTE_REPOSICAO'];
+    if (!presenca || !validos.includes(presenca)) {
+      return res.status(400).json({ erro: 'presenca inválida. Use: ' + validos.join(', ') });
+    }
+
+    let novoStatus;
+    if (presenca === 'PRESENTE') novoStatus = 'CONCLUIDA';
+    else if (presenca === 'PENDENTE_REPOSICAO') novoStatus = 'AGENDADA';
+    else novoStatus = 'CANCELADA';
+
+    const aula = await prisma.aula.update({
+      where: { id: req.params.id },
+      data: { presenca, status: novoStatus },
+      include: { aluno: { select: { nome: true, expoPushToken: true } } },
+    });
+
+    if (presenca === 'PENDENTE_REPOSICAO' && aula.aluno?.expoPushToken) {
+      await enviarPushNotificacao(
+        aula.aluno.expoPushToken,
+        'Aula remarcada',
+        'Sua aula foi marcada como pendente de reposição. Aguarde o professor propor uma nova data.',
+        { tipo: 'AULA_REMARCADA', aulaId: aula.id }
+      );
+    }
+
+    res.json({ mensagem: 'Presença registrada!', aula });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/aulas/:id/material', async (req, res) => {
+  try {
+    const { titulo, tipo, conteudo, url, professorId } = req.body;
+    if (!titulo || !tipo || !professorId) {
+      return res.status(400).json({ erro: 'titulo, tipo e professorId são obrigatórios.' });
+    }
+
+    const aula = await prisma.aula.findUnique({ where: { id: req.params.id } });
+    if (!aula) return res.status(404).json({ erro: 'Aula não encontrada.' });
+
+    const material = await prisma.material.create({
+      data: {
+        titulo,
+        tipo: tipo.toUpperCase(),
+        conteudo: conteudo || null,
+        url: url || null,
+        aulaId: req.params.id,
+        professorId: aula.professorId,
+        alunoId: aula.alunoId,
+      },
+    });
+
+    const aluno = await prisma.aluno.findUnique({
+      where: { id: aula.alunoId },
+      select: { expoPushToken: true },
+    });
+    if (aluno?.expoPushToken) {
+      await enviarPushNotificacao(
+        aluno.expoPushToken,
+        'Novo conteúdo disponível!',
+        `Seu professor adicionou "${titulo}" nos seus materiais didáticos.`,
+        { tipo: 'NOVO_MATERIAL', aulaId: aula.id }
+      );
+    }
+
+    res.status(201).json({ mensagem: 'Conteúdo adicionado!', material });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 10. CURSOS DO PROFESSOR
+// ============================================================================
+
+app.get('/api/meus-cursos', async (req, res) => {
+  try {
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+    const professor = await prisma.professor.findUnique({
+      where: { id: professorId },
+      select: { cursos: true },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    res.json(professor.cursos || []);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 11. AGENDAMENTO AVULSO DE AULA
+// ============================================================================
+
+app.post('/api/aulas', async (req, res) => {
+  try {
+    const { professorId, alunosIds, diaSemana, horario, curso } = req.body;
+    if (!professorId || !Array.isArray(alunosIds) || alunosIds.length === 0) {
+      return res.status(400).json({ erro: 'professorId e alunosIds são obrigatórios.' });
+    }
+
+    const [horas, minutos] = (horario || '08:00').split(':').map(Number);
+    const hoje = new Date();
+    const dataAula = new Date(hoje);
+    const diaAlvo = diaSemana ?? 1;
+    const diff = (diaAlvo - dataAula.getDay() + 7) % 7 || 7;
+    dataAula.setDate(dataAula.getDate() + diff);
+    dataAula.setHours(horas, minutos, 0, 0);
+
+    const aulasParaCriar = alunosIds.map((alunoId) => ({
+      dataHora: new Date(dataAula),
+      status: 'AGENDADA',
+      tipo: alunosIds.length > 1 ? 'GRUPO' : 'REGULAR',
+      tema: curso || null,
+      professorId,
+      alunoId,
+    }));
+
+    await prisma.aula.createMany({ data: aulasParaCriar });
+    res.status(201).json({ mensagem: 'Aula(s) agendada(s)!', aulasGeradas: aulasParaCriar.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao agendar aula.' });
+  }
+});
+
+// ============================================================================
+// 12. RELATÓRIOS
+// ============================================================================
+
+app.get('/api/relatorios', async (req, res) => {
+  try {
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+
+    const hoje = new Date();
+
+    // Faturamento total (pagamentos PAGO)
+    const pagamentosPagos = await prisma.pagamento.findMany({
+      where: { professorId, status: 'PAGO' },
+      select: { valor: true, dataPagamento: true },
+    });
+    const faturamentoAtual = pagamentosPagos.reduce((acc, p) => acc + Number(p.valor), 0);
+
+    // Gráfico: últimos 6 meses
+    const maxMensal = pagamentosPagos.reduce((max, p) => {
+      const v = Number(p.valor);
+      return v > max ? v : max;
+    }, 1);
+
+    const grafico = [];
+    const MESES_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    for (let i = 5; i >= 0; i--) {
+      const ref = new Date(hoje.getFullYear(), hoje.getMonth() - i, 1);
+      const mes = ref.getMonth();
+      const ano = ref.getFullYear();
+      const total = pagamentosPagos
+        .filter(p => {
+          const d = p.dataPagamento ? new Date(p.dataPagamento) : null;
+          return d && d.getMonth() === mes && d.getFullYear() === ano;
+        })
+        .reduce((acc, p) => acc + Number(p.valor), 0);
+      const percentual = Math.max(Math.round((total / maxMensal) * 100), 5);
+      grafico.push({ mes: MESES_PT[mes], valor: total, altura: `${percentual}%` });
+    }
+
+    // Faltas: alunos com ausências nos últimos 30 dias
+    const trintaDiasAtras = new Date(hoje);
+    trintaDiasAtras.setDate(trintaDiasAtras.getDate() - 30);
+
+    const aulasComFalta = await prisma.aula.findMany({
+      where: {
+        professorId,
+        presenca: 'AUSENCIA_ALUNO',
+        dataHora: { gte: trintaDiasAtras },
+      },
+      include: { aluno: { select: { id: true, nome: true } } },
+    });
+
+    const faltasPorAluno = {};
+    for (const aula of aulasComFalta) {
+      const id = aula.aluno.id;
+      if (!faltasPorAluno[id]) faltasPorAluno[id] = { id, nome: aula.aluno.nome, faltas: 0 };
+      faltasPorAluno[id].faltas++;
+    }
+
+    const faltas = Object.values(faltasPorAluno).map(a => ({
+      ...a,
+      status: a.faltas === 0 ? 'Excelente' : a.faltas <= 1 ? 'Bom' : 'Atenção',
+    }));
+
+    res.json({ faturamentoAtual, grafico, faltas });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 13. LIGANDO O MOTOR
 // ============================================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor KAV Class rodando na porta ${PORT}`));
