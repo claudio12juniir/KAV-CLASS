@@ -4,8 +4,8 @@
   "description": "Backend do KAV Class - Sistema de Gestão para Professores Particulares",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "build": "prisma migrate deploy && prisma generate",
+    "start": "prisma migrate deploy && node server.js",
+    "build": "prisma generate",
     "postinstall": "prisma generate"
   },
   "engines": {
