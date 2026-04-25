@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cron = require('node-cron');
 const { PrismaClient } = require('@prisma/client');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const prisma = new PrismaClient();
 const app = express();
@@ -18,6 +19,64 @@ const NOMES_DIAS = [
 ];
 
 app.use(cors());
+
+// ─── STRIPE WEBHOOK (raw body MUST come before express.json) ─────────────────
+app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  if (!webhookSecret) {
+    return res.status(200).json({ received: true });
+  }
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error('[Webhook] Assinatura inválida:', err.message);
+    return res.status(400).json({ erro: `Webhook Error: ${err.message}` });
+  }
+
+  try {
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const professorId = session.client_reference_id;
+      if (professorId) {
+        await prisma.professor.update({
+          where: { id: professorId },
+          data: {
+            stripeCustomerId: session.customer,
+            stripeSessionId: session.id,
+            assinaturaStatus: 'ATIVO',
+          },
+        });
+      }
+    } else if (event.type === 'customer.subscription.updated') {
+      const sub = event.data.object;
+      const status = sub.status === 'active' || sub.status === 'trialing' ? 'ATIVO' : 'CANCELADO';
+      await prisma.professor.updateMany({
+        where: { stripeCustomerId: sub.customer },
+        data: {
+          assinaturaStatus: status,
+          assinaturaFim: sub.current_period_end
+            ? new Date(sub.current_period_end * 1000)
+            : null,
+        },
+      });
+    } else if (event.type === 'customer.subscription.deleted') {
+      const sub = event.data.object;
+      await prisma.professor.updateMany({
+        where: { stripeCustomerId: sub.customer },
+        data: { assinaturaStatus: 'CANCELADO' },
+      });
+    }
+  } catch (err) {
+    console.error('[Webhook] Erro ao processar evento:', err);
+  }
+
+  res.json({ received: true });
+});
+
 app.use(express.json());
 
 // ============================================================================
@@ -201,7 +260,7 @@ app.post('/api/professores/cadastro', async (req, res) => {
         codigoConvite: gerarCodigoConvite(),
       },
     });
-    res.status(201).json({ mensagem: 'Professor criado!', codigoConvite: novoProfessor.codigoConvite });
+    res.status(201).json({ mensagem: 'Professor criado!', codigoConvite: novoProfessor.codigoConvite, professorId: novoProfessor.id });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao criar professor.' });
@@ -1331,6 +1390,81 @@ app.get('/api/relatorios', async (req, res) => {
     }));
 
     res.json({ faturamentoAtual, grafico, faltas });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+// ─── CHECKOUT: ASSINATURA KAV CLASS ─────────────────────────────────────────
+// plano: 'trial' (14 dias grátis) | 'pro' (cobrança imediata)
+app.post('/checkout', async (req, res) => {
+  try {
+    const { professorId, email, plano = 'pro' } = req.body;
+    if (!email) {
+      return res.status(400).json({ erro: 'email é obrigatório.' });
+    }
+
+    // Resolve o ID: usa o que veio ou busca pelo e-mail (retrocompatibilidade)
+    let pid = professorId;
+    if (!pid) {
+      const prof = await prisma.professor.findUnique({ where: { email: email.toLowerCase().trim() } });
+      if (!prof) return res.status(404).json({ erro: 'Professor não encontrado.' });
+      pid = prof.id;
+    }
+
+    const isTrial = plano === 'trial';
+
+    const sessionData = {
+      payment_method_types: ['card'],
+      customer_email: email,
+      client_reference_id: pid,
+      line_items: [
+        {
+          price_data: {
+            currency: 'brl',
+            product_data: {
+              name: isTrial ? 'KAV Class Pro — Teste Gratuito 14 dias' : 'KAV Class Pro',
+              description: 'Gestão completa de alunos, calendário, cobranças e relatórios.',
+            },
+            unit_amount: 4990,
+            recurring: { interval: 'month' },
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'subscription',
+      success_url: 'kavclass://pagamento-sucesso?plano=' + plano,
+      cancel_url: 'kavclass://pagamento-cancelado',
+      metadata: { professorId: pid, plano },
+    };
+
+    if (isTrial) {
+      sessionData.subscription_data = { trial_period_days: 14 };
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionData);
+
+    res.json({ url: session.url, sessionId: session.id });
+  } catch (error) {
+    console.error('[Checkout] Erro no Stripe:', error);
+    res.status(500).json({ erro: 'Erro ao gerar sessão de pagamento.' });
+  }
+});
+
+// ─── STATUS DE ASSINATURA DO PROFESSOR ───────────────────────────────────────
+app.get('/api/professor/assinatura/:professorId', async (req, res) => {
+  try {
+    const { professorId } = req.params;
+    const professor = await prisma.professor.findUnique({
+      where: { id: professorId },
+      select: {
+        assinaturaStatus: true,
+        assinaturaFim: true,
+        stripeCustomerId: true,
+      },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    res.json(professor);
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });

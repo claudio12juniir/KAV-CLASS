@@ -20,6 +20,11 @@ model Professor {
   chavePix             String?
   linkPagamentoCartao  String?
 
+  stripeCustomerId  String?
+  assinaturaStatus  String    @default("INATIVO")
+  assinaturaFim     DateTime?
+  stripeSessionId   String?
+
   alunos        Aluno[]
   aulas         Aula[]
   pagamentos    Pagamento[]
