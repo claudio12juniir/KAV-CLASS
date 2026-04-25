@@ -5,7 +5,9 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cron = require('node-cron');
 const { PrismaClient } = require('@prisma/client');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? require('stripe')(process.env.STRIPE_SECRET_KEY)
+  : null;
 
 const prisma = new PrismaClient();
 const app = express();
@@ -1398,6 +1400,9 @@ app.get('/api/relatorios', async (req, res) => {
 // ─── CHECKOUT: ASSINATURA KAV CLASS ─────────────────────────────────────────
 // plano: 'trial' (14 dias grátis) | 'pro' (cobrança imediata)
 app.post('/checkout', async (req, res) => {
+  if (!stripe) {
+    return res.status(503).json({ erro: 'Serviço de pagamento não configurado. Contate o suporte.' });
+  }
   try {
     const { professorId, email, plano = 'pro' } = req.body;
     if (!email) {

@@ -17,3 +17,7 @@ services:
         sync: false        # Opcional: conta Gmail para reset de senha
       - key: EMAIL_PASS
         sync: false        # Opcional: senha de app do Gmail
+      - key: STRIPE_SECRET_KEY
+        sync: false        # Painel Stripe → Developers → API keys → Secret key
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false        # Painel Stripe → Developers → Webhooks → Signing secret
