@@ -43,13 +43,14 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       const professorId = session.client_reference_id;
+      const plano = session.metadata?.plano;
       if (professorId) {
         await prisma.professor.update({
           where: { id: professorId },
           data: {
             stripeCustomerId: session.customer,
             stripeSessionId: session.id,
-            assinaturaStatus: 'ATIVO',
+            assinaturaStatus: plano === 'one-time' ? 'VITALICIO' : 'ATIVO',
           },
         });
       }
@@ -1398,18 +1399,24 @@ app.get('/api/relatorios', async (req, res) => {
   }
 });
 // ─── CHECKOUT: ASSINATURA KAV CLASS ─────────────────────────────────────────
-// plano: 'trial' (14 dias grátis) | 'pro' (cobrança imediata)
+// plano: 'pro' | 'premium' | 'one-time'
+const STRIPE_PRICE_IDS = {
+  pro:        'price_1TPwgLRZkemiSVh6S0ASUKP8',
+  premium:    'price_1TPwl5RZkemiSVh6mbLU2lk4',
+  'one-time': 'price_1TPwmURZkemiSVh6NPET9vEz',
+};
+
 app.post('/checkout', async (req, res) => {
   if (!stripe) {
     return res.status(503).json({ erro: 'Serviço de pagamento não configurado. Contate o suporte.' });
   }
   try {
     const { professorId, email, plano = 'pro' } = req.body;
-    if (!email) {
-      return res.status(400).json({ erro: 'email é obrigatório.' });
-    }
+    if (!email) return res.status(400).json({ erro: 'email é obrigatório.' });
 
-    // Resolve o ID: usa o que veio ou busca pelo e-mail (retrocompatibilidade)
+    const priceId = STRIPE_PRICE_IDS[plano];
+    if (!priceId) return res.status(400).json({ erro: 'Plano inválido.' });
+
     let pid = professorId;
     if (!pid) {
       const prof = await prisma.professor.findUnique({ where: { email: email.toLowerCase().trim() } });
@@ -1417,37 +1424,16 @@ app.post('/checkout', async (req, res) => {
       pid = prof.id;
     }
 
-    const isTrial = plano === 'trial';
-
-    const sessionData = {
+    const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
       customer_email: email,
       client_reference_id: pid,
-      line_items: [
-        {
-          price_data: {
-            currency: 'brl',
-            product_data: {
-              name: isTrial ? 'KAV Class Pro — Teste Gratuito 14 dias' : 'KAV Class Pro',
-              description: 'Gestão completa de alunos, calendário, cobranças e relatórios.',
-            },
-            unit_amount: 4990,
-            recurring: { interval: 'month' },
-          },
-          quantity: 1,
-        },
-      ],
-      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      mode: plano === 'one-time' ? 'payment' : 'subscription',
       success_url: 'kavclass://pagamento-sucesso?plano=' + plano,
       cancel_url: 'kavclass://pagamento-cancelado',
       metadata: { professorId: pid, plano },
-    };
-
-    if (isTrial) {
-      sessionData.subscription_data = { trial_period_days: 14 };
-    }
-
-    const session = await stripe.checkout.sessions.create(sessionData);
+    });
 
     res.json({ url: session.url, sessionId: session.id });
   } catch (error) {
