@@ -311,6 +311,17 @@ app.post('/api/login', async (req, res) => {
     if (!usuario) return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
     if (!await bcrypt.compare(senha, usuario.senha)) return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
 
+    if (papel === 'professor' &&
+        (usuario.assinaturaStatus === 'PENDENTE' || usuario.assinaturaStatus === 'INATIVO')) {
+      return res.status(403).json({
+        erro: 'Sua conta ainda não possui uma assinatura ativa. Selecione um plano para continuar.',
+        assinaturaStatus: usuario.assinaturaStatus,
+        professorId: usuario.id,
+        email: usuario.email,
+        codigoConvite: usuario.codigoConvite,
+      });
+    }
+
     const token = jwt.sign({ id: usuario.id, papel }, SEGREDO_JWT, { expiresIn: '7d' });
     res.json({ mensagem: 'Login realizado!', token, usuario: { id: usuario.id, nome: usuario.nome, papel } });
   } catch (err) {
@@ -1411,22 +1422,45 @@ app.post('/checkout', async (req, res) => {
     return res.status(503).json({ erro: 'Serviço de pagamento não configurado. Contate o suporte.' });
   }
   try {
-    const { professorId, email, plano = 'pro' } = req.body;
+    const { professorId, email, plano = 'pro', nome, senha, telefone, cursos } = req.body;
     if (!email) return res.status(400).json({ erro: 'email é obrigatório.' });
 
     const priceId = STRIPE_PRICE_IDS[plano];
     if (!priceId) return res.status(400).json({ erro: 'Plano inválido.' });
 
+    const emailNorm = email.toLowerCase().trim();
     let pid = professorId;
+
     if (!pid) {
-      const prof = await prisma.professor.findUnique({ where: { email: email.toLowerCase().trim() } });
-      if (!prof) return res.status(404).json({ erro: 'Professor não encontrado.' });
+      let prof = await prisma.professor.findUnique({ where: { email: emailNorm } });
+
+      if (!prof) {
+        // Novo professor: cria com status PENDENTE aguardando pagamento
+        if (!nome || !senha) {
+          return res.status(400).json({ erro: 'Dados de cadastro incompletos. Volte e preencha o formulário.' });
+        }
+        const salt = await bcrypt.genSalt(10);
+        prof = await prisma.professor.create({
+          data: {
+            nome: nome.trim(),
+            email: emailNorm,
+            senha: await bcrypt.hash(senha, salt),
+            telefone: telefone || null,
+            cursos: Array.isArray(cursos) ? cursos : [],
+            codigoConvite: gerarCodigoConvite(),
+            assinaturaStatus: 'PENDENTE',
+          },
+        });
+      } else if (prof.assinaturaStatus === 'ATIVO' || prof.assinaturaStatus === 'VITALICIO') {
+        return res.status(400).json({ erro: 'Este e-mail já possui uma assinatura ativa.' });
+      }
+
       pid = prof.id;
     }
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      customer_email: email,
+      customer_email: emailNorm,
       client_reference_id: pid,
       line_items: [{ price: priceId, quantity: 1 }],
       mode: plano === 'one-time' ? 'payment' : 'subscription',
