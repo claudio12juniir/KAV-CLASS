@@ -1409,6 +1409,23 @@ app.get('/api/relatorios', async (req, res) => {
     res.status(500).json({ erro: 'Erro interno.' });
   }
 });
+// ─── CHECKOUT REDIRECTS (Stripe exige HTTPS; estas páginas redirecionam ao deep link) ──
+app.get('/checkout/sucesso', (req, res) => {
+  const { session_id } = req.query;
+  const qs = session_id ? `?session_id=${session_id}` : '';
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=kavclass://pagamento-sucesso${qs}">
+</head><body><script>window.location="kavclass://pagamento-sucesso${qs}";</script>
+<p>Redirecionando para o aplicativo...</p></body></html>`);
+});
+
+app.get('/checkout/cancelado', (_req, res) => {
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=kavclass://pagamento-cancelado">
+</head><body><script>window.location="kavclass://pagamento-cancelado";</script>
+<p>Redirecionando para o aplicativo...</p></body></html>`);
+});
+
 // ─── CHECKOUT: ASSINATURA KAV CLASS ─────────────────────────────────────────
 // plano: 'pro' | 'premium' | 'one-time'
 const STRIPE_PRICE_IDS = {
@@ -1464,8 +1481,8 @@ app.post('/checkout', async (req, res) => {
       client_reference_id: pid,
       line_items: [{ price: priceId, quantity: 1 }],
       mode: plano === 'one-time' ? 'payment' : 'subscription',
-      success_url: 'kavclass://pagamento-sucesso?plano=' + plano,
-      cancel_url: 'kavclass://pagamento-cancelado',
+      success_url: 'https://kav-class-1.onrender.com/checkout/sucesso?session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://kav-class-1.onrender.com/checkout/cancelado',
       metadata: { professorId: pid, plano },
     });
 
@@ -1473,6 +1490,38 @@ app.post('/checkout', async (req, res) => {
   } catch (error) {
     console.error('[Checkout] Erro no Stripe:', error);
     res.status(500).json({ erro: 'Erro ao gerar sessão de pagamento.' });
+  }
+});
+
+// ─── VERIFICAR E ATIVAR SESSÃO DE CHECKOUT ───────────────────────────────────
+app.get('/checkout/verify/:sessionId', async (req, res) => {
+  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
+  try {
+    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId);
+
+    if (session.payment_status !== 'paid') {
+      return res.json({ ativo: false });
+    }
+
+    const professorId = session.client_reference_id;
+    const plano = session.metadata?.plano;
+
+    if (!professorId) return res.json({ ativo: true });
+
+    const prof = await prisma.professor.update({
+      where: { id: professorId },
+      data: {
+        ...(session.customer ? { stripeCustomerId: String(session.customer) } : {}),
+        stripeSessionId: session.id,
+        assinaturaStatus: plano === 'one-time' ? 'VITALICIO' : 'ATIVO',
+      },
+      select: { codigoConvite: true, nome: true, assinaturaStatus: true },
+    });
+
+    res.json({ ativo: true, professor: prof });
+  } catch (err) {
+    console.error('[Verify] Erro ao verificar sessão:', err.message);
+    res.status(500).json({ erro: 'Erro ao verificar pagamento.' });
   }
 });
 
