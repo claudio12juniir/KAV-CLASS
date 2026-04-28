@@ -1546,7 +1546,53 @@ app.get('/api/professor/assinatura/:professorId', async (req, res) => {
 });
 
 // ============================================================================
-// 13. LIGANDO O MOTOR
+// 13. ADMIN — RESET DE SENHA SEM E-MAIL
+// ============================================================================
+
+// POST /api/admin/reset-senha
+// Body: { adminSecret, email, novaSenha }
+// Permite ao administrador redefinir a senha de qualquer usuário diretamente,
+// sem depender do fluxo de e-mail (útil quando EMAIL_USER/PASS não estão configurados).
+app.post('/api/admin/reset-senha', async (req, res) => {
+  try {
+    const { adminSecret, email, novaSenha } = req.body;
+    const secret = process.env.ADMIN_SECRET;
+
+    if (!secret || adminSecret !== secret) {
+      return res.status(403).json({ erro: 'Acesso negado.' });
+    }
+    if (!email || !novaSenha) {
+      return res.status(400).json({ erro: 'email e novaSenha são obrigatórios.' });
+    }
+    if (novaSenha.length < 6) {
+      return res.status(400).json({ erro: 'novaSenha deve ter no mínimo 6 caracteres.' });
+    }
+
+    const emailNorm = email.toLowerCase().trim();
+    const salt = await bcrypt.genSalt(10);
+    const hash = await bcrypt.hash(novaSenha, salt);
+
+    const prof = await prisma.professor.findUnique({ where: { email: emailNorm } });
+    if (prof) {
+      await prisma.professor.update({ where: { email: emailNorm }, data: { senha: hash } });
+      return res.json({ mensagem: 'Senha do professor redefinida com sucesso.' });
+    }
+
+    const aluno = await prisma.aluno.findUnique({ where: { email: emailNorm } });
+    if (aluno) {
+      await prisma.aluno.update({ where: { email: emailNorm }, data: { senha: hash } });
+      return res.json({ mensagem: 'Senha do aluno redefinida com sucesso.' });
+    }
+
+    return res.status(404).json({ erro: 'Usuário não encontrado.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 14. LIGANDO O MOTOR
 // ============================================================================
 const PORT = process.env.PORT || 3000;
 
