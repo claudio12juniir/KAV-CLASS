@@ -859,7 +859,6 @@ app.put('/api/aluno/perfil', async (req, res) => {
     res.status(500).json({ erro: 'Erro interno.' });
   }
 });
-
 app.get('/api/aluno/professor-config', async (req, res) => {
   try {
     const { alunoId } = req.query;
@@ -1550,4 +1549,27 @@ app.get('/api/professor/assinatura/:professorId', async (req, res) => {
 // 13. LIGANDO O MOTOR
 // ============================================================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor KAV Class rodando na porta ${PORT}`));
+
+async function garantirColunasStripe() {
+  try {
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE "Professor" ADD COLUMN IF NOT EXISTS "stripeCustomerId" TEXT;
+    `);
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE "Professor" ADD COLUMN IF NOT EXISTS "assinaturaStatus" TEXT NOT NULL DEFAULT 'INATIVO';
+    `);
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE "Professor" ADD COLUMN IF NOT EXISTS "assinaturaFim" TIMESTAMP(3);
+    `);
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE "Professor" ADD COLUMN IF NOT EXISTS "stripeSessionId" TEXT;
+    `);
+    console.log('[DB] Colunas Stripe verificadas/criadas com sucesso.');
+  } catch (err) {
+    console.error('[DB] Erro ao garantir colunas Stripe:', err.message);
+  }
+}
+
+garantirColunasStripe().then(() => {
+  app.listen(PORT, () => console.log(`Servidor KAV Class rodando na porta ${PORT}`));
+});
