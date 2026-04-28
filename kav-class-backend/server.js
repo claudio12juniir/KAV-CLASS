@@ -48,7 +48,7 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
         await prisma.professor.update({
           where: { id: professorId },
           data: {
-            stripeCustomerId: session.customer,
+            ...(session.customer ? { stripeCustomerId: String(session.customer) } : {}),
             stripeSessionId: session.id,
             assinaturaStatus: plano === 'one-time' ? 'VITALICIO' : 'ATIVO',
           },
@@ -1488,8 +1488,9 @@ app.post('/checkout', async (req, res) => {
 
     res.json({ url: session.url, sessionId: session.id });
   } catch (error) {
-    console.error('[Checkout] Erro no Stripe:', error);
-    res.status(500).json({ erro: 'Erro ao gerar sessão de pagamento.' });
+    const msg = error?.raw?.message || error?.message || 'Erro ao gerar sessão de pagamento.';
+    console.error('[Checkout] Erro no Stripe:', msg);
+    res.status(500).json({ erro: msg });
   }
 });
 
