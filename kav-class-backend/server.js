@@ -165,22 +165,20 @@ function gerarAulasRecorrentes(aluno) {
 }
 
 async function enviarEmailRedefinicao(destinatario, codigo) {
-  try {
-    const nodemailer = require('nodemailer');
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) throw new Error('E-mail não configurado');
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-    });
-    await transporter.sendMail({
-      from: `"KAV Class" <${process.env.EMAIL_USER}>`,
-      to: destinatario,
-      subject: 'Redefinição de senha – KAV Class',
-      html: `<h2>Código de redefinição</h2><p>Código (válido por 15 min):</p><h1 style="letter-spacing:8px">${codigo}</h1>`,
-    });
-  } catch {
-    console.log(`[DEV] Código de reset para ${destinatario}: ${codigo}`);
+  const nodemailer = require('nodemailer');
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    throw new Error('Variáveis EMAIL_USER e EMAIL_PASS não configuradas no servidor.');
   }
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+  });
+  await transporter.sendMail({
+    from: `"KAV Class" <${process.env.EMAIL_USER}>`,
+    to: destinatario,
+    subject: 'Redefinição de senha – KAV Class',
+    html: `<h2>Código de redefinição</h2><p>Código (válido por 15 min):</p><h1 style="letter-spacing:8px">${codigo}</h1>`,
+  });
 }
 
 // ============================================================================
@@ -350,7 +348,7 @@ app.post('/api/forgot-password', async (req, res) => {
       });
       await enviarEmailRedefinicao(email, codigo);
     }
-    res.json({ mensagem: 'Enviado.' });
+    res.json({ mensagem: 'Se o e-mail estiver cadastrado, o código foi enviado.' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -426,9 +424,15 @@ app.get('/api/dashboard', async (req, res) => {
       orderBy: { dataHora: 'asc' },
     });
 
+    let codigoConvite = professor.codigoConvite;
+    if (!codigoConvite) {
+      codigoConvite = gerarCodigoConvite();
+      await prisma.professor.update({ where: { id: professorId }, data: { codigoConvite } });
+    }
+
     res.json({
       nome: professor.nome,
-      codigoConvite: professor.codigoConvite || 'KAV-NOVO',
+      codigoConvite,
       aulasHoje,
     });
   } catch (err) {
