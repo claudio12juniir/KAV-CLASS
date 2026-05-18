@@ -128,7 +128,8 @@ function gerarAulasRecorrentes(aluno) {
   while (dataAtual.getDay() !== diaSemanaNumero) {
     dataAtual.setDate(dataAtual.getDate() + 1);
   }
-  dataAtual.setHours(horas, minutos, 0, 0);
+  // UTC-3 (Brazil): store UTC equivalent so toLocaleTimeString shows the correct local time
+  dataAtual.setUTCHours(horas + 3, minutos, 0, 0);
 
   const aulas = [];
   const MAX_AULAS = 300;
@@ -561,11 +562,31 @@ app.post('/api/configurar-aluno', async (req, res) => {
 
 app.delete('/api/alunos/:id/cancelar', async (req, res) => {
   try {
-    await prisma.aluno.update({ where: { id: req.params.id }, data: { status: 'INATIVO' } });
-    res.json({ mensagem: 'Cadastro cancelado.' });
+    const id = req.params.id;
+    // Delete all related records before deleting the student
+    await prisma.aula.deleteMany({ where: { alunoId: id } });
+    await prisma.pagamento.deleteMany({ where: { alunoId: id } });
+    await prisma.reposicao.deleteMany({ where: { alunoId: id } });
+    await prisma.mensagem.deleteMany({ where: { alunoId: id } });
+    await prisma.aluno.delete({ where: { id } });
+    res.json({ mensagem: 'Aluno excluído permanentemente.' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ erro: 'Erro ao cancelar.' });
+    res.status(500).json({ erro: 'Erro ao excluir aluno.' });
+  }
+});
+
+app.patch('/api/alunos/:id/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const aluno = await prisma.aluno.findUnique({ where: { id }, select: { status: true } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
+    const novoStatus = aluno.status === 'ATIVO' ? 'INATIVO' : 'ATIVO';
+    const atualizado = await prisma.aluno.update({ where: { id }, data: { status: novoStatus } });
+    res.json({ status: atualizado.status });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao alterar status.' });
   }
 });
 
@@ -574,7 +595,7 @@ app.get('/api/meus-alunos', async (req, res) => {
     const { professorId } = req.query;
     if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
     const alunos = await prisma.aluno.findMany({
-      where: { professorId },
+      where: { professorId, status: 'ATIVO' },
       include: {
         aulas: {
           orderBy: { dataHora: 'desc' },
@@ -589,12 +610,27 @@ app.get('/api/meus-alunos', async (req, res) => {
   }
 });
 
+app.get('/api/alunos-inativos', async (req, res) => {
+  try {
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+    const alunos = await prisma.aluno.findMany({
+      where: { professorId, status: 'INATIVO' },
+      select: { id: true, nome: true, email: true, status: true },
+    });
+    res.json(alunos);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
 app.get('/api/aulas', async (req, res) => {
   try {
     const { professorId } = req.query;
     if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
     const aulas = await prisma.aula.findMany({
-      where: { professorId },
+      where: { professorId, aluno: { status: 'ATIVO' } },
       include: { aluno: { select: { nome: true } } },
       orderBy: { dataHora: 'asc' },
     });
@@ -610,7 +646,7 @@ app.get('/api/pagamentos', async (req, res) => {
     const { professorId } = req.query;
     if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
     const pagamentos = await prisma.pagamento.findMany({
-      where: { professorId },
+      where: { professorId, aluno: { status: 'ATIVO' } },
       include: { aluno: { select: { nome: true } } },
       orderBy: { vencimento: 'asc' },
     });
@@ -670,6 +706,7 @@ app.get('/api/calendario', async (req, res) => {
     const aulas = await prisma.aula.findMany({
       where: {
         professorId,
+        aluno: { status: 'ATIVO' },
         dataHora: {
           gte: new Date(ano, mes - 1, 1),
           lte: new Date(ano, mes, 0, 23, 59, 59),
@@ -795,6 +832,7 @@ app.get('/api/aluno/dashboard', async (req, res) => {
     if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
 
     if (aluno.status === 'PENDENTE') return res.json({ pendente: true, aulas: [] });
+    if (aluno.status === 'INATIVO') return res.json({ inativo: true, aulas: [] });
 
     const aulas = await prisma.aula.findMany({
       where: { alunoId, dataHora: { gte: new Date() } },
@@ -1164,17 +1202,31 @@ app.post('/api/reposicoes', async (req, res) => {
   }
 });
 
-// Professor vê todas as reposições dos seus alunos
+// Professor vê todas as reposições dos seus alunos (alias /api/reposicoes e /api/professor/reposicoes)
+async function buscarReposicoesProfessor(professorId) {
+  return prisma.reposicao.findMany({
+    where: { professorId, aluno: { status: 'ATIVO' } },
+    include: { aluno: { select: { nome: true } } },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+app.get('/api/reposicoes', async (req, res) => {
+  try {
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+    res.json(await buscarReposicoesProfessor(professorId));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
 app.get('/api/professor/reposicoes', async (req, res) => {
   try {
     const { professorId } = req.query;
     if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
-    const reposicoes = await prisma.reposicao.findMany({
-      where: { professorId },
-      include: { aluno: { select: { nome: true } } },
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json(reposicoes);
+    res.json(await buscarReposicoesProfessor(professorId));
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -1322,7 +1374,7 @@ app.post('/api/aulas', async (req, res) => {
     const diaAlvo = diaSemana ?? 1;
     const diff = (diaAlvo - dataAula.getDay() + 7) % 7 || 7;
     dataAula.setDate(dataAula.getDate() + diff);
-    dataAula.setHours(horas, minutos, 0, 0);
+    dataAula.setUTCHours(horas + 3, minutos, 0, 0);
 
     const aulasParaCriar = alunosIds.map((alunoId) => ({
       dataHora: new Date(dataAula),
