@@ -420,8 +420,12 @@ app.get('/api/dashboard', async (req, res) => {
     const fimHoje = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate(), 23, 59, 59);
 
     const aulasHoje = await prisma.aula.findMany({
-      where: { professorId, dataHora: { gte: inicioHoje, lte: fimHoje } },
-      include: { aluno: { select: { nome: true, id: true } } },
+      where: {
+        professorId,
+        dataHora: { gte: inicioHoje, lte: fimHoje },
+        aluno: { status: 'ATIVO' },
+      },
+      include: { aluno: { select: { nome: true, id: true, status: true, horarioAula: true } } },
       orderBy: { dataHora: 'asc' },
     });
 
@@ -582,11 +586,43 @@ app.patch('/api/alunos/:id/status', async (req, res) => {
     const aluno = await prisma.aluno.findUnique({ where: { id }, select: { status: true } });
     if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
     const novoStatus = aluno.status === 'ATIVO' ? 'INATIVO' : 'ATIVO';
-    const atualizado = await prisma.aluno.update({ where: { id }, data: { status: novoStatus } });
-    res.json({ status: atualizado.status });
+    const agora = new Date();
+
+    await prisma.aluno.update({ where: { id }, data: { status: novoStatus } });
+
+    if (novoStatus === 'INATIVO') {
+      await prisma.aula.updateMany({
+        where: { alunoId: id, status: 'AGENDADA', dataHora: { gte: agora } },
+        data: { status: 'CANCELADA' },
+      });
+      await prisma.pagamento.updateMany({
+        where: { alunoId: id, status: 'PENDENTE', vencimento: { gte: agora } },
+        data: { status: 'CANCELADO' },
+      });
+    }
+
+    res.json({ status: novoStatus });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao alterar status.' });
+  }
+});
+
+app.patch('/api/alunos/:id/mensalidade', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { valorMensalidade } = req.body;
+    const valor = parseFloat(String(valorMensalidade).replace(',', '.'));
+    if (isNaN(valor) || valor <= 0) return res.status(400).json({ erro: 'Valor de mensalidade inválido.' });
+    const atualizado = await prisma.aluno.update({
+      where: { id },
+      data: { valorMensalidade: valor },
+      select: { valorMensalidade: true },
+    });
+    res.json({ valorMensalidade: atualizado.valorMensalidade });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao atualizar mensalidade.' });
   }
 });
 
