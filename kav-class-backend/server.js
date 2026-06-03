@@ -531,33 +531,36 @@ app.post('/api/configurar-aluno', async (req, res) => {
     }
     if (pagamentos.length > 0) await prisma.pagamento.createMany({ data: pagamentos });
 
-    // Notifica o aluno que o contrato foi ativado
-    if (aluno.expoPushToken) {
-      await enviarPushNotificacao(
-        aluno.expoPushToken,
-        'Contrato Ativado!',
-        'Seu contrato foi configurado pelo professor. Acesse o app para ver suas aulas.',
-        { tipo: 'CONTRATO_ATIVADO' }
-      );
-    }
-
-    // Cria notificação interna para o professor confirmar a ativação
-    await prisma.notificacao.create({
-      data: {
-        tipo: 'ALUNO_ATIVADO',
-        titulo: 'Aluno Ativado',
-        mensagem: `${aluno.nome} foi configurado com ${novasAulas.length} aula(s) e ${pagamentos.length} cobrança(s).`,
-        professorId: aluno.professorId,
-        dadosExtra: JSON.stringify({ alunoId: aluno.id, alunoNome: aluno.nome, aulasGeradas: novasAulas.length }),
-        lida: false,
-      },
-    });
-
+    // Responde ao cliente ANTES das notificações para não bloquear em caso de falha
     res.json({
       mensagem: 'Aluno configurado!',
       aulasGeradas: novasAulas.length,
       cobrancasGeradas: pagamentos.length,
     });
+
+    // Notificações são best-effort — erros aqui não afetam o aluno
+    try {
+      if (aluno.expoPushToken) {
+        await enviarPushNotificacao(
+          aluno.expoPushToken,
+          'Contrato Ativado!',
+          'Seu contrato foi configurado pelo professor. Acesse o app para ver suas aulas.',
+          { tipo: 'CONTRATO_ATIVADO' }
+        );
+      }
+      await prisma.notificacao.create({
+        data: {
+          tipo: 'ALUNO_ATIVADO',
+          titulo: 'Aluno Ativado',
+          mensagem: `${aluno.nome} foi configurado com ${novasAulas.length} aula(s) e ${pagamentos.length} cobrança(s).`,
+          professorId: aluno.professorId,
+          dadosExtra: JSON.stringify({ alunoId: aluno.id, alunoNome: aluno.nome, aulasGeradas: novasAulas.length }),
+          lida: false,
+        },
+      });
+    } catch (notifErr) {
+      console.error('[configurar-aluno] Falha ao enviar notificação:', notifErr.message);
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao configurar aluno.' });
@@ -583,7 +586,14 @@ app.delete('/api/alunos/:id/cancelar', async (req, res) => {
 app.patch('/api/alunos/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
-    const aluno = await prisma.aluno.findUnique({ where: { id }, select: { status: true } });
+    const aluno = await prisma.aluno.findUnique({
+      where: { id },
+      select: {
+        status: true, diaSemanaNumero: true, horarioAula: true,
+        recorrenciaAula: true, tempoContrato: true, dataInicioContrato: true,
+        valorMensalidade: true, diaVencimento: true, professorId: true,
+      },
+    });
     if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
     const novoStatus = aluno.status === 'ATIVO' ? 'INATIVO' : 'ATIVO';
     const agora = new Date();
@@ -599,6 +609,32 @@ app.patch('/api/alunos/:id/status', async (req, res) => {
         where: { alunoId: id, status: 'PENDENTE', vencimento: { gte: agora } },
         data: { status: 'CANCELADO' },
       });
+    } else {
+      // Reativando: regenera aulas e pagamentos se o aluno já foi configurado antes
+      if (aluno.tempoContrato && aluno.dataInicioContrato && aluno.diaSemanaNumero != null && aluno.horarioAula) {
+        await prisma.aula.deleteMany({ where: { alunoId: id, status: 'CANCELADA', dataHora: { gte: agora } } });
+
+        const novasAulas = gerarAulasRecorrentes({ ...aluno, id });
+        if (novasAulas.length > 0) {
+          await prisma.aula.createMany({ data: novasAulas });
+        }
+
+        await prisma.pagamento.deleteMany({ where: { alunoId: id, status: 'CANCELADO', vencimento: { gte: agora } } });
+
+        const fimContrato = new Date(aluno.dataInicioContrato);
+        fimContrato.setMonth(fimContrato.getMonth() + aluno.tempoContrato);
+        const mesesRestantes = Math.max(0, Math.ceil((fimContrato - agora) / (30 * 24 * 60 * 60 * 1000)));
+        const diaVenc = aluno.diaVencimento ?? 10;
+        const valor = aluno.valorMensalidade ?? 0;
+        const novosPagementos = [];
+        for (let i = 0; i < mesesRestantes; i++) {
+          const venc = new Date(agora);
+          venc.setMonth(venc.getMonth() + i);
+          venc.setDate(diaVenc);
+          novosPagementos.push({ valor, vencimento: venc, status: 'PENDENTE', alunoId: id, professorId: aluno.professorId });
+        }
+        if (novosPagementos.length > 0) await prisma.pagamento.createMany({ data: novosPagementos });
+      }
     }
 
     res.json({ status: novoStatus });
