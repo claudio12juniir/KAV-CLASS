@@ -864,19 +864,67 @@ app.get('/api/aluno/dashboard', async (req, res) => {
     const { alunoId } = req.query;
     if (!alunoId) return res.status(400).json({ erro: 'alunoId obrigatório.' });
 
-    const aluno = await prisma.aluno.findUnique({ where: { id: alunoId }, select: { status: true } });
+    const aluno = await prisma.aluno.findUnique({
+      where: { id: alunoId },
+      select: { status: true, tempoContrato: true, dataInicioContrato: true },
+    });
     if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
 
-    if (aluno.status === 'PENDENTE') return res.json({ pendente: true, aulas: [] });
-    if (aluno.status === 'INATIVO') return res.json({ inativo: true, aulas: [] });
+    if (aluno.status === 'PENDENTE') return res.json({ pendente: true });
+    if (aluno.status === 'INATIVO') return res.json({ inativo: true });
 
-    const aulas = await prisma.aula.findMany({
-      where: { alunoId, dataHora: { gte: new Date() } },
-      include: { professor: { select: { nome: true } } },
-      orderBy: { dataHora: 'asc' },
-      take: 5,
+    const agora = new Date();
+
+    const [proximaAula, aulasHistorico, pagamentos] = await Promise.all([
+      prisma.aula.findFirst({
+        where: { alunoId, dataHora: { gte: agora }, status: { not: 'CANCELADA' } },
+        include: { professor: { select: { nome: true } } },
+        orderBy: { dataHora: 'asc' },
+      }),
+      prisma.aula.findMany({
+        where: { alunoId, dataHora: { lt: agora } },
+        select: { presenca: true },
+      }),
+      prisma.pagamento.findMany({
+        where: { alunoId },
+        orderBy: { vencimento: 'asc' },
+        select: { status: true, vencimento: true },
+      }),
+    ]);
+
+    const presencas = aulasHistorico.filter(a => a.presenca === 'PRESENTE').length;
+    const faltas = aulasHistorico.filter(a => a.presenca === 'AUSENCIA_ALUNO').length;
+    const total = aulasHistorico.filter(a => a.presenca !== null).length;
+
+    const atrasado = pagamentos.find(p => p.status.toUpperCase() === 'ATRASADO');
+    const pendentePag = pagamentos.find(p => p.status.toUpperCase() === 'PENDENTE');
+    const emAnalise = pagamentos.find(p => p.status.toUpperCase() === 'EM_ANALISE');
+
+    let statusPagamento = pagamentos.length > 0 ? 'PAGO' : null;
+    let vencimentoPagamento = null;
+
+    if (atrasado) {
+      statusPagamento = 'ATRASADO';
+      vencimentoPagamento = atrasado.vencimento;
+    } else if (pendentePag) {
+      statusPagamento = new Date(pendentePag.vencimento) < agora ? 'ATRASADO' : 'PENDENTE';
+      vencimentoPagamento = pendentePag.vencimento;
+    } else if (emAnalise) {
+      statusPagamento = 'EM_ANALISE';
+      vencimentoPagamento = emAnalise.vencimento;
+    }
+
+    res.json({
+      pendente: false,
+      inativo: false,
+      proximaAula: proximaAula || null,
+      frequencia: { presencas, faltas, total },
+      pagamento: statusPagamento ? { status: statusPagamento, vencimento: vencimentoPagamento } : null,
+      plano: {
+        tempoContrato: aluno.tempoContrato || null,
+        dataInicio: aluno.dataInicioContrato || null,
+      },
     });
-    res.json({ pendente: false, aulas });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -985,12 +1033,21 @@ app.get('/api/aluno/materiais', async (req, res) => {
   try {
     const { alunoId } = req.query;
     if (!alunoId) return res.status(400).json({ erro: 'alunoId obrigatório.' });
-    const aulas = await prisma.aula.findMany({
-      where: { alunoId },
-      include: { materiais: true },
-      orderBy: { dataHora: 'desc' },
+    const [aulas, materiaisAvulsos] = await Promise.all([
+      prisma.aula.findMany({
+        where: { alunoId },
+        include: { materiais: true },
+        orderBy: { dataHora: 'desc' },
+      }),
+      prisma.material.findMany({
+        where: { alunoId, aulaId: null },
+        orderBy: { createdAt: 'desc' },
+      }),
+    ]);
+    res.json({
+      aulas: aulas.filter(a => a.materiais.length > 0),
+      materiaisAvulsos,
     });
-    res.json(aulas.filter(a => a.materiais.length > 0));
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
