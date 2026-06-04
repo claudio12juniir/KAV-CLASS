@@ -80,7 +80,7 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
   res.json({ received: true });
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '20mb' }));
 
 // ============================================================================
 // FUNÇÕES AUXILIARES
@@ -248,7 +248,7 @@ app.get('/ping', (_req, res) => res.json({ mensagem: 'Backend do KAV Class está
 
 app.post('/api/professores/cadastro', async (req, res) => {
   try {
-    const { nome, email, senha, telefone, cursos } = req.body;
+    const { nome, email, senha, telefone, cursos, fotoUrl } = req.body;
     if (!nome || !email || !senha) return res.status(400).json({ erro: 'nome, email e senha são obrigatórios.' });
 
     const salt = await bcrypt.genSalt(10);
@@ -260,6 +260,7 @@ app.post('/api/professores/cadastro', async (req, res) => {
         senha: await bcrypt.hash(senha, salt),
         cursos: Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []),
         codigoConvite: gerarCodigoConvite(),
+        fotoUrl: fotoUrl || null,
       },
     });
     res.status(201).json({ mensagem: 'Professor criado!', codigoConvite: novoProfessor.codigoConvite, professorId: novoProfessor.id });
@@ -271,7 +272,7 @@ app.post('/api/professores/cadastro', async (req, res) => {
 
 app.post('/api/alunos/cadastro', async (req, res) => {
   try {
-    const { nome, email, senha, telefone, codigoConvite } = req.body;
+    const { nome, email, senha, telefone, codigoConvite, fotoUrl } = req.body;
     if (!nome || !email || !senha || !codigoConvite) return res.status(400).json({ erro: 'nome, email, senha e codigoConvite são obrigatórios.' });
 
     if (await prisma.aluno.findUnique({ where: { email: email.toLowerCase().trim() } }))
@@ -289,6 +290,7 @@ app.post('/api/alunos/cadastro', async (req, res) => {
         senha: await bcrypt.hash(senha, salt),
         professorId: professor.id,
         status: 'PENDENTE',
+        fotoUrl: fotoUrl || null,
       },
     });
     res.status(201).json({ mensagem: 'Aluno cadastrado!', aluno: { id: novoAluno.id, nome: novoAluno.nome } });
@@ -452,7 +454,7 @@ app.get('/api/alunos-pendentes', async (req, res) => {
     if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
     const alunos = await prisma.aluno.findMany({
       where: { professorId, status: 'PENDENTE' },
-      select: { id: true, nome: true, email: true, telefone: true, createdAt: true },
+      select: { id: true, nome: true, email: true, telefone: true, fotoUrl: true, createdAt: true },
     });
     res.json(alunos);
   } catch (err) {
@@ -688,7 +690,7 @@ app.get('/api/alunos-inativos', async (req, res) => {
     if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
     const alunos = await prisma.aluno.findMany({
       where: { professorId, status: 'INATIVO' },
-      select: { id: true, nome: true, email: true, status: true },
+      select: { id: true, nome: true, email: true, status: true, fotoUrl: true },
     });
     res.json(alunos);
   } catch (err) {
@@ -803,7 +805,7 @@ app.get('/api/professor/perfil', async (req, res) => {
       select: {
         id: true, nome: true, email: true, telefone: true,
         cursos: true, codigoConvite: true, chavePix: true,
-        linkPagamentoCartao: true, createdAt: true,
+        linkPagamentoCartao: true, fotoUrl: true, createdAt: true,
       },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
@@ -816,7 +818,7 @@ app.get('/api/professor/perfil', async (req, res) => {
 
 app.put('/api/professor/perfil', async (req, res) => {
   try {
-    const { professorId, nome, telefone, chavePix, linkPagamentoCartao, senhaAtual, novaSenha } = req.body;
+    const { professorId, nome, telefone, chavePix, linkPagamentoCartao, fotoUrl, senhaAtual, novaSenha } = req.body;
     if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
 
     const professor = await prisma.professor.findUnique({ where: { id: professorId } });
@@ -827,6 +829,7 @@ app.put('/api/professor/perfil', async (req, res) => {
     if (telefone?.trim()) dados.telefone = telefone.trim();
     if (chavePix !== undefined) dados.chavePix = chavePix.trim() || null;
     if (linkPagamentoCartao !== undefined) dados.linkPagamentoCartao = linkPagamentoCartao.trim() || null;
+    if (fotoUrl !== undefined) dados.fotoUrl = fotoUrl || null;
 
     if (senhaAtual && novaSenha) {
       if (novaSenha.length < 6) return res.status(400).json({ erro: 'Nova senha: mín. 6 caracteres.' });
@@ -842,7 +845,7 @@ app.put('/api/professor/perfil', async (req, res) => {
       data: dados,
       select: {
         id: true, nome: true, email: true, telefone: true,
-        cursos: true, codigoConvite: true, chavePix: true, linkPagamentoCartao: true,
+        cursos: true, codigoConvite: true, chavePix: true, linkPagamentoCartao: true, fotoUrl: true,
       },
     });
     res.json({ mensagem: 'Perfil atualizado!', professor: atualizado });
@@ -977,7 +980,7 @@ app.get('/api/aluno/perfil', async (req, res) => {
         id: true, nome: true, email: true, telefone: true, curso: true,
         status: true, valorMensalidade: true, diaVencimento: true,
         recorrenciaAula: true, diaSemanaAula: true, horarioAula: true,
-        tempoContrato: true, dataInicioContrato: true, createdAt: true,
+        tempoContrato: true, dataInicioContrato: true, createdAt: true, fotoUrl: true,
         professor: { select: { nome: true, telefone: true } },
       },
     });
@@ -991,7 +994,7 @@ app.get('/api/aluno/perfil', async (req, res) => {
 
 app.put('/api/aluno/perfil', async (req, res) => {
   try {
-    const { alunoId, nome, telefone, senhaAtual, novaSenha } = req.body;
+    const { alunoId, nome, telefone, fotoUrl, senhaAtual, novaSenha } = req.body;
     if (!alunoId) return res.status(400).json({ erro: 'alunoId obrigatório.' });
 
     const aluno = await prisma.aluno.findUnique({ where: { id: alunoId } });
@@ -1000,6 +1003,7 @@ app.put('/api/aluno/perfil', async (req, res) => {
     const dados = {};
     if (nome?.trim()) dados.nome = nome.trim();
     if (telefone?.trim()) dados.telefone = telefone.trim();
+    if (fotoUrl !== undefined) dados.fotoUrl = fotoUrl || null;
 
     if (senhaAtual && novaSenha) {
       if (novaSenha.length < 6) return res.status(400).json({ erro: 'Nova senha: mín. 6 caracteres.' });
@@ -1013,7 +1017,7 @@ app.put('/api/aluno/perfil', async (req, res) => {
     const atualizado = await prisma.aluno.update({
       where: { id: alunoId },
       data: dados,
-      select: { id: true, nome: true, email: true, telefone: true },
+      select: { id: true, nome: true, email: true, telefone: true, fotoUrl: true },
     });
     res.json({ mensagem: 'Perfil atualizado!', aluno: atualizado });
   } catch (err) {
@@ -1466,6 +1470,60 @@ app.post('/api/aulas/:id/material', async (req, res) => {
   }
 });
 
+app.post('/api/aulas/:id/materiais-lote', async (req, res) => {
+  try {
+    const { materiais, professorId } = req.body;
+    if (!Array.isArray(materiais) || materiais.length === 0 || !professorId) {
+      return res.status(400).json({ erro: 'materiais (array) e professorId são obrigatórios.' });
+    }
+
+    const aula = await prisma.aula.findUnique({ where: { id: req.params.id } });
+    if (!aula) return res.status(404).json({ erro: 'Aula não encontrada.' });
+
+    const erros = [];
+    const criados = [];
+
+    for (const item of materiais) {
+      const { titulo, tipo, conteudo, url } = item;
+      if (!titulo || !tipo) { erros.push(`Item sem título ou tipo: ${JSON.stringify(item)}`); continue; }
+      try {
+        const material = await prisma.material.create({
+          data: {
+            titulo,
+            tipo: tipo.toUpperCase(),
+            conteudo: conteudo || null,
+            url: url || null,
+            aulaId: req.params.id,
+            professorId: aula.professorId,
+            alunoId: aula.alunoId,
+          },
+        });
+        criados.push(material);
+      } catch (e) {
+        erros.push(`Erro ao criar "${titulo}": ${e.message}`);
+      }
+    }
+
+    const aluno = await prisma.aluno.findUnique({
+      where: { id: aula.alunoId },
+      select: { expoPushToken: true },
+    });
+    if (aluno?.expoPushToken && criados.length > 0) {
+      await enviarPushNotificacao(
+        aluno.expoPushToken,
+        'Novos conteúdos disponíveis!',
+        `Seu professor adicionou ${criados.length} novo(s) material(is) didático(s).`,
+        { tipo: 'NOVO_MATERIAL', aulaId: aula.id }
+      );
+    }
+
+    res.status(201).json({ mensagem: 'Lote processado.', criados: criados.length, erros });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
 // ============================================================================
 // 10. CURSOS DO PROFESSOR
 // ============================================================================
@@ -1623,7 +1681,7 @@ app.post('/checkout', async (req, res) => {
     return res.status(503).json({ erro: 'Serviço de pagamento não configurado. Contate o suporte.' });
   }
   try {
-    const { professorId, email, plano = 'pro', nome, senha, telefone, cursos } = req.body;
+    const { professorId, email, plano = 'pro', nome, senha, telefone, cursos, fotoUrl } = req.body;
     if (!email) return res.status(400).json({ erro: 'email é obrigatório.' });
 
     const priceId = STRIPE_PRICE_IDS[plano];
@@ -1650,6 +1708,7 @@ app.post('/checkout', async (req, res) => {
             cursos: Array.isArray(cursos) ? cursos : [],
             codigoConvite: gerarCodigoConvite(),
             assinaturaStatus: 'PENDENTE',
+            fotoUrl: fotoUrl || null,
           },
         });
       } else if (prof.assinaturaStatus === 'ATIVO' || prof.assinaturaStatus === 'VITALICIO') {

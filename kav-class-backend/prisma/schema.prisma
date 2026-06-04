@@ -17,6 +17,7 @@ model Professor {
   codigoConvite String?
   cursos        String[]
   expoPushToken        String?
+  fotoUrl              String?
   chavePix             String?
   linkPagamentoCartao  String?
 
@@ -46,6 +47,7 @@ model Aluno {
   telefone             String?
   curso                String?
   expoPushToken        String?     // Token para push notifications
+  fotoUrl              String?
 
   status               String      @default("PENDENTE") // PENDENTE, ATIVO, INATIVO
   valorMensalidade     Float?
