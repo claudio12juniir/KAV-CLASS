@@ -9,8 +9,19 @@ const stripe = process.env.STRIPE_SECRET_KEY
   ? require('stripe')(process.env.STRIPE_SECRET_KEY)
   : null;
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  log: ['error', 'warn'],
+});
 const app = express();
+
+process.on('SIGTERM', async () => {
+  await prisma.$disconnect();
+  process.exit(0);
+});
+process.on('SIGINT', async () => {
+  await prisma.$disconnect();
+  process.exit(0);
+});
 
 const SEGREDO_JWT = process.env.JWT_SECRET || "kav_class_super_secreto_2026";
 
@@ -1860,6 +1871,12 @@ async function garantirColunasStripe() {
   }
 }
 
-garantirColunasStripe().then(() => {
+garantirColunasStripe().then(async () => {
+  try {
+    await prisma.$connect();
+    console.log('[DB] Conexão com o banco de dados estabelecida.');
+  } catch (err) {
+    console.error('[DB] Falha ao conectar ao banco:', err.message);
+  }
   app.listen(PORT, () => console.log(`Servidor KAV Class rodando na porta ${PORT}`));
 });
