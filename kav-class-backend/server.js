@@ -525,15 +525,21 @@ app.post('/api/configurar-aluno', async (req, res) => {
       await prisma.aula.createMany({ data: novasAulas });
     }
 
-    await prisma.pagamento.deleteMany({ where: { alunoId, status: 'PENDENTE', vencimento: { gte: dataInicio } } });
+    // Remove TODOS os pendentes para evitar duplicação ao reconfigurar
+    await prisma.pagamento.deleteMany({ where: { alunoId, status: 'PENDENTE' } });
 
     const pagamentos = [];
-    const valorFinal = parseFloat(String(valorMensalidade));
-    const mesesFinal = isNaN(meses) ? 6 : meses;
+    const valorFinal  = parseFloat(String(valorMensalidade));
+    const mesesFinal  = isNaN(meses) ? 6 : meses;
+    const diaVencFinal = isNaN(diaVenc) ? 10 : diaVenc;
+    // Se o dia de vencimento deste mês já passou, começa a cobrar no próximo mês
+    const primeiraDta = new Date(dataInicio);
+    primeiraDta.setDate(diaVencFinal);
+    const mesOffset = primeiraDta <= dataInicio ? 1 : 0;
     for (let i = 0; i < mesesFinal; i++) {
       const venc = new Date(dataInicio);
-      venc.setMonth(venc.getMonth() + i);
-      venc.setDate(isNaN(diaVenc) ? 10 : diaVenc);
+      venc.setMonth(venc.getMonth() + i + mesOffset);
+      venc.setDate(diaVencFinal);
       pagamentos.push({
         valor: valorFinal,
         vencimento: venc,
