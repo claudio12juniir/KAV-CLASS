@@ -1,1 +1,0 @@
-export const API_URL = "https://kav-class-1.onrender.com";

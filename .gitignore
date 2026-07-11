@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Editor / tooling
+.claude/settings.local.json
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*
