@@ -23,6 +23,15 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
+// Rede de segurança: um erro que escape de todo try/catch não deve derrubar
+// o processo inteiro (e com ele, as requisições de todos os outros usuários).
+process.on('unhandledRejection', (motivo) => {
+  console.error('[UnhandledRejection]', motivo);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[UncaughtException]', err);
+});
+
 const SEGREDO_JWT = process.env.JWT_SECRET || "kav_class_super_secreto_2026";
 
 // Mapeamento dias da semana (índice 0-6 → nome PT-BR)
@@ -96,6 +105,17 @@ app.use(express.json({ limit: '20mb' }));
 // ============================================================================
 // FUNÇÕES AUXILIARES
 // ============================================================================
+
+// Classifica erros do Prisma antes de responder: "registro não encontrado"
+// (P2025 — update/delete por id que já não existe mais) vira 404 limpo em
+// vez de cair no 500 genérico. Qualquer outro erro segue como 500.
+function tratarErro(err, res, mensagemPadrao) {
+  console.error(err);
+  if (err?.code === 'P2025') {
+    return res.status(404).json({ erro: 'Registro não encontrado.' });
+  }
+  return res.status(500).json({ erro: mensagemPadrao });
+}
 
 function gerarCodigoConvite() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -495,60 +515,71 @@ app.post('/api/configurar-aluno', async (req, res) => {
     const recorr = recorrencia ?? recorrenciaAula ?? 'SEMANAL';
     const meses = parseInt(String(tempoContrato ?? '6'), 10);
     const hora = horarioAula ?? '08:00';
+
+    if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(hora)) {
+      return res.status(400).json({ erro: 'horarioAula inválido. Use o formato HH:MM.' });
+    }
+
     const diaNome = (diaSemanaNum != null && !isNaN(diaSemanaNum)) ? NOMES_DIAS[diaSemanaNum] : (diaSemanaRaw ?? null);
 
     const dataInicio = new Date();
 
-    await prisma.aula.deleteMany({ where: { alunoId, status: 'AGENDADA', dataHora: { gte: dataInicio } } });
+    // Tudo ou nada: se qualquer passo falhar no meio, o aluno não fica com
+    // aulas geradas sem cobrança (ou vice-versa) — nenhuma escrita fica de pé.
+    const { aluno, novasAulas, pagamentos } = await prisma.$transaction(async (tx) => {
+      await tx.aula.deleteMany({ where: { alunoId, status: 'AGENDADA', dataHora: { gte: dataInicio } } });
 
-    const aluno = await prisma.aluno.update({
-      where: { id: alunoId },
-      data: {
-        valorMensalidade: parseFloat(String(valorMensalidade)),
-        diaVencimento: isNaN(diaVenc) ? 10 : diaVenc,
-        diaSemanaAula: diaNome,
-        diaSemanaNumero: (diaSemanaNum != null && !isNaN(diaSemanaNum)) ? diaSemanaNum : null,
-        horarioAula: hora,
-        recorrenciaAula: recorr,
-        tempoContrato: isNaN(meses) ? 6 : meses,
-        dataInicioContrato: dataInicio,
-        status: 'ATIVO',
-      },
-    });
-
-    const novasAulas = gerarAulasRecorrentes({
-      ...aluno,
-      diaSemanaNumero: (diaSemanaNum != null && !isNaN(diaSemanaNum)) ? diaSemanaNum : aluno.diaSemanaNumero,
-    });
-
-    if (novasAulas.length > 0) {
-      await prisma.aula.createMany({ data: novasAulas });
-    }
-
-    // Remove TODOS os pendentes para evitar duplicação ao reconfigurar
-    await prisma.pagamento.deleteMany({ where: { alunoId, status: 'PENDENTE' } });
-
-    const pagamentos = [];
-    const valorFinal  = parseFloat(String(valorMensalidade));
-    const mesesFinal  = isNaN(meses) ? 6 : meses;
-    const diaVencFinal = isNaN(diaVenc) ? 10 : diaVenc;
-    // Se o dia de vencimento deste mês já passou, começa a cobrar no próximo mês
-    const primeiraDta = new Date(dataInicio);
-    primeiraDta.setDate(diaVencFinal);
-    const mesOffset = primeiraDta <= dataInicio ? 1 : 0;
-    for (let i = 0; i < mesesFinal; i++) {
-      const venc = new Date(dataInicio);
-      venc.setMonth(venc.getMonth() + i + mesOffset);
-      venc.setDate(diaVencFinal);
-      pagamentos.push({
-        valor: valorFinal,
-        vencimento: venc,
-        status: 'PENDENTE',
-        alunoId,
-        professorId: aluno.professorId,
+      const aluno = await tx.aluno.update({
+        where: { id: alunoId },
+        data: {
+          valorMensalidade: parseFloat(String(valorMensalidade)),
+          diaVencimento: isNaN(diaVenc) ? 10 : diaVenc,
+          diaSemanaAula: diaNome,
+          diaSemanaNumero: (diaSemanaNum != null && !isNaN(diaSemanaNum)) ? diaSemanaNum : null,
+          horarioAula: hora,
+          recorrenciaAula: recorr,
+          tempoContrato: isNaN(meses) ? 6 : meses,
+          dataInicioContrato: dataInicio,
+          status: 'ATIVO',
+        },
       });
-    }
-    if (pagamentos.length > 0) await prisma.pagamento.createMany({ data: pagamentos });
+
+      const novasAulas = gerarAulasRecorrentes({
+        ...aluno,
+        diaSemanaNumero: (diaSemanaNum != null && !isNaN(diaSemanaNum)) ? diaSemanaNum : aluno.diaSemanaNumero,
+      });
+
+      if (novasAulas.length > 0) {
+        await tx.aula.createMany({ data: novasAulas });
+      }
+
+      // Remove TODOS os pendentes para evitar duplicação ao reconfigurar
+      await tx.pagamento.deleteMany({ where: { alunoId, status: 'PENDENTE' } });
+
+      const pagamentos = [];
+      const valorFinal  = parseFloat(String(valorMensalidade));
+      const mesesFinal  = isNaN(meses) ? 6 : meses;
+      const diaVencFinal = isNaN(diaVenc) ? 10 : diaVenc;
+      // Se o dia de vencimento deste mês já passou, começa a cobrar no próximo mês
+      const primeiraDta = new Date(dataInicio);
+      primeiraDta.setDate(diaVencFinal);
+      const mesOffset = primeiraDta <= dataInicio ? 1 : 0;
+      for (let i = 0; i < mesesFinal; i++) {
+        const venc = new Date(dataInicio);
+        venc.setMonth(venc.getMonth() + i + mesOffset);
+        venc.setDate(diaVencFinal);
+        pagamentos.push({
+          valor: valorFinal,
+          vencimento: venc,
+          status: 'PENDENTE',
+          alunoId,
+          professorId: aluno.professorId,
+        });
+      }
+      if (pagamentos.length > 0) await tx.pagamento.createMany({ data: pagamentos });
+
+      return { aluno, novasAulas, pagamentos };
+    }, { maxWait: 10000, timeout: 15000 });
 
     // Responde ao cliente ANTES das notificações para não bloquear em caso de falha
     res.json({
@@ -581,24 +612,25 @@ app.post('/api/configurar-aluno', async (req, res) => {
       console.error('[configurar-aluno] Falha ao enviar notificação:', notifErr.message);
     }
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro ao configurar aluno.' });
+    tratarErro(err, res, 'Erro ao configurar aluno.');
   }
 });
 
 app.delete('/api/alunos/:id/cancelar', async (req, res) => {
   try {
     const id = req.params.id;
-    // Delete all related records before deleting the student
-    await prisma.aula.deleteMany({ where: { alunoId: id } });
-    await prisma.pagamento.deleteMany({ where: { alunoId: id } });
-    await prisma.reposicao.deleteMany({ where: { alunoId: id } });
-    await prisma.mensagem.deleteMany({ where: { alunoId: id } });
-    await prisma.aluno.delete({ where: { id } });
+    // Tudo ou nada: se cair no meio, nenhum registro relacionado fica
+    // apagado com o aluno ainda de pé (ou vice-versa).
+    await prisma.$transaction([
+      prisma.aula.deleteMany({ where: { alunoId: id } }),
+      prisma.pagamento.deleteMany({ where: { alunoId: id } }),
+      prisma.reposicao.deleteMany({ where: { alunoId: id } }),
+      prisma.mensagem.deleteMany({ where: { alunoId: id } }),
+      prisma.aluno.delete({ where: { id } }),
+    ], { maxWait: 10000, timeout: 15000 });
     res.json({ mensagem: 'Aluno excluído permanentemente.' });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro ao excluir aluno.' });
+    tratarErro(err, res, 'Erro ao excluir aluno.');
   }
 });
 
@@ -617,49 +649,52 @@ app.patch('/api/alunos/:id/status', async (req, res) => {
     const novoStatus = aluno.status === 'ATIVO' ? 'INATIVO' : 'ATIVO';
     const agora = new Date();
 
-    await prisma.aluno.update({ where: { id }, data: { status: novoStatus } });
+    // Tudo ou nada: evita deixar o aluno com o status trocado mas as
+    // aulas/pagamentos relacionados só parcialmente atualizados.
+    await prisma.$transaction(async (tx) => {
+      await tx.aluno.update({ where: { id }, data: { status: novoStatus } });
 
-    if (novoStatus === 'INATIVO') {
-      await prisma.aula.updateMany({
-        where: { alunoId: id, status: 'AGENDADA', dataHora: { gte: agora } },
-        data: { status: 'CANCELADA' },
-      });
-      await prisma.pagamento.updateMany({
-        where: { alunoId: id, status: 'PENDENTE', vencimento: { gte: agora } },
-        data: { status: 'CANCELADO' },
-      });
-    } else {
-      // Reativando: regenera aulas e pagamentos se o aluno já foi configurado antes
-      if (aluno.tempoContrato && aluno.dataInicioContrato && aluno.diaSemanaNumero != null && aluno.horarioAula) {
-        await prisma.aula.deleteMany({ where: { alunoId: id, status: 'CANCELADA', dataHora: { gte: agora } } });
+      if (novoStatus === 'INATIVO') {
+        await tx.aula.updateMany({
+          where: { alunoId: id, status: 'AGENDADA', dataHora: { gte: agora } },
+          data: { status: 'CANCELADA' },
+        });
+        await tx.pagamento.updateMany({
+          where: { alunoId: id, status: 'PENDENTE', vencimento: { gte: agora } },
+          data: { status: 'CANCELADO' },
+        });
+      } else {
+        // Reativando: regenera aulas e pagamentos se o aluno já foi configurado antes
+        if (aluno.tempoContrato && aluno.dataInicioContrato && aluno.diaSemanaNumero != null && aluno.horarioAula) {
+          await tx.aula.deleteMany({ where: { alunoId: id, status: 'CANCELADA', dataHora: { gte: agora } } });
 
-        const novasAulas = gerarAulasRecorrentes({ ...aluno, id });
-        if (novasAulas.length > 0) {
-          await prisma.aula.createMany({ data: novasAulas });
+          const novasAulas = gerarAulasRecorrentes({ ...aluno, id });
+          if (novasAulas.length > 0) {
+            await tx.aula.createMany({ data: novasAulas });
+          }
+
+          await tx.pagamento.deleteMany({ where: { alunoId: id, status: 'CANCELADO', vencimento: { gte: agora } } });
+
+          const fimContrato = new Date(aluno.dataInicioContrato);
+          fimContrato.setMonth(fimContrato.getMonth() + aluno.tempoContrato);
+          const mesesRestantes = Math.max(0, Math.ceil((fimContrato - agora) / (30 * 24 * 60 * 60 * 1000)));
+          const diaVenc = aluno.diaVencimento ?? 10;
+          const valor = aluno.valorMensalidade ?? 0;
+          const novosPagementos = [];
+          for (let i = 0; i < mesesRestantes; i++) {
+            const venc = new Date(agora);
+            venc.setMonth(venc.getMonth() + i);
+            venc.setDate(diaVenc);
+            novosPagementos.push({ valor, vencimento: venc, status: 'PENDENTE', alunoId: id, professorId: aluno.professorId });
+          }
+          if (novosPagementos.length > 0) await tx.pagamento.createMany({ data: novosPagementos });
         }
-
-        await prisma.pagamento.deleteMany({ where: { alunoId: id, status: 'CANCELADO', vencimento: { gte: agora } } });
-
-        const fimContrato = new Date(aluno.dataInicioContrato);
-        fimContrato.setMonth(fimContrato.getMonth() + aluno.tempoContrato);
-        const mesesRestantes = Math.max(0, Math.ceil((fimContrato - agora) / (30 * 24 * 60 * 60 * 1000)));
-        const diaVenc = aluno.diaVencimento ?? 10;
-        const valor = aluno.valorMensalidade ?? 0;
-        const novosPagementos = [];
-        for (let i = 0; i < mesesRestantes; i++) {
-          const venc = new Date(agora);
-          venc.setMonth(venc.getMonth() + i);
-          venc.setDate(diaVenc);
-          novosPagementos.push({ valor, vencimento: venc, status: 'PENDENTE', alunoId: id, professorId: aluno.professorId });
-        }
-        if (novosPagementos.length > 0) await prisma.pagamento.createMany({ data: novosPagementos });
       }
-    }
+    }, { maxWait: 10000, timeout: 15000 });
 
     res.json({ status: novoStatus });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro ao alterar status.' });
+    tratarErro(err, res, 'Erro ao alterar status.');
   }
 });
 
@@ -676,8 +711,7 @@ app.patch('/api/alunos/:id/mensalidade', async (req, res) => {
     });
     res.json({ valorMensalidade: atualizado.valorMensalidade });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro ao atualizar mensalidade.' });
+    tratarErro(err, res, 'Erro ao atualizar mensalidade.');
   }
 });
 
@@ -756,8 +790,7 @@ app.put('/api/pagamentos/:id/aprovar', async (req, res) => {
     });
     res.json(p);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro ao aprovar.' });
+    tratarErro(err, res, 'Erro ao aprovar.');
   }
 });
 
@@ -894,8 +927,7 @@ app.put('/api/professor/notificacoes/:id/lida', async (req, res) => {
     await prisma.notificacao.update({ where: { id: req.params.id }, data: { lida: true } });
     res.json({ mensagem: 'Marcada como lida.' });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
+    tratarErro(err, res, 'Erro interno.');
   }
 });
 
@@ -1081,8 +1113,7 @@ app.put('/api/aluno/pagamentos/:id/comprovante', async (req, res) => {
     });
     res.json({ mensagem: 'Comprovante enviado!', pagamento: p });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
+    tratarErro(err, res, 'Erro interno.');
   }
 });
 
@@ -1132,8 +1163,7 @@ app.post('/api/reposicoes/:id/confirmar', async (req, res) => {
     const r = await prisma.reposicao.update({ where: { id: req.params.id }, data: { status: 'CONFIRMADA' } });
     res.json({ mensagem: 'Reposição confirmada!', reposicao: r });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
+    tratarErro(err, res, 'Erro interno.');
   }
 });
 
@@ -1142,8 +1172,7 @@ app.post('/api/reposicoes/:id/solicitar-outro', async (req, res) => {
     const r = await prisma.reposicao.update({ where: { id: req.params.id }, data: { status: 'SOLICITANDO_OUTRO' } });
     res.json({ mensagem: 'Solicitação enviada ao professor.', reposicao: r });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
+    tratarErro(err, res, 'Erro interno.');
   }
 });
 
@@ -1244,16 +1273,17 @@ app.post('/api/mural', async (req, res) => {
       data: { professorId, texto, remetente: 'professor' },
     });
 
-    // Notifica todos os alunos ativos
+    // Notifica todos os alunos ativos em paralelo — sequencial travava a
+    // resposta até a última chamada de push terminar.
     const alunos = await prisma.aluno.findMany({
       where: { professorId, status: 'ATIVO' },
       select: { expoPushToken: true },
     });
-    for (const aluno of alunos) {
-      if (aluno.expoPushToken) {
-        await enviarPushNotificacao(aluno.expoPushToken, `${professor.nome}`, texto, { tipo: 'NOVA_MENSAGEM' });
-      }
-    }
+    await Promise.all(
+      alunos
+        .filter(a => a.expoPushToken)
+        .map(a => enviarPushNotificacao(a.expoPushToken, `${professor.nome}`, texto, { tipo: 'NOVA_MENSAGEM' }))
+    );
 
     res.status(201).json({ ...msg, nome: 'Professor(a)' });
   } catch (err) {
@@ -1401,8 +1431,7 @@ app.put('/api/reposicoes/:id/nova-data', async (req, res) => {
 
     res.json({ mensagem: 'Nova data enviada!', reposicao });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
+    tratarErro(err, res, 'Erro interno.');
   }
 });
 
@@ -1440,8 +1469,7 @@ app.post('/api/aulas/:id/registrar-presenca', async (req, res) => {
 
     res.json({ mensagem: 'Presença registrada!', aula });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
+    tratarErro(err, res, 'Erro interno.');
   }
 });
 
@@ -1497,29 +1525,28 @@ app.post('/api/aulas/:id/materiais-lote', async (req, res) => {
     const aula = await prisma.aula.findUnique({ where: { id: req.params.id } });
     if (!aula) return res.status(404).json({ erro: 'Aula não encontrada.' });
 
-    const erros = [];
-    const criados = [];
-
-    for (const item of materiais) {
+    // Cria o lote em paralelo (cada item com seu próprio try/catch via
+    // allSettled) em vez de um create por vez em sequência.
+    const resultados = await Promise.allSettled(materiais.map((item) => {
       const { titulo, tipo, conteudo, url } = item;
-      if (!titulo || !tipo) { erros.push(`Item sem título ou tipo: ${JSON.stringify(item)}`); continue; }
-      try {
-        const material = await prisma.material.create({
-          data: {
-            titulo,
-            tipo: tipo.toUpperCase(),
-            conteudo: conteudo || null,
-            url: url || null,
-            aulaId: req.params.id,
-            professorId: aula.professorId,
-            alunoId: aula.alunoId,
-          },
-        });
-        criados.push(material);
-      } catch (e) {
-        erros.push(`Erro ao criar "${titulo}": ${e.message}`);
+      if (!titulo || !tipo) {
+        return Promise.reject(new Error(`Item sem título ou tipo: ${JSON.stringify(item)}`));
       }
-    }
+      return prisma.material.create({
+        data: {
+          titulo,
+          tipo: tipo.toUpperCase(),
+          conteudo: conteudo || null,
+          url: url || null,
+          aulaId: req.params.id,
+          professorId: aula.professorId,
+          alunoId: aula.alunoId,
+        },
+      }).catch((e) => { throw new Error(`Erro ao criar "${titulo}": ${e.message}`); });
+    }));
+
+    const criados = resultados.filter(r => r.status === 'fulfilled').map(r => r.value);
+    const erros = resultados.filter(r => r.status === 'rejected').map(r => r.reason.message);
 
     const aluno = await prisma.aluno.findUnique({
       where: { id: aula.alunoId },
@@ -1572,7 +1599,11 @@ app.post('/api/aulas', async (req, res) => {
       return res.status(400).json({ erro: 'professorId e alunosIds são obrigatórios.' });
     }
 
-    const [horas, minutos] = (horario || '08:00').split(':').map(Number);
+    const horarioFinal = horario || '08:00';
+    if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(horarioFinal)) {
+      return res.status(400).json({ erro: 'horario inválido. Use o formato HH:MM.' });
+    }
+    const [horas, minutos] = horarioFinal.split(':').map(Number);
     const hoje = new Date();
     const dataAula = new Date(hoje);
     const diaAlvo = diaSemana ?? 1;
@@ -1853,7 +1884,23 @@ app.post('/api/admin/reset-senha', async (req, res) => {
 });
 
 // ============================================================================
-// 14. LIGANDO O MOTOR
+// 14. TRATAMENTO DE ERRO GLOBAL (mantém o contrato "sempre JSON" da API)
+// ============================================================================
+
+// Rota não mapeada — em vez da página HTML padrão do Express.
+app.use((req, res) => {
+  res.status(404).json({ erro: 'Rota não encontrada.' });
+});
+
+// Rede de segurança para qualquer erro que escape do try/catch de uma rota
+// (ex.: JSON malformado no body, lançado pelo próprio express.json()).
+app.use((err, req, res, _next) => {
+  console.error('[Erro não tratado]', err);
+  res.status(err.status || 500).json({ erro: 'Erro interno do servidor.' });
+});
+
+// ============================================================================
+// 15. LIGANDO O MOTOR
 // ============================================================================
 const PORT = process.env.PORT || 3000;
 
