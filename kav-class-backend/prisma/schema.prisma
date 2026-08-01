@@ -7,77 +7,167 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─── ENUMS ───────────────────────────────────────────────────────
+// Extraídos dos valores literais realmente gravados pelo server.js e pelo
+// app (my-app). Trocar String -> enum não muda o JSON devolvido pela API
+// (enum ainda serializa como string), só passa a rejeitar valores inválidos
+// no nível do banco em vez de aceitar qualquer typo silenciosamente.
+
+enum StatusAluno {
+  PENDENTE
+  ATIVO
+  INATIVO
+}
+
+enum StatusAssinaturaProfessor {
+  PENDENTE
+  ATIVO
+  INATIVO
+  VITALICIO
+  CANCELADO
+}
+
+enum RecorrenciaAula {
+  SEMANAL
+  QUINZENAL
+  MENSAL
+}
+
+enum StatusAula {
+  AGENDADA
+  CONCLUIDA
+  CANCELADA
+}
+
+enum TipoAula {
+  REGULAR
+  REPOSICAO
+  GRUPO
+}
+
+enum PresencaAula {
+  PRESENTE
+  AUSENCIA_PROFESSOR
+  AUSENCIA_ALUNO
+  PENDENTE_REPOSICAO
+}
+
+enum StatusPagamento {
+  PENDENTE
+  PAGO
+  ATRASADO
+  EM_ANALISE
+  CANCELADO
+}
+
+enum MetodoPagamento {
+  PIX
+  CARTAO
+  BOLETO
+}
+
+// Valores reais enviados pelo app (my-app/app/(professor)/index.tsx),
+// diferentes dos documentados no comentário antigo do schema (PDF/VIDEO/AUDIO/TEXTO).
+enum TipoMaterial {
+  TEXTO
+  LINK
+  VIDEO
+  IMAGEM
+  ARQUIVO
+  AUDIO
+}
+
+enum TipoNotificacao {
+  CONTRATO_EXPIRADO
+  CONTRATO_EXPIRANDO
+  NOVO_ALUNO
+  ALUNO_ATIVADO
+}
+
+enum StatusReposicao {
+  AGUARDANDO
+  CONFIRMADA
+  SOLICITANDO_OUTRO
+}
+
 // ─── 1. PROFESSOR ───────────────────────────────────────────────
 model Professor {
-  id            String         @id @default(uuid())
-  nome          String
-  email         String         @unique
-  senha         String
-  telefone      String?
-  codigoConvite String?
-  cursos        String[]
-  expoPushToken        String?
-  fotoUrl              String?
-  chavePix             String?
-  linkPagamentoCartao  String?
+  id                  String   @id @default(uuid())
+  nome                String
+  email               String   @unique
+  senha               String
+  telefone            String?
+  codigoConvite       String?  @unique
+  cursos              String[]
+  expoPushToken       String?
+  fotoUrl             String?
+  chavePix            String?
+  linkPagamentoCartao String?
 
-  stripeCustomerId  String?
-  assinaturaStatus  String    @default("INATIVO")
-  assinaturaFim     DateTime?
-  stripeSessionId   String?
+  stripeCustomerId String?
+  assinaturaStatus StatusAssinaturaProfessor @default(INATIVO)
+  assinaturaFim    DateTime?
+  stripeSessionId  String?
 
-  alunos        Aluno[]
-  aulas         Aula[]
-  pagamentos    Pagamento[]
-  materiais     Material[]
-  reposicoes    Reposicao[]
-  notificacoes  Notificacao[]
-  mensagens     Mensagem[]
+  alunos       Aluno[]
+  aulas        Aula[]
+  pagamentos   Pagamento[]
+  materiais    Material[]
+  reposicoes   Reposicao[]
+  notificacoes Notificacao[]
+  mensagens    Mensagem[]
 
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([stripeCustomerId])
 }
 
 // ─── 2. ALUNO ────────────────────────────────────────────────────
 model Aluno {
-  id                   String      @id @default(uuid())
-  nome                 String
-  email                String      @unique
-  senha                String
-  telefone             String?
-  curso                String?
-  expoPushToken        String?     // Token para push notifications
-  fotoUrl              String?
+  id            String  @id @default(uuid())
+  nome          String
+  email         String  @unique
+  senha         String
+  telefone      String?
+  curso         String?
+  expoPushToken String? // Token para push notifications
+  fotoUrl       String?
 
-  status               String      @default("PENDENTE") // PENDENTE, ATIVO, INATIVO
-  valorMensalidade     Float?
-  diaVencimento        Int?
-  recorrenciaAula      String?     // SEMANAL, QUINZENAL, MENSAL
-  diaSemanaAula        String?     // Ex: "Segunda-feira"
-  diaSemanaNumero      Int?        // 0=Dom … 6=Sáb (para geração de aulas)
-  horarioAula          String?     // Ex: "14:30"
-  tempoContrato        Int?        // Em meses
-  dataInicioContrato   DateTime?   // Data de ativação do contrato
+  status             StatusAluno      @default(PENDENTE)
+  valorMensalidade   Float?
+  diaVencimento      Int?
+  recorrenciaAula    RecorrenciaAula?
+  diaSemanaAula      String? // Ex: "Segunda-feira"
+  diaSemanaNumero    Int? // 0=Dom … 6=Sáb (para geração de aulas)
+  horarioAula        String? // Ex: "14:30"
+  tempoContrato      Int? // Em meses
+  dataInicioContrato DateTime? // Data de ativação do contrato
 
-  createdAt            DateTime    @default(now())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  professorId          String
-  professor            Professor   @relation(fields: [professorId], references: [id])
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
 
-  aulas                Aula[]
-  pagamentos           Pagamento[]
-  reposicoes           Reposicao[]
-  mensagens            Mensagem[]
+  aulas      Aula[]
+  pagamentos Pagamento[]
+  reposicoes Reposicao[]
+  mensagens  Mensagem[]
+  materiais  Material[]
+
+  @@index([professorId, status])
+  @@index([status])
 }
 
 // ─── 3. AULAS & AGENDA ───────────────────────────────────────────
 model Aula {
-  id          String     @id @default(uuid())
-  tema        String?
-  dataHora    DateTime
-  status      String     @default("AGENDADA") // AGENDADA, CONCLUIDA, CANCELADA
-  tipo        String     @default("REGULAR")  // REGULAR, REPOSICAO
-  presenca    String?    // PRESENTE, AUSENCIA_PROFESSOR, AUSENCIA_ALUNO, PENDENTE_REPOSICAO
+  id       String        @id @default(uuid())
+  tema     String?
+  dataHora DateTime
+  status   StatusAula    @default(AGENDADA)
+  tipo     TipoAula      @default(REGULAR)
+  presenca PresencaAula?
 
   professorId String
   professor   Professor  @relation(fields: [professorId], references: [id])
@@ -85,70 +175,96 @@ model Aula {
   aluno       Aluno      @relation(fields: [alunoId], references: [id])
   materiais   Material[]
 
-  createdAt   DateTime   @default(now())
+  createdAt DateTime @default(now())
+
+  @@index([professorId, dataHora])
+  @@index([alunoId, dataHora])
+  @@index([alunoId, status])
+  @@index([professorId, presenca, dataHora])
 }
 
 // ─── 4. FINANCEIRO & PAGAMENTOS ──────────────────────────────────
 model Pagamento {
-  id             String    @id @default(uuid())
+  id             String           @id @default(uuid())
   valor          Float
   vencimento     DateTime
   dataPagamento  DateTime?
-  status         String    @default("PENDENTE") // PENDENTE, PAGO, ATRASADO, EM_ANALISE
+  status         StatusPagamento  @default(PENDENTE)
   comprovanteUrl String?
-  metodo         String?   // PIX, CARTAO, BOLETO
+  metodo         MetodoPagamento?
 
-  professorId    String
-  professor      Professor @relation(fields: [professorId], references: [id])
-  alunoId        String
-  aluno          Aluno     @relation(fields: [alunoId], references: [id])
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+  alunoId     String
+  aluno       Aluno     @relation(fields: [alunoId], references: [id])
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([professorId, status])
+  @@index([professorId, vencimento])
+  @@index([alunoId, vencimento])
 }
 
 // ─── 5. MATERIAIS DIDÁTICOS ──────────────────────────────────────
 model Material {
-  id          String    @id @default(uuid())
-  titulo      String
-  tipo        String    // PDF, VIDEO, AUDIO, TEXTO
-  url         String?
-  conteudo    String?
+  id       String       @id @default(uuid())
+  titulo   String
+  tipo     TipoMaterial
+  url      String?
+  conteudo String?
 
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])
+  // Antes era uma String solta sem FK: um aluno excluído deixava materiais
+  // órfãos e invisíveis. Agora é uma relação de verdade; ON DELETE SET NULL
+  // porque a rota /api/aluno/materiais já trata alunoId nulo como "avulso".
   alunoId     String?
+  aluno       Aluno?    @relation(fields: [alunoId], references: [id], onDelete: SetNull)
   aulaId      String?
-  aula        Aula?     @relation(fields: [aulaId], references: [id])
+  // Antes, sem onDelete, apagar uma Aula com material anexado quebrava com
+  // erro de FK (NO ACTION). SET NULL casa com a mesma regra do alunoId acima.
+  aula        Aula?     @relation(fields: [aulaId], references: [id], onDelete: SetNull)
 
-  createdAt   DateTime  @default(now())
+  createdAt DateTime @default(now())
+
+  @@index([professorId])
+  @@index([alunoId])
+  @@index([aulaId])
 }
 
 // ─── 6. MENSAGENS DO CHAT ────────────────────────────────────────
 model Mensagem {
-  id          String    @id @default(uuid())
+  id          String     @id @default(uuid())
   texto       String
-  remetente   String    // alunoId (UUID) | "professor"
+  remetente   String // alunoId (UUID) | "professor"
   alunoId     String?
-  aluno       Aluno?    @relation(fields: [alunoId], references: [id])
+  // Já é SET NULL em produção (constraint existente) — mantido para não regredir.
+  aluno       Aluno?     @relation(fields: [alunoId], references: [id], onDelete: SetNull)
   professorId String?
-  professor   Professor? @relation(fields: [professorId], references: [id])
-  createdAt   DateTime  @default(now())
+  professor   Professor? @relation(fields: [professorId], references: [id], onDelete: SetNull)
+  createdAt   DateTime   @default(now())
+
+  @@index([alunoId, createdAt])
+  @@index([professorId, remetente])
 }
 
 // ─── 7. NOTIFICAÇÕES ─────────────────────────────────────────────
 model Notificacao {
-  id          String    @id @default(uuid())
-  tipo        String    // CONTRATO_EXPIRADO, CONTRATO_EXPIRANDO, NOVO_ALUNO, etc.
-  titulo      String
-  mensagem    String
-  lida        Boolean   @default(false)
-  dadosExtra  String?   // JSON serializado com dados adicionais (alunoId, etc.)
+  id         String          @id @default(uuid())
+  tipo       TipoNotificacao
+  titulo     String
+  mensagem   String
+  lida       Boolean         @default(false)
+  dadosExtra String? // JSON serializado com dados adicionais (alunoId, etc.)
 
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])
 
-  createdAt   DateTime  @default(now())
+  createdAt DateTime @default(now())
+
+  @@index([professorId, lida])
+  @@index([professorId, tipo])
 }
 
 // ─── 8. TOKEN DE REDEFINIÇÃO DE SENHA ───────────────────────────
@@ -159,20 +275,24 @@ model TokenRedefinicaoSenha {
   expiresAt DateTime
   usado     Boolean  @default(false)
   createdAt DateTime @default(now())
+
+  @@index([email, usado])
 }
 
 // ─── 9. REPOSIÇÕES ───────────────────────────────────────────────
 model Reposicao {
-  id           String    @id @default(uuid())
+  id           String          @id @default(uuid())
   professorId  String
   alunoId      String
   dataOriginal String?
   dataProposta String
   motivo       String
-  status       String    @default("AGUARDANDO")
-  createdAt    DateTime  @default(now())
+  status       StatusReposicao @default(AGUARDANDO)
+  createdAt    DateTime        @default(now())
 
-  professor    Professor @relation(fields: [professorId], references: [id])
-  aluno        Aluno     @relation(fields: [alunoId], references: [id])
+  professor Professor @relation(fields: [professorId], references: [id])
+  aluno     Aluno     @relation(fields: [alunoId], references: [id])
+
+  @@index([professorId])
+  @@index([alunoId])
 }
-
