@@ -14,6 +14,7 @@ import { CORES } from '../../constants/theme';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -744,45 +745,46 @@ export default function ProfessorDashboard() {
               </View>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {notificacoes.length === 0 ? (
+            <FlatList
+              data={notificacoes}
+              keyExtractor={(notif) => notif.id}
+              showsVerticalScrollIndicator={false}
+              ListEmptyComponent={
                 <View style={styles.cardVazio}>
                   <Ionicons name="notifications-off-outline" size={40} color="#ccc" />
                   <Text style={[styles.textoVazio, { marginTop: 10 }]}>Nenhuma notificação.</Text>
                 </View>
-              ) : (
-                notificacoes.map((notif) => (
-                  <TouchableOpacity
-                    key={notif.id}
-                    style={[
-                      styles.cardNotif,
-                      { backgroundColor: corNotif(notif.tipo), borderColor: bordaNotif(notif.tipo) },
-                      notif.lida && styles.cardNotifLida,
-                    ]}
-                    onPress={() => !notif.lida && marcarLida(notif.id)}
-                  >
-                    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
-                      <Ionicons name={iconeNotif(notif.tipo) as any} size={22} color={corIconeNotif(notif.tipo)} style={{ marginTop: 2 }} />
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.tituloNotif, notif.lida && { color: '#999' }]}>{notif.titulo}</Text>
-                        <Text style={[styles.msgNotif, notif.lida && { color: '#bbb' }]}>{notif.mensagem}</Text>
-                        <Text style={styles.dataNotif}>
-                          {new Date(notif.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                        </Text>
-                      </View>
-                      {!notif.lida && <View style={styles.pontinhoNaoLido} />}
+              }
+              ListFooterComponent={<View style={{ height: 20 }} />}
+              renderItem={({ item: notif }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.cardNotif,
+                    { backgroundColor: corNotif(notif.tipo), borderColor: bordaNotif(notif.tipo) },
+                    notif.lida && styles.cardNotifLida,
+                  ]}
+                  onPress={() => !notif.lida && marcarLida(notif.id)}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                    <Ionicons name={iconeNotif(notif.tipo) as any} size={22} color={corIconeNotif(notif.tipo)} style={{ marginTop: 2 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.tituloNotif, notif.lida && { color: '#999' }]}>{notif.titulo}</Text>
+                      <Text style={[styles.msgNotif, notif.lida && { color: '#bbb' }]}>{notif.mensagem}</Text>
+                      <Text style={styles.dataNotif}>
+                        {new Date(notif.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </Text>
                     </View>
-                    {(notif.tipo === 'CONTRATO_EXPIRADO' || notif.tipo === 'CONTRATO_EXPIRANDO') && (
-                      <TouchableOpacity style={styles.botaoRenovar} onPress={() => abrirRenovacao(notif)}>
-                        <Ionicons name="refresh-circle-outline" size={16} color="#fff" />
-                        <Text style={styles.textoBotaoRenovar}>Renovar Contrato</Text>
-                      </TouchableOpacity>
-                    )}
-                  </TouchableOpacity>
-                ))
+                    {!notif.lida && <View style={styles.pontinhoNaoLido} />}
+                  </View>
+                  {(notif.tipo === 'CONTRATO_EXPIRADO' || notif.tipo === 'CONTRATO_EXPIRANDO') && (
+                    <TouchableOpacity style={styles.botaoRenovar} onPress={() => abrirRenovacao(notif)}>
+                      <Ionicons name="refresh-circle-outline" size={16} color="#fff" />
+                      <Text style={styles.textoBotaoRenovar}>Renovar Contrato</Text>
+                    </TouchableOpacity>
+                  )}
+                </TouchableOpacity>
               )}
-              <View style={{ height: 20 }} />
-            </ScrollView>
+            />
           </View>
         </View>
       </Modal>

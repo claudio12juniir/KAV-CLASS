@@ -8,8 +8,10 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -232,7 +234,10 @@ export default function PagamentoAlunoScreen() {
       )}
 
       <Modal visible={modalVisivel} transparent animationType="slide">
-        <View style={styles.overlay}>
+        <KeyboardAvoidingView
+          style={styles.overlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <View style={styles.modal}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitulo}>
@@ -349,7 +354,7 @@ export default function PagamentoAlunoScreen() {
               <View style={{ height: 30 }} />
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

@@ -3,7 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -34,7 +34,8 @@ export default function CalendarioProfessorScreen() {
   const [aulasMes, setAulasMes] = useState<Record<number, any[]>>({});
   const [carregando, setCarregando] = useState(true);
 
-  useEffect(() => { carregarCalendario(); }, [mesAtual, anoAtual]);
+  // useFocusEffect já cobre o carregamento inicial (a tela nasce focada) e a
+  // troca de mês/ano — o useEffect paralelo duplicava a mesma requisição.
   useFocusEffect(useCallback(() => { carregarCalendario(); }, [mesAtual, anoAtual]));
 
   const carregarCalendario = async () => {

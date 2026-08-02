@@ -8,7 +8,9 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -308,7 +310,10 @@ export default function FinanceiroProfessorScreen() {
       />
 
       <Modal visible={modalConfig} transparent animationType="slide">
-        <View style={styles.overlay}>
+        <KeyboardAvoidingView
+          style={styles.overlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
           <View style={styles.modal}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitulo}>DADOS DE PAGAMENTO</Text>
@@ -350,7 +355,7 @@ export default function FinanceiroProfessorScreen() {
               <View style={{ height: 20 }} />
             </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
