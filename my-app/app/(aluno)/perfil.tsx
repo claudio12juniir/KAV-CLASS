@@ -1,14 +1,13 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { CORES } from '../../constants/theme';
 import {
-  ActivityIndicator,
   Alert,
   Image,
   Linking,
@@ -19,6 +18,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 
 const API_URL = BASE_URL;
 
@@ -81,9 +81,7 @@ export default function PerfilScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    carregarPerfil();
-  }, [carregarPerfil]);
+  useFocusEffect(useCallback(() => { carregarPerfil(); }, [carregarPerfil]));
 
   const salvarDadosPessoais = async () => {
     if (!nome.trim()) {
@@ -217,7 +215,7 @@ export default function PerfilScreen() {
   if (carregando) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={CORES.acento} />
+        <SyncLoader size="large" color={CORES.acento} />
       </View>
     );
   }
@@ -320,7 +318,7 @@ export default function PerfilScreen() {
             disabled={salvando}
           >
             {salvando ? (
-              <ActivityIndicator color={CORES.fundo} size="small" />
+              <SyncLoader color={CORES.fundo} size="small" />
             ) : (
               <Text style={styles.textoBotaoSalvar}>Salvar Alterações</Text>
             )}
@@ -373,7 +371,7 @@ export default function PerfilScreen() {
               disabled={salvando}
             >
               {salvando ? (
-                <ActivityIndicator color={CORES.fundo} size="small" />
+                <SyncLoader color={CORES.fundo} size="small" />
               ) : (
                 <Text style={styles.textoBotaoSalvar}>Alterar Senha</Text>
               )}

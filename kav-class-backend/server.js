@@ -272,6 +272,74 @@ async function verificarContratosExpirados() {
 cron.schedule('0 8 * * *', verificarContratosExpirados);
 
 // ============================================================================
+// CRON: PAGAMENTOS ATRASADOS (executa todo dia às 08h)
+// ============================================================================
+
+async function verificarPagamentosAtrasados() {
+  try {
+    const hoje = new Date();
+
+    const pagamentos = await prisma.pagamento.findMany({
+      where: { status: 'PENDENTE', vencimento: { lt: hoje }, notificadoAtrasado: false },
+      include: { aluno: { select: { nome: true, expoPushToken: true } } },
+    });
+
+    for (const pagamento of pagamentos) {
+      if (pagamento.aluno?.expoPushToken) {
+        await enviarPushNotificacao(
+          pagamento.aluno.expoPushToken,
+          'Pagamento atrasado',
+          `Sua mensalidade venceu em ${pagamento.vencimento.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}. Regularize para manter suas aulas em dia.`,
+          { tipo: 'PAGAMENTO_ATRASADO', pagamentoId: pagamento.id }
+        );
+      }
+      await prisma.pagamento.update({
+        where: { id: pagamento.id },
+        data: { status: 'ATRASADO', notificadoAtrasado: true },
+      });
+    }
+  } catch (err) {
+    console.error('[Cron] Erro na verificação de pagamentos atrasados:', err.message);
+  }
+}
+cron.schedule('0 8 * * *', verificarPagamentosAtrasados);
+
+// ============================================================================
+// CRON: LEMBRETE DE AULA NO DIA SEGUINTE (executa todo dia às 08h)
+// ============================================================================
+
+async function verificarAulasAmanha() {
+  try {
+    const inicioAmanha = new Date();
+    inicioAmanha.setDate(inicioAmanha.getDate() + 1);
+    inicioAmanha.setHours(0, 0, 0, 0);
+    const fimAmanha = new Date(inicioAmanha);
+    fimAmanha.setHours(23, 59, 59, 999);
+
+    const aulas = await prisma.aula.findMany({
+      where: { status: 'AGENDADA', dataHora: { gte: inicioAmanha, lte: fimAmanha }, lembreteEnviado: false },
+      include: { aluno: { select: { nome: true, expoPushToken: true } } },
+    });
+
+    for (const aula of aulas) {
+      if (aula.aluno?.expoPushToken) {
+        const horario = aula.dataHora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+        await enviarPushNotificacao(
+          aula.aluno.expoPushToken,
+          'Aula amanhã',
+          `Sua aula é amanhã às ${horario}.`,
+          { tipo: 'AULA_PROXIMA', aulaId: aula.id }
+        );
+      }
+      await prisma.aula.update({ where: { id: aula.id }, data: { lembreteEnviado: true } });
+    }
+  } catch (err) {
+    console.error('[Cron] Erro na verificação de aulas de amanhã:', err.message);
+  }
+}
+cron.schedule('0 8 * * *', verificarAulasAmanha);
+
+// ============================================================================
 // 1. ROTAS PÚBLICAS
 // ============================================================================
 
@@ -1834,6 +1902,47 @@ app.get('/api/professor/assinatura/:professorId', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ─── CANCELAR ASSINATURA (mantém acesso até o fim do período já pago) ───────
+app.post('/api/professor/assinatura/cancelar', async (req, res) => {
+  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
+  try {
+    const { professorId } = req.body;
+    if (!professorId) return res.status(400).json({ erro: 'professorId é obrigatório.' });
+
+    const professor = await prisma.professor.findUnique({
+      where: { id: professorId },
+      select: { assinaturaStatus: true, stripeCustomerId: true },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    if (professor.assinaturaStatus !== 'ATIVO' || !professor.stripeCustomerId) {
+      return res.status(400).json({ erro: 'Não há assinatura ativa para cancelar.' });
+    }
+
+    const assinaturas = await stripe.subscriptions.list({
+      customer: professor.stripeCustomerId,
+      status: 'active',
+      limit: 1,
+    });
+    const assinatura = assinaturas.data[0];
+    if (!assinatura) return res.status(404).json({ erro: 'Nenhuma assinatura ativa encontrada no Stripe.' });
+
+    const atualizada = await stripe.subscriptions.update(assinatura.id, { cancel_at_period_end: true });
+    const cancelaEm = atualizada.current_period_end ? new Date(atualizada.current_period_end * 1000) : null;
+
+    if (cancelaEm) {
+      await prisma.professor.update({ where: { id: professorId }, data: { assinaturaFim: cancelaEm } });
+    }
+
+    res.json({
+      mensagem: 'Assinatura cancelada. Você mantém acesso até o fim do período já pago.',
+      cancelaEm,
+    });
+  } catch (err) {
+    console.error('[Assinatura] Erro ao cancelar:', err.message);
+    res.status(500).json({ erro: 'Erro ao cancelar assinatura.' });
   }
 });
 

@@ -1,15 +1,15 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
-import {
-  ActivityIndicator, Alert, Image, Linking,
+import React, { useCallback, useState } from 'react';
+import { Alert, Image, Linking,
   Modal, Pressable, ScrollView, StyleSheet, Text,
   TouchableOpacity, View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 import * as FileSystem from 'expo-file-system';
 import * as WebBrowser from 'expo-web-browser';
 import { CORES } from '../../constants/theme';
@@ -45,11 +45,7 @@ export default function MateriaisScreen() {
   const [modalImagem, setModalImagem] = useState<{ titulo: string; uri: string } | null>(null);
   const [modalTexto, setModalTexto] = useState<{ titulo: string; conteudo: string } | null>(null);
 
-  useEffect(() => {
-    carregarMateriais();
-  }, []);
-
-  const carregarMateriais = async () => {
+  const carregarMateriais = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const alunoId = await SecureStore.getItemAsync('kav_aluno_id') || '';
@@ -90,7 +86,9 @@ export default function MateriaisScreen() {
     } finally {
       setCarregando(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarMateriais(); }, [carregarMateriais]));
 
   const alternarCard = (id: string) => {
     setAulaExpandida(aulaExpandida === id ? null : id);
@@ -206,7 +204,7 @@ export default function MateriaisScreen() {
   if (carregando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color={CORES.acento} />
+        <SyncLoader size="large" color={CORES.acento} />
       </View>
     );
   }

@@ -5,13 +5,13 @@ import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 
 const API_URL = BASE_URL;
 const NOMES_DIAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -126,7 +126,7 @@ export default function CalendarioProfessorScreen() {
       {/* Grade do calendário */}
       {carregando ? (
         <View style={styles.loadingCalendario}>
-          <ActivityIndicator size="small" color="#000" />
+          <SyncLoader size="small" color="#000" />
         </View>
       ) : (
         <View style={styles.grade}>

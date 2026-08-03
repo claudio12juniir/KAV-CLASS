@@ -1,12 +1,11 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { CORES } from '../../constants/theme';
 import {
-  ActivityIndicator,
   Alert,
   FlatList,
   Image,
@@ -20,6 +19,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 
 function corBadgePresenca(p: string | null) {
   switch (p) {
@@ -99,11 +99,7 @@ export default function AlunosProfessorScreen() {
   const [tempoContrato, setTempoContrato]           = useState(6);
   const [salvandoConfig, setSalvandoConfig]         = useState(false);
 
-  useEffect(() => {
-    carregarTudo();
-  }, []);
-
-  const carregarTudo = async () => {
+  const carregarTudo = useCallback(async () => {
     setErroCarga(false);
     setCarregando(true);
     try {
@@ -147,7 +143,9 @@ export default function AlunosProfessorScreen() {
     } finally {
       setCarregando(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarTudo(); }, [carregarTudo]));
 
   // ── Abrir perfil (ativo) ────────────────────────────────────────────────────
   const abrirPerfil = (aluno: any) => {
@@ -374,7 +372,7 @@ export default function AlunosProfessorScreen() {
   if (carregando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color={CORES.acento} />
+        <SyncLoader size="large" color={CORES.acento} />
         <Text style={{ color: CORES.secundaria, marginTop: 12, fontSize: 13 }}>
           Carregando alunos...
         </Text>
@@ -669,7 +667,7 @@ export default function AlunosProfessorScreen() {
                 disabled={salvandoConfig}
               >
                 {salvandoConfig ? (
-                  <ActivityIndicator color={CORES.fundo} />
+                  <SyncLoader color={CORES.fundo} />
                 ) : (
                   <>
                     <Ionicons name="checkmark-circle" size={20} color={CORES.fundo} />
@@ -788,7 +786,7 @@ export default function AlunosProfessorScreen() {
                         disabled={salvandoMensalidade}
                       >
                         {salvandoMensalidade
-                          ? <ActivityIndicator color={CORES.fundo} size="small" />
+                          ? <SyncLoader color={CORES.fundo} size="small" />
                           : <Ionicons name="checkmark-circle" size={22} color={CORES.fundo} />}
                       </TouchableOpacity>
                     </View>
@@ -826,7 +824,7 @@ export default function AlunosProfessorScreen() {
                       onPress={salvarHorario}
                       disabled={salvandoHorario}
                     >
-                      {salvandoHorario ? <ActivityIndicator color={CORES.fundo} /> : (
+                      {salvandoHorario ? <SyncLoader color={CORES.fundo} /> : (
                         <>
                           <Ionicons name="checkmark-circle" size={20} color={CORES.fundo} />
                           <Text style={styles.textoBotaoSalvar}>Salvar Horário</Text>
@@ -877,7 +875,7 @@ export default function AlunosProfessorScreen() {
                       </View>
                     </TouchableOpacity>
                     {alternandoStatus && (
-                      <ActivityIndicator size="small" color={CORES.acento} style={{ marginTop: 8 }} />
+                      <SyncLoader size="small" color={CORES.acento} style={{ marginTop: 8 }} />
                     )}
 
                     <View style={{ height: 10 }} />

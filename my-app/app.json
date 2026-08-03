@@ -63,6 +63,14 @@
         {
           "faceIDPermission": "Permita o uso do Face ID para acessar sua conta KAV Class com segurança e rapidez."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/android-icon-monochrome.png",
+          "color": "#32BCAD",
+          "defaultChannel": "kav-class"
+        }
       ]
     ],
     "experiments": {

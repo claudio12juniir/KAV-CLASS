@@ -1,11 +1,10 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   FlatList,
   KeyboardAvoidingView,
@@ -19,6 +18,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 import { CORES } from '../../constants/theme';
 
 const API_URL = BASE_URL;
@@ -57,9 +57,7 @@ export default function PagamentoAlunoScreen() {
 
   const parcelaAtual = parcelas.find(p => p.status === 'PENDENTE' || p.status === 'ATRASADO' || p.status === 'EM_ANALISE');
 
-  useEffect(() => { carregarFinanceiro(); }, []);
-
-  const carregarFinanceiro = async () => {
+  const carregarFinanceiro = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const alunoId = await SecureStore.getItemAsync('kav_aluno_id') || '';
@@ -94,7 +92,9 @@ export default function PagamentoAlunoScreen() {
     } finally {
       setCarregando(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarFinanceiro(); }, [carregarFinanceiro]));
 
   const abrirModal = (parcela: Parcela) => {
     if (parcela.status === 'PAGO') return;
@@ -171,7 +171,7 @@ export default function PagamentoAlunoScreen() {
   if (carregando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color={CORES.acento} />
+        <SyncLoader size="large" color={CORES.acento} />
       </View>
     );
   }

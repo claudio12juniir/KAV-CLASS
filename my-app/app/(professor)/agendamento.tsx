@@ -1,12 +1,11 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Image,
   ScrollView,
@@ -15,6 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 
 const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const HORARIOS = [
@@ -41,42 +41,41 @@ export default function AgendamentoScreen() {
   const [cursos, setCursos]                   = useState<string[]>([]);
   const [carregando, setCarregando]           = useState(true);
 
-  useEffect(() => {
-    async function carregarDados() {
-      try {
-        const token = await SecureStore.getItemAsync('kav_token');
-        const professorId = await SecureStore.getItemAsync('kav_professor_id') || "";
+  const carregarDados = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const professorId = await SecureStore.getItemAsync('kav_professor_id') || "";
 
-        const [resAlunos, resCursos] = await Promise.all([
-          fetchComRetry(`${API_URL}/api/meus-alunos?professorId=${professorId}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          }),
-          fetchComRetry(`${API_URL}/api/meus-cursos?professorId=${professorId}`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          }),
-        ]);
+      const [resAlunos, resCursos] = await Promise.all([
+        fetchComRetry(`${API_URL}/api/meus-alunos?professorId=${professorId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+        fetchComRetry(`${API_URL}/api/meus-cursos?professorId=${professorId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        }),
+      ]);
 
-        if (resAlunos.ok) {
-          const dados = await resAlunos.json();
-          setAlunosAtivos(dados);
-        }
-
-        if (resCursos.ok) {
-          const dadosCursos = await resCursos.json();
-          const lista: string[] = Array.isArray(dadosCursos)
-            ? dadosCursos.map((c: any) => (typeof c === 'string' ? c : c.nome))
-            : [];
-          setCursos(lista);
-          if (lista.length > 0) setCurso(lista[0]);
-        }
-      } catch (error) {
-        console.error("Erro ao buscar dados:", error);
-      } finally {
-        setCarregando(false);
+      if (resAlunos.ok) {
+        const dados = await resAlunos.json();
+        setAlunosAtivos(dados);
       }
+
+      if (resCursos.ok) {
+        const dadosCursos = await resCursos.json();
+        const lista: string[] = Array.isArray(dadosCursos)
+          ? dadosCursos.map((c: any) => (typeof c === 'string' ? c : c.nome))
+          : [];
+        setCursos(lista);
+        if (lista.length > 0) setCurso(lista[0]);
+      }
+    } catch (error) {
+      console.error("Erro ao buscar dados:", error);
+    } finally {
+      setCarregando(false);
     }
-    carregarDados();
   }, []);
+
+  useFocusEffect(useCallback(() => { carregarDados(); }, [carregarDados]));
 
   const toggleAluno = (id: string) => {
     if (tipo === 'individual') { setAlunos([id]); return; }
@@ -130,7 +129,7 @@ export default function AgendamentoScreen() {
   if (carregando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color="#000000" />
+        <SyncLoader size="large" color="#000000" />
         <Text style={{ marginTop: 10, color: '#666' }}>Carregando seus alunos...</Text>
       </View>
     );

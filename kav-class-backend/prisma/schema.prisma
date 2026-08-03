@@ -169,6 +169,9 @@ model Aula {
   tipo     TipoAula      @default(REGULAR)
   presenca PresencaAula?
 
+  // Evita reenviar o push de "aula amanhã" mais de uma vez pra mesma aula
+  lembreteEnviado Boolean @default(false)
+
   professorId String
   professor   Professor  @relation(fields: [professorId], references: [id])
   alunoId     String
@@ -192,6 +195,9 @@ model Pagamento {
   status         StatusPagamento  @default(PENDENTE)
   comprovanteUrl String?
   metodo         MetodoPagamento?
+
+  // Evita reenviar o push de "pagamento atrasado" todo dia pro mesmo boleto vencido
+  notificadoAtrasado Boolean @default(false)
 
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])

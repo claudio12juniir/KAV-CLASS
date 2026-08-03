@@ -1,10 +1,11 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 
 const API_URL = BASE_URL;
 
@@ -15,43 +16,41 @@ export default function RelatoriosProfessorScreen() {
   const [faltas, setFaltas] = useState<any[]>([]);
   const [carregando, setCarregando] = useState(true);
 
-  useEffect(() => {
-    async function carregarDados() {
-      try {
-        const token = await SecureStore.getItemAsync('kav_token');
-        const professorId = await SecureStore.getItemAsync('kav_professor_id') || "";
+  const carregarDados = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const professorId = await SecureStore.getItemAsync('kav_professor_id') || "";
 
-        const resposta = await fetchComRetry(`${API_URL}/api/relatorios?professorId=${professorId}`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+      const resposta = await fetchComRetry(`${API_URL}/api/relatorios?professorId=${professorId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
 
-        if (resposta.ok) {
-          const dados = await resposta.json();
-          setFaturamentoTotal(dados.faturamentoAtual ?? 0);
-          setGrafico(Array.isArray(dados.grafico) && dados.grafico.length > 0
-            ? dados.grafico
-            : [
-                { mes: 'Jan', valor: 0, altura: '10%' },
-                { mes: 'Fev', valor: 0, altura: '10%' },
-                { mes: 'Mar', valor: 0, altura: '10%' },
-                { mes: 'Abr', valor: 0, altura: '10%' },
-              ]);
-          setFaltas(Array.isArray(dados.faltas) ? dados.faltas : []);
-        }
-      } catch (error) {
-        console.error("Erro ao buscar relatórios:", error);
-      } finally {
-        setCarregando(false);
+      if (resposta.ok) {
+        const dados = await resposta.json();
+        setFaturamentoTotal(dados.faturamentoAtual ?? 0);
+        setGrafico(Array.isArray(dados.grafico) && dados.grafico.length > 0
+          ? dados.grafico
+          : [
+              { mes: 'Jan', valor: 0, altura: '10%' },
+              { mes: 'Fev', valor: 0, altura: '10%' },
+              { mes: 'Mar', valor: 0, altura: '10%' },
+              { mes: 'Abr', valor: 0, altura: '10%' },
+            ]);
+        setFaltas(Array.isArray(dados.faltas) ? dados.faltas : []);
       }
+    } catch (error) {
+      console.error("Erro ao buscar relatórios:", error);
+    } finally {
+      setCarregando(false);
     }
-    
-    carregarDados();
   }, []);
+
+  useFocusEffect(useCallback(() => { carregarDados(); }, [carregarDados]));
 
   if (carregando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color="#000000" />
+        <SyncLoader size="large" color="#000000" />
       </View>
     );
   }

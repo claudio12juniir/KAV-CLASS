@@ -1,11 +1,10 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -15,6 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 
 const API_URL = BASE_URL;
 
@@ -34,13 +34,7 @@ export default function ChatGrupoProfessor() {
   const [enviando, setEnviando] = useState(false);
   const flatListRef = useRef<FlatList>(null);
 
-  useEffect(() => {
-    carregarMensagens();
-    const intervalo = setInterval(carregarMensagens, 5000);
-    return () => clearInterval(intervalo);
-  }, []);
-
-  const carregarMensagens = async () => {
+  const carregarMensagens = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const professorId = await SecureStore.getItemAsync('kav_professor_id') || "";
@@ -65,7 +59,14 @@ export default function ChatGrupoProfessor() {
     } finally {
       setCarregando(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarMensagens(); }, [carregarMensagens]));
+
+  useEffect(() => {
+    const intervalo = setInterval(carregarMensagens, 5000);
+    return () => clearInterval(intervalo);
+  }, [carregarMensagens]);
 
   const enviarMensagem = async () => {
     const texto = novaMensagem.trim();
@@ -132,7 +133,7 @@ export default function ChatGrupoProfessor() {
 
       {carregando ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator size="large" color="#000000" />
+          <SyncLoader size="large" color="#000000" />
         </View>
       ) : (
         <FlatList
@@ -167,7 +168,7 @@ export default function ChatGrupoProfessor() {
           disabled={enviando}
         >
           {enviando
-            ? <ActivityIndicator size="small" color="#ffffff" />
+            ? <SyncLoader size="small" color="#ffffff" />
             : <Ionicons name="send" size={20} color="#ffffff" />
           }
         </TouchableOpacity>

@@ -1,11 +1,12 @@
 import React from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { CORES } from '../constants/theme';
+import SyncLoader from './SyncLoader';
 
 export default function LoadingGlobal() {
   return (
     <View style={styles.container}>
-      <ActivityIndicator size="large" color={CORES.acento} />
+      <SyncLoader size="large" color={CORES.acento} />
     </View>
   );
 }

@@ -4,7 +4,6 @@ import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import React, { useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -15,6 +14,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../components/SyncLoader';
 import { BASE_URL, fetchComRetry } from './api';
 
 const API_URL = BASE_URL;
@@ -185,7 +185,7 @@ export default function LoginProfessorScreen() {
             disabled={carregando}
           >
             {carregando ? (
-              <ActivityIndicator color="#ffffff" />
+              <SyncLoader color="#ffffff" />
             ) : (
               <>
                 <Text style={styles.textoBotaoPrincipal}>Continuar</Text>

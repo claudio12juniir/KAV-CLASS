@@ -12,7 +12,6 @@ import React, { useCallback, useState } from 'react';
 import ProfileFooter from '../../components/ProfileFooter';
 import { CORES } from '../../constants/theme';
 import {
-  ActivityIndicator,
   Alert,
   FlatList,
   Image,
@@ -27,6 +26,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 
 const API_URL = BASE_URL;
 
@@ -537,7 +537,7 @@ export default function ProfessorDashboard() {
   if (carregando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color={CORES.acento} />
+        <SyncLoader size="large" color={CORES.acento} />
       </View>
     );
   }
@@ -561,7 +561,7 @@ export default function ProfessorDashboard() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.textoCodigoLabel}>CÓDIGO DE CONVITE</Text>
                 {codigoConvite === '...' ? (
-                  <ActivityIndicator size="small" color={CORES.acento} style={{ alignSelf: 'flex-start', marginTop: 4 }} />
+                  <SyncLoader size="small" color={CORES.acento} style={{ alignSelf: 'flex-start', marginTop: 4 }} />
                 ) : (
                   <Text style={[
                     styles.textoCodigo,
@@ -833,7 +833,7 @@ export default function ProfessorDashboard() {
                   disabled={salvandoPresenca}
                 >
                   {salvandoPresenca ? (
-                    <ActivityIndicator size="small" color={op.cor} />
+                    <SyncLoader size="small" color={op.cor} />
                   ) : (
                     <Ionicons name={op.icone} size={26} color={op.cor} />
                   )}
@@ -943,7 +943,7 @@ export default function ProfessorDashboard() {
                   disabled={enviandoLote}
                 >
                   {enviandoLote ? (
-                    <ActivityIndicator color={CORES.fundo} />
+                    <SyncLoader color={CORES.fundo} />
                   ) : (
                     <>
                       <Ionicons name="cloud-upload" size={20} color={CORES.fundo} />
@@ -1079,7 +1079,7 @@ export default function ProfessorDashboard() {
                 disabled={salvando}
               >
                 {salvando ? (
-                  <ActivityIndicator color={CORES.fundo} />
+                  <SyncLoader color={CORES.fundo} />
                 ) : (
                   <>
                     <Ionicons name="checkmark-circle" size={20} color={CORES.fundo} />

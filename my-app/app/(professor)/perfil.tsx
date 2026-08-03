@@ -1,11 +1,11 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { router } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Alert,
   Image,
@@ -51,9 +51,7 @@ export default function PerfilProfessorScreen() {
   const [senhaVisivel, setSenhaVisivel] = useState(false);
   const [accordionSenha, setAccordionSenha] = useState(false);
 
-  useEffect(() => { carregarPerfil(); }, []);
-
-  const carregarPerfil = async () => {
+  const carregarPerfil = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
@@ -74,7 +72,9 @@ export default function PerfilProfessorScreen() {
     } finally {
       setCarregando(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarPerfil(); }, [carregarPerfil]));
 
   const salvarPerfil = async () => {
     if (accordionSenha) {

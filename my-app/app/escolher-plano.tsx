@@ -7,7 +7,6 @@ import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Platform,
   ScrollView,
@@ -16,6 +15,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../components/SyncLoader';
 import { CORES } from '../constants/theme';
 
 const API_URL = BASE_URL;
@@ -266,7 +266,7 @@ export default function EscolherPlanoScreen() {
           >
             {carregando === plano.id || verificando ? (
               <>
-                <ActivityIndicator color={plano.recomendado ? '#fff' : CORES.acento} size="small" style={{ marginRight: 8 }} />
+                <SyncLoader color={plano.recomendado ? '#fff' : CORES.acento} size="small" style={{ marginRight: 8 }} />
                 <Text style={[styles.btnTexto, plano.recomendado ? styles.btnTextoDestaque : styles.btnTextoNormal]}>
                   {verificando ? 'Verificando...' : 'Aguarde...'}
                 </Text>

@@ -1,11 +1,12 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 import { CORES } from '../../constants/theme';
 
 const API_URL = BASE_URL;
@@ -44,9 +45,7 @@ export default function ReposicoesScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    carregarReposicoes();
-  }, [carregarReposicoes]);
+  useFocusEffect(useCallback(() => { carregarReposicoes(); }, [carregarReposicoes]));
 
   const confirmarReposicao = async (id: string) => {
     try {
@@ -92,7 +91,7 @@ export default function ReposicoesScreen() {
   if (carregando) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={CORES.acento} />
+        <SyncLoader size="large" color={CORES.acento} />
       </View>
     );
   }

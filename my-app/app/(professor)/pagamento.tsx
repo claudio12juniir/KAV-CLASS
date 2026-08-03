@@ -5,7 +5,6 @@ import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   FlatList,
   KeyboardAvoidingView,
@@ -18,6 +17,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 import { CORES } from '../../constants/theme';
 
 const API_URL = BASE_URL;
@@ -227,7 +227,7 @@ export default function FinanceiroProfessorScreen() {
                 disabled={notificando === item.id}
               >
                 {notificando === item.id
-                  ? <ActivityIndicator size="small" color={CORES.fundo} />
+                  ? <SyncLoader size="small" color={CORES.fundo} />
                   : <Ionicons name="notifications-outline" size={16} color={CORES.fundo} />
                 }
                 <Text style={styles.textoBotaoNotificar}>Notificar Aluno</Text>
@@ -251,7 +251,7 @@ export default function FinanceiroProfessorScreen() {
   if (carregando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color={CORES.acento} />
+        <SyncLoader size="large" color={CORES.acento} />
       </View>
     );
   }

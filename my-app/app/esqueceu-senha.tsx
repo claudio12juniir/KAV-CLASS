@@ -3,7 +3,6 @@ import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React, { useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   StyleSheet,
   Text,
@@ -11,6 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import SyncLoader from '../components/SyncLoader';
 
 const API_URL = BASE_URL;
 
@@ -83,7 +83,7 @@ export default function EsqueceuSenhaScreen() {
           disabled={enviando}
         >
           {enviando ? (
-            <ActivityIndicator color="#fff" />
+            <SyncLoader color="#fff" />
           ) : (
             <Text style={styles.textoBotao}>Enviar Código</Text>
           )}

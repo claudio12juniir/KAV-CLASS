@@ -1,12 +1,11 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CORES } from '../../constants/theme';
 import {
-    ActivityIndicator,
     Alert,
     FlatList,
     KeyboardAvoidingView,
@@ -17,6 +16,7 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
 
 const API_URL = BASE_URL;
 
@@ -29,15 +29,7 @@ export default function ChatAlunoScreen() {
   
   const flatListRef = useRef<FlatList>(null);
 
-  useEffect(() => {
-    carregarMural();
-    
-    // Atualiza o chat a cada 5 segundos para receber novas mensagens
-    const intervalo = setInterval(carregarMural, 5000); 
-    return () => clearInterval(intervalo);
-  }, []);
-
-  const carregarMural = async () => {
+  const carregarMural = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const alunoId = await SecureStore.getItemAsync('kav_aluno_id') || "";
@@ -56,7 +48,15 @@ export default function ChatAlunoScreen() {
     } finally {
       setCarregando(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarMural(); }, [carregarMural]));
+
+  useEffect(() => {
+    // Atualiza o chat a cada 5 segundos para receber novas mensagens
+    const intervalo = setInterval(carregarMural, 5000);
+    return () => clearInterval(intervalo);
+  }, [carregarMural]);
 
   const enviarMensagem = async () => {
     if (input.trim() === '') return;
@@ -120,7 +120,7 @@ export default function ChatAlunoScreen() {
   if (carregando && mensagens.length === 0) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color={CORES.acento} />
+        <SyncLoader size="large" color={CORES.acento} />
       </View>
     );
   }
