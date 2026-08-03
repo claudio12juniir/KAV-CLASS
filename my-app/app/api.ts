@@ -11,17 +11,22 @@ async function fetchComRetry(
   delayMs = 3000,
   timeoutMs = 60000,
 ): Promise<Response> {
+  const { signal: signalExterno, ...resto } = options;
   for (let i = 0; i < tentativas; i++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onExternoAbort = () => controller.abort();
+    signalExterno?.addEventListener('abort', onExternoAbort);
     try {
-      const resposta = await fetch(url, { ...options, signal: controller.signal });
-      clearTimeout(timer);
+      const resposta = await fetch(url, { ...resto, signal: controller.signal });
       return resposta;
     } catch (erro) {
-      clearTimeout(timer);
-      if (i === tentativas - 1) throw erro;
+      // Se quem chamou cancelou de propósito, não insiste em mais tentativas.
+      if (signalExterno?.aborted || i === tentativas - 1) throw erro;
       await new Promise(r => setTimeout(r, delayMs * (i + 1)));
+    } finally {
+      clearTimeout(timer);
+      signalExterno?.removeEventListener('abort', onExternoAbort);
     }
   }
   throw new Error('Falha na conexão após múltiplas tentativas.');
