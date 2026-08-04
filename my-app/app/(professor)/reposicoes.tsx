@@ -214,12 +214,15 @@ export default function ReposicoesScreen() {
         {/* iOS: picker único datetime */}
         {Platform.OS === 'ios' && mostrarPickerData && (
           <View style={styles.containerRoleta}>
+            <Text style={styles.tituloRoleta}>Selecione a data e o horário</Text>
             <DateTimePicker
               value={dataSelecionada}
               mode="datetime"
               display="spinner"
               onChange={aoMudarDataIOS}
               locale="pt-BR"
+              textColor="#000000"
+              themeVariant="light"
             />
             <TouchableOpacity style={styles.botaoOkRoleta} onPress={fecharPickerIOS}>
               <Text style={styles.textoOkRoleta}>Confirmar</Text>
@@ -230,6 +233,7 @@ export default function ReposicoesScreen() {
         {/* Android: picker de data */}
         {Platform.OS === 'android' && mostrarPickerData && (
           <View style={styles.containerRoleta}>
+            <Text style={styles.tituloRoleta}>Selecione a data</Text>
             <DateTimePicker
               value={dataSelecionada}
               mode="date"
@@ -245,6 +249,7 @@ export default function ReposicoesScreen() {
         {/* Android: picker de hora (abre após escolher a data) */}
         {Platform.OS === 'android' && mostrarPickerHora && (
           <View style={styles.containerRoleta}>
+            <Text style={styles.tituloRoleta}>Selecione o horário</Text>
             <DateTimePicker
               value={dataSelecionada}
               mode="time"
@@ -333,9 +338,10 @@ const styles = StyleSheet.create({
 
   botaoData:    { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 10, padding: 14, marginBottom: 15, borderWidth: 1, borderColor: '#D0D8DC', gap: 10 },
   textoData:    { fontSize: 15, color: '#000', fontWeight: '500' },
-  containerRoleta: { backgroundColor: '#fff', borderRadius: 12, padding: 10, marginBottom: 15, alignItems: 'center', borderWidth: 1, borderColor: '#E0E0E0' },
-  botaoOkRoleta: { marginTop: 10, backgroundColor: '#E8F8EE', paddingHorizontal: 20, paddingVertical: 8, borderRadius: 20 },
-  textoOkRoleta: { color: '#154a22', fontWeight: 'bold' },
+  containerRoleta: { backgroundColor: '#ffffff', borderRadius: 12, padding: 12, marginBottom: 15, alignItems: 'center', borderWidth: 1, borderColor: '#D0D8DC' },
+  tituloRoleta: { fontSize: 13, fontWeight: '600', color: '#333', marginBottom: 4 },
+  botaoOkRoleta: { marginTop: 10, backgroundColor: '#000', paddingHorizontal: 24, paddingVertical: 10, borderRadius: 20 },
+  textoOkRoleta: { color: '#fff', fontWeight: 'bold' },
 
   input:        { backgroundColor: '#fff', borderRadius: 10, padding: 12, marginBottom: 15, borderWidth: 1, borderColor: '#D0D8DC', textAlignVertical: 'top' },
   botaoEnviar:  { backgroundColor: '#000', borderRadius: 10, padding: 15, alignItems: 'center' },
