@@ -1020,6 +1020,18 @@ app.delete('/api/professor/notificacoes/:id', async (req, res) => {
   }
 });
 
+app.delete('/api/professor/notificacoes', async (req, res) => {
+  try {
+    const { professorId } = req.query;
+    if (!professorId) return res.status(400).json({ erro: 'professorId obrigatório.' });
+    await prisma.notificacao.deleteMany({ where: { professorId } });
+    res.json({ mensagem: 'Histórico de notificações apagado.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao apagar histórico.' });
+  }
+});
+
 // ============================================================================
 // 5. ROTAS DO ALUNO
 // ============================================================================

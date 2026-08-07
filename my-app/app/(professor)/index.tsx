@@ -6,7 +6,7 @@ import * as SecureStore from 'expo-secure-store';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useState } from 'react';
 import ProfileFooter from '../../components/ProfileFooter';
@@ -408,6 +408,34 @@ export default function ProfessorDashboard() {
     );
   };
 
+  const apagarTodasNotificacoes = () => {
+    if (notificacoes.length === 0) return;
+    Alert.alert(
+      'Apagar histórico',
+      'Deseja apagar todas as notificações do histórico? Essa ação não pode ser desfeita.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Apagar tudo',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const token = await SecureStore.getItemAsync('kav_token');
+              await fetchComRetry(`${API_URL}/api/professor/notificacoes?professorId=${professorId}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              setNotificacoes([]);
+              setNaoLidas(0);
+            } catch {
+              Alert.alert('Erro de Conexão', 'Não foi possível apagar o histórico.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const fazerLogout = async () => {
     await SecureStore.deleteItemAsync('kav_token');
     await SecureStore.deleteItemAsync('kav_professor_id');
@@ -801,6 +829,11 @@ export default function ProfessorDashboard() {
                 {naoLidas > 0 && (
                   <TouchableOpacity onPress={marcarTodasLidas}>
                     <Text style={styles.linkLidas}>Marcar todas lidas</Text>
+                  </TouchableOpacity>
+                )}
+                {notificacoes.length > 0 && (
+                  <TouchableOpacity onPress={apagarTodasNotificacoes} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="trash-outline" size={20} color={CORES.erro} />
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity onPress={() => setModalNotifVisible(false)}>

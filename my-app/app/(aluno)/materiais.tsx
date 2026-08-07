@@ -10,7 +10,7 @@ import { Alert, Image, Linking,
   TouchableOpacity, View,
 } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as WebBrowser from 'expo-web-browser';
 import { CORES } from '../../constants/theme';
 
