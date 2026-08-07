@@ -3,6 +3,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
+import * as FileSystem from 'expo-file-system';
+import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useState } from 'react';
 import { CORES } from '../../constants/theme';
 import {
@@ -10,8 +12,10 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -87,6 +91,8 @@ export default function AlunosProfessorScreen() {
   const [alternandoStatus, setAlternandoStatus]     = useState(false);
   const [novoValorMensalidade, setNovoValorMensalidade] = useState('');
   const [salvandoMensalidade, setSalvandoMensalidade]   = useState(false);
+  const [modalImagemMaterial, setModalImagemMaterial]   = useState<{ titulo: string; uri: string } | null>(null);
+  const [modalTextoMaterial, setModalTextoMaterial]     = useState<{ titulo: string; conteudo: string } | null>(null);
 
   // ── Modal configurar (aluno pendente) ─────────────────────────────────────
   const [modalConfigVisivel, setModalConfigVisivel] = useState(false);
@@ -169,6 +175,37 @@ export default function AlunosProfessorScreen() {
     setRecorrencia('SEMANAL');
     setTempoContrato(6);
     setModalConfigVisivel(true);
+  };
+
+  // ── Recusar solicitação de cadastro (pendente) ──────────────────────────────
+  const recusarSolicitacao = (aluno: any) => {
+    Alert.alert(
+      'Recusar solicitação',
+      `Deseja recusar o cadastro de ${aluno.nome}? Essa ação não pode ser desfeita.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Recusar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const token = await SecureStore.getItemAsync('kav_token');
+              const res = await fetchComRetry(`${API_URL}/api/alunos/${aluno.id}/cancelar`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (res.ok) {
+                setAlunosPendentes(prev => prev.filter(a => a.id !== aluno.id));
+              } else {
+                Alert.alert('Erro', 'Não foi possível recusar a solicitação.');
+              }
+            } catch {
+              Alert.alert('Erro de Conexão', 'Verifique sua conexão.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   // ── Salvar horário (perfil ativo) ───────────────────────────────────────────
@@ -363,6 +400,64 @@ export default function AlunosProfessorScreen() {
     }
   };
 
+  // ── Abrir material didático (histórico de aulas) ────────────────────────────
+  const abrirURLMaterial = async (url: string) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      await WebBrowser.openBrowserAsync(url);
+    } else {
+      await Linking.openURL(url);
+    }
+  };
+
+  const abrirArquivoBase64Material = async (material: any) => {
+    const matches = material.conteudo!.match(/^data:([^;]+);base64,(.+)$/s);
+    if (!matches) {
+      Alert.alert('Erro', 'Formato de arquivo não reconhecido.');
+      return;
+    }
+    const mimeType = matches[1];
+    const base64Data = matches[2];
+    const ext = mimeType.split('/')[1]?.split(';')[0] || 'bin';
+    const fileUri = `${FileSystem.cacheDirectory}kav_${material.id}.${ext}`;
+    await FileSystem.writeAsStringAsync(fileUri, base64Data, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    await Linking.openURL(fileUri);
+  };
+
+  const abrirMaterial = async (material: any) => {
+    const tipo = (material.tipo || '').toLowerCase();
+    try {
+      if (tipo === 'imagem') {
+        const uri = material.url || material.conteudo;
+        if (uri) setModalImagemMaterial({ titulo: material.titulo, uri });
+        else Alert.alert('Sem conteúdo', 'Imagem não disponível.');
+        return;
+      }
+      if (tipo === 'texto') {
+        if (material.conteudo) setModalTextoMaterial({ titulo: material.titulo, conteudo: material.conteudo });
+        else Alert.alert('Sem conteúdo', 'Texto não disponível.');
+        return;
+      }
+      if (tipo === 'link' || tipo === 'video') {
+        if (material.url) await abrirURLMaterial(material.url);
+        else Alert.alert('Sem link', 'Nenhum link disponível para este material.');
+        return;
+      }
+      if (tipo === 'arquivo' || tipo === 'audio') {
+        if (material.url) { await abrirURLMaterial(material.url); return; }
+        if (material.conteudo) { await abrirArquivoBase64Material(material); return; }
+        Alert.alert('Sem conteúdo', 'Este arquivo não está disponível.');
+        return;
+      }
+      if (material.url) await abrirURLMaterial(material.url);
+      else if (material.conteudo) setModalTextoMaterial({ titulo: material.titulo, conteudo: material.conteudo });
+      else Alert.alert('Sem conteúdo', 'Este material não possui link ou conteúdo disponível.');
+    } catch {
+      Alert.alert('Erro', 'Não foi possível abrir este material.');
+    }
+  };
+
   const alunosFiltrados = alunos.filter(a =>
     a.nome?.toLowerCase().includes(busca.toLowerCase())
   );
@@ -450,26 +545,31 @@ export default function AlunosProfessorScreen() {
                     </View>
                   </View>
                   {alunosPendentes.map((aluno) => (
-                    <TouchableOpacity
-                      key={aluno.id}
-                      style={styles.cardPendente}
-                      onPress={() => abrirConfig(aluno)}
-                    >
-                      {aluno.fotoUrl ? (
-                        <Image source={{ uri: aluno.fotoUrl }} style={styles.avatarImg} />
-                      ) : (
-                        <View style={styles.avatarPendente}>
-                          <Text style={styles.letraAvatar}>{aluno.nome?.charAt(0).toUpperCase()}</Text>
+                    <View key={aluno.id} style={styles.cardPendente}>
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+                        onPress={() => abrirConfig(aluno)}
+                      >
+                        {aluno.fotoUrl ? (
+                          <Image source={{ uri: aluno.fotoUrl }} style={styles.avatarImg} />
+                        ) : (
+                          <View style={styles.avatarPendente}>
+                            <Text style={styles.letraAvatar}>{aluno.nome?.charAt(0).toUpperCase()}</Text>
+                          </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.nomePendente}>{aluno.nome}</Text>
+                          <Text style={styles.subtextoPendente}>Toque para configurar mensalidade e agenda</Text>
                         </View>
-                      )}
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.nomePendente}>{aluno.nome}</Text>
-                        <Text style={styles.subtextoPendente}>Toque para configurar mensalidade e agenda</Text>
-                      </View>
-                      <View style={styles.badgePendente}>
-                        <Text style={styles.textoBadgePendente}>Pendente</Text>
-                      </View>
-                    </TouchableOpacity>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.botaoRecusarPendente}
+                        onPress={() => recusarSolicitacao(aluno)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="close" size={18} color={CORES.erro} />
+                      </TouchableOpacity>
+                    </View>
                   ))}
                 </View>
               )}
@@ -755,10 +855,16 @@ export default function AlunosProfessorScreen() {
                           {materiais.length > 0 && (
                             <View style={styles.materiaisBox}>
                               {materiais.map((m: any) => (
-                                <View key={m.id} style={styles.itemMaterial}>
+                                <TouchableOpacity
+                                  key={m.id}
+                                  style={styles.itemMaterial}
+                                  onPress={() => abrirMaterial(m)}
+                                  activeOpacity={0.6}
+                                >
                                   <Ionicons name={iconeMatTipo(m.tipo) as any} size={13} color={CORES.secundaria} />
                                   <Text style={styles.textoItemMaterial} numberOfLines={1}>{m.titulo}</Text>
-                                </View>
+                                  <Ionicons name="chevron-forward" size={13} color={CORES.secundaria} />
+                                </TouchableOpacity>
                               ))}
                             </View>
                           )}
@@ -886,6 +992,37 @@ export default function AlunosProfessorScreen() {
           )}
         </View>
       </Modal>
+
+      {/* Modal de Imagem (material didático) */}
+      <Modal visible={!!modalImagemMaterial} transparent animationType="fade" onRequestClose={() => setModalImagemMaterial(null)}>
+        <Pressable style={styles.modalOverlayMaterial} onPress={() => setModalImagemMaterial(null)}>
+          <Pressable style={styles.modalImagemMaterialContainer} onPress={() => {}}>
+            <Text style={styles.modalTituloMaterial} numberOfLines={2}>{modalImagemMaterial?.titulo}</Text>
+            {modalImagemMaterial && (
+              <Image source={{ uri: modalImagemMaterial.uri }} style={styles.imagemCompletaMaterial} resizeMode="contain" />
+            )}
+            <TouchableOpacity style={styles.botaoFecharMaterial} onPress={() => setModalImagemMaterial(null)}>
+              <Text style={styles.textoBotaoFecharMaterial}>Fechar</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Modal de Texto (material didático) */}
+      <Modal visible={!!modalTextoMaterial} transparent animationType="slide" onRequestClose={() => setModalTextoMaterial(null)}>
+        <View style={styles.modalOverlayMaterial}>
+          <View style={styles.modalTextoMaterialContainer}>
+            <Text style={styles.modalTituloMaterial} numberOfLines={2}>{modalTextoMaterial?.titulo}</Text>
+            <View style={styles.linhaDivisoriaMaterial} />
+            <ScrollView style={styles.scrollTextoMaterial} showsVerticalScrollIndicator>
+              <Text style={styles.textoConteudoMaterial}>{modalTextoMaterial?.conteudo}</Text>
+            </ScrollView>
+            <TouchableOpacity style={styles.botaoFecharMaterial} onPress={() => setModalTextoMaterial(null)}>
+              <Text style={styles.textoBotaoFecharMaterial}>Fechar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -927,6 +1064,10 @@ const styles = StyleSheet.create({
   subtextoPendente: { color: CORES.aviso, fontSize: 12, marginTop: 2 },
   badgePendente: { backgroundColor: '#FFECDB', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 1, borderColor: '#FFD0A0' },
   textoBadgePendente: { color: CORES.aviso, fontSize: 12, fontWeight: 'bold' },
+  botaoRecusarPendente: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: '#FFECDB',
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#FFD0A0', marginLeft: 8,
+  },
 
   cardAluno: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: CORES.superficie,
@@ -1036,4 +1177,30 @@ const styles = StyleSheet.create({
   materiaisBox: { marginTop: 10, gap: 4 },
   itemMaterial: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   textoItemMaterial: { color: CORES.secundaria, fontSize: 12, flex: 1 },
+  modalOverlayMaterial: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center', alignItems: 'center', padding: 20,
+  },
+  modalImagemMaterialContainer: {
+    backgroundColor: CORES.superficie, borderRadius: 16, padding: 20,
+    width: '100%', maxHeight: '85%', alignItems: 'center',
+  },
+  modalTextoMaterialContainer: {
+    backgroundColor: CORES.superficie, borderRadius: 16, padding: 20,
+    width: '100%', maxHeight: '80%',
+  },
+  modalTituloMaterial: {
+    color: CORES.primaria, fontSize: 16, fontWeight: '700',
+    marginBottom: 14, textAlign: 'center',
+  },
+  imagemCompletaMaterial: { width: '100%', height: 320, borderRadius: 8, marginBottom: 16 },
+  linhaDivisoriaMaterial: { height: 1, backgroundColor: CORES.borda, marginBottom: 14 },
+  scrollTextoMaterial: { maxHeight: 400, marginBottom: 12 },
+  textoConteudoMaterial: { color: CORES.primaria, fontSize: 15, lineHeight: 24 },
+  botaoFecharMaterial: {
+    backgroundColor: CORES.acento, borderRadius: 8,
+    paddingVertical: 12, paddingHorizontal: 32,
+    alignSelf: 'center', marginTop: 8,
+  },
+  textoBotaoFecharMaterial: { color: '#fff', fontWeight: '700', fontSize: 14 },
 });

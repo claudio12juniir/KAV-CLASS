@@ -259,6 +259,36 @@ export default function ProfessorDashboard() {
     setModalConfigVisible(true);
   };
 
+  const recusarSolicitacao = (aluno: any) => {
+    Alert.alert(
+      'Recusar solicitação',
+      `Deseja recusar o cadastro de ${aluno.nome}? Essa ação não pode ser desfeita.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Recusar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const token = await SecureStore.getItemAsync('kav_token');
+              const res = await fetchComRetry(`${API_URL}/api/alunos/${aluno.id}/cancelar`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (res.ok) {
+                setAlunosPendentes(prev => prev.filter(a => a.id !== aluno.id));
+              } else {
+                Alert.alert('Erro', 'Não foi possível recusar a solicitação.');
+              }
+            } catch {
+              Alert.alert('Erro de Conexão', 'Verifique sua conexão.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const salvarConfiguracao = async (alunoIdOverride?: string) => {
     if (!valorMensalidade || !diaCobranca) {
       Alert.alert("Atenção", "Preencha o valor da mensalidade e o dia de cobrança.");
@@ -349,6 +379,33 @@ export default function ProfessorDashboard() {
       setNotificacoes(prev => prev.map(n => ({ ...n, lida: true })));
       setNaoLidas(0);
     } catch {}
+  };
+
+  const excluirNotificacao = (notif: Notificacao) => {
+    Alert.alert(
+      'Excluir notificação',
+      'Deseja remover esta notificação do histórico?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const token = await SecureStore.getItemAsync('kav_token');
+              await fetchComRetry(`${API_URL}/api/professor/notificacoes/${notif.id}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              setNotificacoes(prev => prev.filter(n => n.id !== notif.id));
+              if (!notif.lida) setNaoLidas(prev => Math.max(0, prev - 1));
+            } catch {
+              Alert.alert('Erro de Conexão', 'Não foi possível excluir a notificação.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const fazerLogout = async () => {
@@ -637,6 +694,13 @@ export default function ProfessorDashboard() {
                 <TouchableOpacity style={styles.botaoConfigurar} onPress={() => abrirModalConfig(aluno)}>
                   <Text style={styles.textoBotaoConfigurar}>Configurar</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.botaoRecusarNovoAluno}
+                  onPress={() => recusarSolicitacao(aluno)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <Ionicons name="close" size={18} color={CORES.erro} />
+                </TouchableOpacity>
               </View>
             ))}
           </View>
@@ -775,6 +839,13 @@ export default function ProfessorDashboard() {
                       </Text>
                     </View>
                     {!notif.lida && <View style={styles.pontinhoNaoLido} />}
+                    <TouchableOpacity
+                      style={styles.botaoExcluirNotif}
+                      onPress={() => excluirNotificacao(notif)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="trash-outline" size={18} color={CORES.secundaria} />
+                    </TouchableOpacity>
                   </View>
                   {(notif.tipo === 'CONTRATO_EXPIRADO' || notif.tipo === 'CONTRATO_EXPIRANDO') && (
                     <TouchableOpacity style={styles.botaoRenovar} onPress={() => abrirRenovacao(notif)}>
@@ -1146,6 +1217,10 @@ const styles = StyleSheet.create({
   notifSub: { fontSize: 12, color: CORES.secundaria, marginTop: 2 },
   botaoConfigurar: { backgroundColor: CORES.acento, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8 },
   textoBotaoConfigurar: { color: CORES.fundo, fontWeight: 'bold', fontSize: 13 },
+  botaoRecusarNovoAluno: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: CORES.superficie,
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: CORES.borda, marginLeft: 8,
+  },
   cardAula: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: CORES.superficie,
     borderRadius: 12, padding: 14, marginBottom: 10, borderWidth: 1, borderColor: CORES.borda, gap: 14,
@@ -1183,6 +1258,7 @@ const styles = StyleSheet.create({
   msgNotif: { fontSize: 13, color: CORES.secundaria, lineHeight: 18, marginBottom: 6 },
   dataNotif: { fontSize: 11, color: CORES.secundaria },
   pontinhoNaoLido: { width: 8, height: 8, borderRadius: 4, backgroundColor: CORES.erro, marginTop: 4 },
+  botaoExcluirNotif: { marginLeft: 6 },
   botaoRenovar: {
     flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: CORES.info,
     borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8, marginTop: 10, alignSelf: 'flex-start',

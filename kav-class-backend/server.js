@@ -412,7 +412,7 @@ app.post('/api/login', async (req, res) => {
     if (!await bcrypt.compare(senha, usuario.senha)) return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
 
     if (papel === 'professor' &&
-        (usuario.assinaturaStatus === 'PENDENTE' || usuario.assinaturaStatus === 'INATIVO')) {
+        (usuario.assinaturaStatus === 'PENDENTE' || usuario.assinaturaStatus === 'INATIVO' || usuario.assinaturaStatus === 'CANCELADO')) {
       return res.status(403).json({
         erro: 'Sua conta ainda não possui uma assinatura ativa. Selecione um plano para continuar.',
         assinaturaStatus: usuario.assinaturaStatus,
@@ -1008,6 +1008,15 @@ app.put('/api/professor/notificacoes/todas-lidas', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.delete('/api/professor/notificacoes/:id', async (req, res) => {
+  try {
+    await prisma.notificacao.delete({ where: { id: req.params.id } });
+    res.json({ mensagem: 'Notificação excluída.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao excluir notificação.');
   }
 });
 
