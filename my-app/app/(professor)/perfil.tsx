@@ -18,6 +18,7 @@ import {
   View,
 } from 'react-native';
 import LoadingGlobal from '../../components/LoadingGlobal';
+import SyncLoader from '../../components/SyncLoader';
 import { CORES } from '../../constants/theme';
 
 const API_URL = BASE_URL;
@@ -34,11 +35,31 @@ interface Perfil {
   fotoUrl: string | null;
 }
 
+interface Assinatura {
+  assinaturaStatus: 'PENDENTE' | 'ATIVO' | 'INATIVO' | 'VITALICIO' | 'CANCELADO' | 'TESTE';
+  assinaturaFim: string | null;
+  email: string;
+  codigoConvite: string | null;
+}
+
+const STATUS_LABEL: Record<Assinatura['assinaturaStatus'], string> = {
+  ATIVO: 'Ativa',
+  VITALICIO: 'Vitalícia',
+  PENDENTE: 'Pendente',
+  INATIVO: 'Inativa',
+  CANCELADO: 'Cancelada',
+  TESTE: 'Teste grátis',
+};
+
 export default function PerfilProfessorScreen() {
   const navigation = useNavigation();
   const [perfil, setPerfil] = useState<Perfil | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
+
+  const [assinatura, setAssinatura] = useState<Assinatura | null>(null);
+  const [carregandoAssinatura, setCarregandoAssinatura] = useState(true);
+  const [cancelando, setCancelando] = useState(false);
 
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
@@ -74,7 +95,78 @@ export default function PerfilProfessorScreen() {
     }
   }, []);
 
-  useFocusEffect(useCallback(() => { carregarPerfil(); }, [carregarPerfil]));
+  const carregarAssinatura = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
+      const res = await fetchComRetry(`${API_URL}/api/professor/assinatura/${professorId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        setAssinatura(await res.json());
+      }
+    } catch (err) {
+      console.error('Erro ao carregar assinatura:', err);
+    } finally {
+      setCarregandoAssinatura(false);
+    }
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarPerfil(); carregarAssinatura(); }, [carregarPerfil, carregarAssinatura]));
+
+  const diasRestantesTeste = assinatura?.assinaturaFim
+    ? Math.max(0, Math.ceil((new Date(assinatura.assinaturaFim).getTime() - Date.now()) / 86400000))
+    : null;
+
+  const irParaEscolherPlano = async () => {
+    if (!assinatura) return;
+    const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
+    router.push({
+      pathname: '/escolher-plano',
+      params: { professorId, email: assinatura.email, codigoConvite: assinatura.codigoConvite || '' },
+    });
+  };
+
+  const cancelarAssinatura = () => {
+    Alert.alert(
+      'Cancelar assinatura',
+      'Você vai manter acesso normal até o fim do período que já pagou. Depois disso, sua conta deixa de ser cobrada e o acesso é encerrado. Deseja continuar?',
+      [
+        { text: 'Voltar', style: 'cancel' },
+        {
+          text: 'Cancelar assinatura',
+          style: 'destructive',
+          onPress: async () => {
+            setCancelando(true);
+            try {
+              const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
+              const token = await SecureStore.getItemAsync('kav_token');
+              const res = await fetchComRetry(`${API_URL}/api/professor/assinatura/cancelar`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                body: JSON.stringify({ professorId }),
+              });
+              const dados = await res.json();
+              if (res.ok) {
+                const dataFim = dados.cancelaEm
+                  ? new Date(dados.cancelaEm).toLocaleDateString('pt-BR')
+                  : 'o fim do período atual';
+                Alert.alert('Assinatura cancelada', `Seu acesso continua ativo até ${dataFim}.`);
+                carregarAssinatura();
+              } else {
+                Alert.alert('Erro', dados.erro || 'Não foi possível cancelar a assinatura.');
+              }
+            } catch (err) {
+              console.error('Erro ao cancelar assinatura:', err);
+              Alert.alert('Erro', 'Não foi possível cancelar a assinatura. Tente novamente.');
+            } finally {
+              setCancelando(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const salvarPerfil = async () => {
     if (accordionSenha) {
@@ -334,6 +426,70 @@ export default function PerfilProfessorScreen() {
           <Text style={styles.btnSalvarTexto}>{salvando ? 'SALVANDO...' : 'SALVAR ALTERAÇÕES'}</Text>
         </TouchableOpacity>
 
+        {/* Assinatura */}
+        <Text style={styles.secaoLabel}>ASSINATURA</Text>
+
+        {carregandoAssinatura ? (
+          <SyncLoader size="small" color={CORES.primaria} />
+        ) : assinatura ? (
+          <View style={styles.cardAssinatura}>
+            <Text style={styles.statusAssinatura}>{STATUS_LABEL[assinatura.assinaturaStatus]}</Text>
+
+            {assinatura.assinaturaStatus === 'VITALICIO' && (
+              <Text style={styles.subtextoAssinatura}>Plano vitalício — sem cobrança recorrente.</Text>
+            )}
+
+            {assinatura.assinaturaStatus === 'ATIVO' && (
+              <>
+                {assinatura.assinaturaFim && (
+                  <Text style={styles.subtextoAssinatura}>
+                    Próxima cobrança em {new Date(assinatura.assinaturaFim).toLocaleDateString('pt-BR')}.
+                  </Text>
+                )}
+                <TouchableOpacity
+                  style={styles.botaoCancelarAssinatura}
+                  onPress={cancelarAssinatura}
+                  disabled={cancelando}
+                >
+                  {cancelando ? (
+                    <SyncLoader size="small" color={CORES.erro} />
+                  ) : (
+                    <Text style={styles.textoCancelarAssinatura}>Cancelar assinatura</Text>
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
+
+            {assinatura.assinaturaStatus === 'TESTE' && (
+              <>
+                <Text style={styles.subtextoAssinatura}>
+                  {diasRestantesTeste !== null
+                    ? `Faltam ${diasRestantesTeste} dia${diasRestantesTeste === 1 ? '' : 's'} do seu teste grátis.`
+                    : 'Seu teste grátis está ativo.'}
+                </Text>
+                <TouchableOpacity style={styles.botaoAssinarAgora} onPress={irParaEscolherPlano}>
+                  <Text style={styles.textoAssinarAgora}>Assinar agora</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {(assinatura.assinaturaStatus === 'CANCELADO' ||
+              assinatura.assinaturaStatus === 'INATIVO' ||
+              assinatura.assinaturaStatus === 'PENDENTE') && (
+              <>
+                <Text style={styles.subtextoAssinatura}>
+                  {assinatura.assinaturaStatus === 'CANCELADO'
+                    ? 'Sua assinatura foi cancelada.'
+                    : 'Nenhuma assinatura ativa no momento.'}
+                </Text>
+                <TouchableOpacity style={styles.botaoAssinarAgora} onPress={irParaEscolherPlano}>
+                  <Text style={styles.textoAssinarAgora}>Assinar agora</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        ) : null}
+
         {/* Logout */}
         <TouchableOpacity style={styles.btnLogout} onPress={logout} activeOpacity={0.85}>
           <Ionicons name="log-out-outline" size={20} color={CORES.erro} />
@@ -422,6 +578,23 @@ const styles = StyleSheet.create({
     alignItems: 'center', marginTop: 24,
   },
   btnSalvarTexto: { color: CORES.fundo, fontSize: 14, fontWeight: 'bold', letterSpacing: 2 },
+
+  cardAssinatura: {
+    backgroundColor: CORES.superficie, borderWidth: 1, borderColor: CORES.borda,
+    padding: 15, borderRadius: 12, marginTop: 24,
+  },
+  statusAssinatura: { fontSize: 16, fontWeight: 'bold', color: CORES.primaria },
+  subtextoAssinatura: { fontSize: 14, color: CORES.secundaria, marginTop: 4 },
+  botaoCancelarAssinatura: {
+    marginTop: 15, alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 12, borderRadius: 10, borderWidth: 1, borderColor: CORES.erro,
+  },
+  textoCancelarAssinatura: { color: CORES.erro, fontSize: 15, fontWeight: 'bold' },
+  botaoAssinarAgora: {
+    marginTop: 15, alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 12, borderRadius: 10, backgroundColor: CORES.acento,
+  },
+  textoAssinarAgora: { color: CORES.fundo, fontSize: 15, fontWeight: 'bold' },
 
   btnLogout: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,

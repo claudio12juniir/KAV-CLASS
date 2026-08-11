@@ -1,13 +1,24 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cron = require('node-cron');
 const { PrismaClient } = require('@prisma/client');
+const { OAuth2Client } = require('google-auth-library');
 const stripe = process.env.STRIPE_SECRET_KEY
   ? require('stripe')(process.env.STRIPE_SECRET_KEY)
   : null;
+
+// Client IDs OAuth do Google (Web/iOS/Android) — login com Google fica desativado
+// (503) até essas variáveis serem configuradas no ambiente.
+const GOOGLE_CLIENT_IDS = [
+  process.env.GOOGLE_CLIENT_ID_WEB,
+  process.env.GOOGLE_CLIENT_ID_IOS,
+  process.env.GOOGLE_CLIENT_ID_ANDROID,
+].filter(Boolean);
+const googleClient = GOOGLE_CLIENT_IDS.length ? new OAuth2Client() : null;
 
 const prisma = new PrismaClient({
   log: ['error', 'warn'],
@@ -126,6 +137,26 @@ function gerarCodigoConvite() {
 
 function gerarOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// Valida o idToken do Google no próprio servidor (nunca confiar em dados que o
+// app alega ter vindo do Google sem checar a assinatura contra o Google).
+// Lança um erro com `.status` para as rotas devolverem o código HTTP certo.
+async function verificarGoogleIdToken(idToken) {
+  if (!googleClient) {
+    throw Object.assign(new Error('Login com Google não está configurado no servidor.'), { status: 503 });
+  }
+  try {
+    const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_IDS });
+    const payload = ticket.getPayload();
+    if (!payload?.email_verified) {
+      throw Object.assign(new Error('E-mail do Google não verificado.'), { status: 401 });
+    }
+    return payload;
+  } catch (err) {
+    if (err.status) throw err;
+    throw Object.assign(new Error('Token do Google inválido ou expirado.'), { status: 401 });
+  }
 }
 
 async function enviarPushNotificacao(expoPushToken, titulo, corpo, dados = {}) {
@@ -345,33 +376,58 @@ cron.schedule('0 8 * * *', verificarAulasAmanha);
 
 app.get('/ping', (_req, res) => res.json({ mensagem: 'Backend do KAV Class está online!' }));
 
+// Duração do período de teste grátis oferecido a professores novos.
+const DIAS_TESTE_GRATIS = 15;
+
 app.post('/api/professores/cadastro', async (req, res) => {
   try {
     const { nome, email, senha, telefone, cursos, fotoUrl } = req.body;
     if (!nome || !email || !senha) return res.status(400).json({ erro: 'nome, email e senha são obrigatórios.' });
 
+    const emailNorm = email.toLowerCase().trim();
+    if (await prisma.professor.findUnique({ where: { email: emailNorm } }))
+      return res.status(400).json({ erro: 'E-mail já em uso.' });
+
     const salt = await bcrypt.genSalt(10);
     const novoProfessor = await prisma.professor.create({
       data: {
         nome,
-        email: email.toLowerCase().trim(),
+        email: emailNorm,
         telefone: telefone || null,
         senha: await bcrypt.hash(senha, salt),
         cursos: Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []),
         codigoConvite: gerarCodigoConvite(),
         fotoUrl: fotoUrl || null,
+        assinaturaStatus: 'TESTE',
+        assinaturaFim: new Date(Date.now() + DIAS_TESTE_GRATIS * 24 * 60 * 60 * 1000),
       },
     });
-    res.status(201).json({ mensagem: 'Professor criado!', codigoConvite: novoProfessor.codigoConvite, professorId: novoProfessor.id });
+
+    const token = jwt.sign({ id: novoProfessor.id, papel: 'professor' }, SEGREDO_JWT, { expiresIn: '7d' });
+    res.status(201).json({
+      mensagem: 'Professor criado! Teste grátis de 15 dias ativado.',
+      token,
+      usuario: { id: novoProfessor.id, nome: novoProfessor.nome, papel: 'professor' },
+      codigoConvite: novoProfessor.codigoConvite,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao criar professor.' });
   }
 });
 
+// Converte "DD/MM/AAAA" (formato usado pelo app) em Date; ignora entradas inválidas.
+function parseDataNascimento(valor) {
+  if (!valor || typeof valor !== 'string') return null;
+  const m = valor.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!m) return null;
+  const data = new Date(Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1])));
+  return isNaN(data.getTime()) ? null : data;
+}
+
 app.post('/api/alunos/cadastro', async (req, res) => {
   try {
-    const { nome, email, senha, telefone, codigoConvite, fotoUrl } = req.body;
+    const { nome, email, senha, telefone, dataNascimento, codigoConvite, fotoUrl } = req.body;
     if (!nome || !email || !senha || !codigoConvite) return res.status(400).json({ erro: 'nome, email, senha e codigoConvite são obrigatórios.' });
 
     if (await prisma.aluno.findUnique({ where: { email: email.toLowerCase().trim() } }))
@@ -385,6 +441,7 @@ app.post('/api/alunos/cadastro', async (req, res) => {
       data: {
         nome,
         telefone: telefone || null,
+        dataNascimento: parseDataNascimento(dataNascimento),
         email: email.toLowerCase().trim(),
         senha: await bcrypt.hash(senha, salt),
         professorId: professor.id,
@@ -399,6 +456,38 @@ app.post('/api/alunos/cadastro', async (req, res) => {
   }
 });
 
+// Confere se a assinatura do professor permite acesso. Se o teste grátis venceu,
+// rebaixa a conta pra INATIVO nesse momento (checagem "preguiçosa", feita no login,
+// no mesmo espírito do resto da API que não tem middleware de autorização por rota).
+// Retorna null se pode entrar, ou o corpo do 403 a devolver se estiver bloqueado.
+async function checarBloqueioAssinaturaProfessor(professor) {
+  let status = professor.assinaturaStatus;
+  let testeVencido = false;
+
+  if (status === 'TESTE') {
+    if (professor.assinaturaFim && professor.assinaturaFim <= new Date()) {
+      await prisma.professor.update({ where: { id: professor.id }, data: { assinaturaStatus: 'INATIVO' } });
+      status = 'INATIVO';
+      testeVencido = true;
+    } else {
+      return null;
+    }
+  }
+
+  if (status === 'PENDENTE' || status === 'INATIVO' || status === 'CANCELADO') {
+    return {
+      erro: testeVencido
+        ? 'Seu período de teste grátis de 15 dias terminou. Escolha um plano para continuar.'
+        : 'Sua conta ainda não possui uma assinatura ativa. Selecione um plano para continuar.',
+      assinaturaStatus: status,
+      professorId: professor.id,
+      email: professor.email,
+      codigoConvite: professor.codigoConvite,
+    };
+  }
+  return null;
+}
+
 app.post('/api/login', async (req, res) => {
   try {
     const { email, senha } = req.body;
@@ -411,19 +500,150 @@ app.post('/api/login', async (req, res) => {
     if (!usuario) return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
     if (!await bcrypt.compare(senha, usuario.senha)) return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
 
-    if (papel === 'professor' &&
-        (usuario.assinaturaStatus === 'PENDENTE' || usuario.assinaturaStatus === 'INATIVO' || usuario.assinaturaStatus === 'CANCELADO')) {
-      return res.status(403).json({
-        erro: 'Sua conta ainda não possui uma assinatura ativa. Selecione um plano para continuar.',
-        assinaturaStatus: usuario.assinaturaStatus,
-        professorId: usuario.id,
-        email: usuario.email,
-        codigoConvite: usuario.codigoConvite,
-      });
+    if (papel === 'professor') {
+      const bloqueio = await checarBloqueioAssinaturaProfessor(usuario);
+      if (bloqueio) return res.status(403).json(bloqueio);
     }
 
     const token = jwt.sign({ id: usuario.id, papel }, SEGREDO_JWT, { expiresIn: '7d' });
     res.json({ mensagem: 'Login realizado!', token, usuario: { id: usuario.id, nome: usuario.nome, papel } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ─── LOGIN COM GOOGLE ────────────────────────────────────────────────────────
+// Passo 1: valida o Google idToken e diz se já existe conta (login direto) ou
+// se é a primeira vez (o app precisa mostrar a tela de completar cadastro).
+app.post('/api/auth/google/verificar', async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken) return res.status(400).json({ erro: 'idToken é obrigatório.' });
+
+    let payload;
+    try {
+      payload = await verificarGoogleIdToken(idToken);
+    } catch (err) {
+      return res.status(err.status || 401).json({ erro: err.message });
+    }
+
+    const googleId = payload.sub;
+    const emailNorm = payload.email.toLowerCase().trim();
+
+    // Mesmo padrão do /api/login: tenta professor primeiro, depois aluno,
+    // sem exigir que o app já saiba o papel do usuário de antemão.
+    let usuario = await prisma.professor.findFirst({ where: { OR: [{ googleId }, { email: emailNorm }] } });
+    let papel = 'professor';
+    if (!usuario) {
+      usuario = await prisma.aluno.findFirst({ where: { OR: [{ googleId }, { email: emailNorm }] } });
+      papel = 'aluno';
+    }
+
+    if (!usuario) {
+      return res.json({
+        existe: false,
+        email: emailNorm,
+        nome: payload.name || '',
+        fotoUrl: payload.picture || null,
+      });
+    }
+
+    if (!usuario.googleId) {
+      const modelo = papel === 'professor' ? prisma.professor : prisma.aluno;
+      usuario = await modelo.update({ where: { id: usuario.id }, data: { googleId } });
+    }
+
+    if (papel === 'professor') {
+      const bloqueio = await checarBloqueioAssinaturaProfessor(usuario);
+      if (bloqueio) return res.status(403).json(bloqueio);
+    }
+
+    const token = jwt.sign({ id: usuario.id, papel }, SEGREDO_JWT, { expiresIn: '7d' });
+    res.json({ existe: true, token, usuario: { id: usuario.id, nome: usuario.nome, papel } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// Passo 2 (só na primeira vez): revalida o idToken e cria a conta com as
+// perguntas obrigatórias do sistema que o Google não responde por nós.
+app.post('/api/auth/google/cadastrar', async (req, res) => {
+  try {
+    const { idToken, papel, telefone, dataNascimento, cursos, codigoConvite } = req.body;
+    if (!idToken || !papel) return res.status(400).json({ erro: 'idToken e papel são obrigatórios.' });
+    if (papel !== 'professor' && papel !== 'aluno') return res.status(400).json({ erro: 'papel inválido.' });
+
+    let payload;
+    try {
+      payload = await verificarGoogleIdToken(idToken);
+    } catch (err) {
+      return res.status(err.status || 401).json({ erro: err.message });
+    }
+
+    const googleId = payload.sub;
+    const emailNorm = payload.email.toLowerCase().trim();
+    const modelo = papel === 'professor' ? prisma.professor : prisma.aluno;
+
+    if (await modelo.findFirst({ where: { OR: [{ googleId }, { email: emailNorm }] } }))
+      return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
+
+    const dataNasc = parseDataNascimento(dataNascimento);
+    if (!telefone || !dataNasc) return res.status(400).json({ erro: 'telefone e dataNascimento são obrigatórios.' });
+
+    // Conta criada via Google nunca loga por senha — o hash de um valor aleatório
+    // nunca exposto garante isso sem precisar tornar a coluna "senha" opcional.
+    const senhaHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), await bcrypt.genSalt(10));
+    const nome = payload.name || emailNorm;
+    let usuario;
+
+    if (papel === 'professor') {
+      if (!Array.isArray(cursos) || cursos.length === 0) {
+        return res.status(400).json({ erro: 'Selecione pelo menos um curso que você leciona.' });
+      }
+      usuario = await prisma.professor.create({
+        data: {
+          nome,
+          email: emailNorm,
+          senha: senhaHash,
+          telefone,
+          dataNascimento: dataNasc,
+          cursos,
+          fotoUrl: payload.picture || null,
+          googleId,
+          codigoConvite: gerarCodigoConvite(),
+          assinaturaStatus: 'TESTE',
+          assinaturaFim: new Date(Date.now() + DIAS_TESTE_GRATIS * 24 * 60 * 60 * 1000),
+        },
+      });
+    } else {
+      if (!codigoConvite) return res.status(400).json({ erro: 'codigoConvite é obrigatório.' });
+      const professor = await prisma.professor.findFirst({ where: { codigoConvite: codigoConvite.toUpperCase().trim() } });
+      if (!professor) return res.status(404).json({ erro: 'Código de convite inválido.' });
+
+      usuario = await prisma.aluno.create({
+        data: {
+          nome,
+          email: emailNorm,
+          senha: senhaHash,
+          telefone,
+          dataNascimento: dataNasc,
+          fotoUrl: payload.picture || null,
+          googleId,
+          professorId: professor.id,
+          status: 'PENDENTE',
+        },
+      });
+    }
+
+    const token = jwt.sign({ id: usuario.id, papel }, SEGREDO_JWT, { expiresIn: '7d' });
+    res.status(201).json({
+      mensagem: papel === 'professor' ? 'Professor criado! Teste grátis de 15 dias ativado.' : 'Aluno cadastrado!',
+      token,
+      usuario: { id: usuario.id, nome: usuario.nome, papel },
+      codigoConvite: usuario.codigoConvite,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -1916,6 +2136,8 @@ app.get('/api/professor/assinatura/:professorId', async (req, res) => {
         assinaturaStatus: true,
         assinaturaFim: true,
         stripeCustomerId: true,
+        email: true,
+        codigoConvite: true,
       },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });

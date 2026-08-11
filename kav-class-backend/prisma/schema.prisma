@@ -25,6 +25,7 @@ enum StatusAssinaturaProfessor {
   INATIVO
   VITALICIO
   CANCELADO
+  TESTE
 }
 
 enum RecorrenciaAula {
@@ -92,17 +93,19 @@ enum StatusReposicao {
 
 // ─── 1. PROFESSOR ───────────────────────────────────────────────
 model Professor {
-  id                  String   @id @default(uuid())
+  id                  String    @id @default(uuid())
   nome                String
-  email               String   @unique
+  email               String    @unique
   senha               String
   telefone            String?
-  codigoConvite       String?  @unique
+  dataNascimento      DateTime?
+  codigoConvite       String?   @unique
   cursos              String[]
   expoPushToken       String?
   fotoUrl             String?
   chavePix            String?
   linkPagamentoCartao String?
+  googleId            String?   @unique
 
   stripeCustomerId String?
   assinaturaStatus StatusAssinaturaProfessor @default(INATIVO)
@@ -125,14 +128,16 @@ model Professor {
 
 // ─── 2. ALUNO ────────────────────────────────────────────────────
 model Aluno {
-  id            String  @id @default(uuid())
-  nome          String
-  email         String  @unique
-  senha         String
-  telefone      String?
-  curso         String?
-  expoPushToken String? // Token para push notifications
-  fotoUrl       String?
+  id             String    @id @default(uuid())
+  nome           String
+  email          String    @unique
+  senha          String
+  telefone       String?
+  dataNascimento DateTime?
+  curso          String?
+  expoPushToken  String? // Token para push notifications
+  fotoUrl        String?
+  googleId       String?   @unique
 
   status             StatusAluno      @default(PENDENTE)
   valorMensalidade   Float?

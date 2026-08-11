@@ -83,7 +83,6 @@ export default function ProfessorLayout() {
         <Drawer.Screen name="relatorios"  options={{ drawerLabel: 'Relatórios',     drawerIcon: ({ color }) => <Ionicons name="bar-chart-outline"  size={22} color={color} /> }} />
         <Drawer.Screen name="chat"        options={{ drawerLabel: 'Mural da Turma', drawerIcon: ({ color }) => <Ionicons name="chatbubbles-outline" size={22} color={color} /> }} />
         <Drawer.Screen name="perfil"      options={{ drawerItemStyle: { display: 'none' } }} />
-        <Drawer.Screen name="configuracoes" options={{ drawerItemStyle: { display: 'none' } }} />
       </Drawer>
     </GestureHandlerRootView>
   );

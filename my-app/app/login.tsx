@@ -13,8 +13,37 @@ import {
 import * as SecureStore from 'expo-secure-store';
 import { BASE_URL, fetchComRetry } from './api';
 import { Ionicons } from '@expo/vector-icons';
+import GoogleButton from '../components/GoogleButton';
+import { useGoogleAuth } from '../hooks/useGoogleAuth';
 
 const API_URL = BASE_URL;
+
+// O login por biometria não passa pelo /api/login (que já bloqueia teste
+// vencido/sem assinatura), então precisa checar isso aqui antes de liberar
+// a entrada direto no app com o token já salvo no aparelho.
+async function checarAssinaturaProfessorBloqueada() {
+  try {
+    const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
+    const token = await SecureStore.getItemAsync('kav_token');
+    const res = await fetchComRetry(`${API_URL}/api/professor/assinatura/${professorId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const dados = await res.json();
+
+    const testeVencido = dados.assinaturaStatus === 'TESTE' &&
+      dados.assinaturaFim && new Date(dados.assinaturaFim) <= new Date();
+    const semAssinatura = ['PENDENTE', 'INATIVO', 'CANCELADO'].includes(dados.assinaturaStatus);
+
+    if (testeVencido || semAssinatura) {
+      return { professorId, email: dados.email, codigoConvite: dados.codigoConvite };
+    }
+    return null;
+  } catch {
+    // Sem conexão: não trava o professor fora do app por causa disso.
+    return null;
+  }
+}
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -22,6 +51,7 @@ export default function LoginScreen() {
   const [bioDisponivel, setBioDisponivel] = useState(false);
   const [verificandoBio, setVerificandoBio] = useState(false);
   const router = useRouter();
+  const { disponivel: googleDisponivel, carregando: carregandoGoogle, entrarComGoogle } = useGoogleAuth();
 
   useEffect(() => {
     verificarBiometria();
@@ -60,7 +90,15 @@ export default function LoginScreen() {
 
       if (resultado.success) {
         if (p === 'professor') {
-          router.replace('/(professor)');
+          const bloqueio = await checarAssinaturaProfessorBloqueada();
+          if (bloqueio) {
+            router.replace({
+              pathname: '/escolher-plano',
+              params: { professorId: bloqueio.professorId, email: bloqueio.email, codigoConvite: bloqueio.codigoConvite || '' },
+            });
+          } else {
+            router.replace('/(professor)');
+          }
         } else {
           router.replace('/(aluno)');
         }
@@ -99,6 +137,21 @@ export default function LoginScreen() {
           await SecureStore.setItemAsync('kav_aluno_id', String(dados.usuario.id));
           router.replace('/(aluno)');
         }
+      } else if (resposta.status === 403 && dados.assinaturaStatus) {
+        Alert.alert(
+          'Assinatura necessária',
+          dados.erro,
+          [
+            { text: 'Cancelar', style: 'cancel' },
+            {
+              text: 'Escolher plano',
+              onPress: () => router.replace({
+                pathname: '/escolher-plano',
+                params: { professorId: dados.professorId, email: dados.email, codigoConvite: dados.codigoConvite || '' },
+              }),
+            },
+          ],
+        );
       } else {
         Alert.alert('Erro de Login', dados.erro || 'Falha ao entrar.');
       }
@@ -142,6 +195,10 @@ export default function LoginScreen() {
       <TouchableOpacity style={styles.button} onPress={fazerLogin}>
         <Text style={styles.buttonText}>Entrar</Text>
       </TouchableOpacity>
+
+      {googleDisponivel && (
+        <GoogleButton onPress={entrarComGoogle} carregando={carregandoGoogle} />
+      )}
 
       {bioDisponivel && (
         <TouchableOpacity

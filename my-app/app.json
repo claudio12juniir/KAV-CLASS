@@ -81,6 +81,11 @@
       "router": {},
       "eas": {
         "projectId": "7f4a68d8-0fa8-4912-82fc-56ba4624e94c"
+      },
+      "googleClientIds": {
+        "web": "",
+        "ios": "",
+        "android": ""
       }
     },
     "owner": "teclas.jr566",

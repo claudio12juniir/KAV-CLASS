@@ -195,7 +195,7 @@ export default function EscolherPlanoScreen() {
 
       <Text style={styles.titulo}>Escolha seu plano</Text>
       <Text style={styles.subtitulo}>
-        Cancele assinaturas quando quiser. Sem surpresas.
+        Escolha um plano para continuar usando o KAV Class. Cancele quando quiser.
       </Text>
 
       {codigoConvite ? (

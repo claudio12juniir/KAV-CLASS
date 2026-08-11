@@ -9,6 +9,8 @@ import {
   Alert, Image, ScrollView, StyleSheet, Text,
   TextInput, TouchableOpacity, View,
 } from "react-native";
+import GoogleButton from '../components/GoogleButton';
+import { useGoogleAuth } from '../hooks/useGoogleAuth';
 
 const CATEGORIAS_CURSOS = [
   {
@@ -98,6 +100,8 @@ export default function RegisterScreen() {
   const [dropdownAberto, setDropdownAberto] = useState(false);
 
   const [fotoUrl, setFotoUrl] = useState<string | null>(null);
+
+  const { disponivel: googleDisponivel, carregando: carregandoGoogle, entrarComGoogle } = useGoogleAuth(papel);
 
   const [erroNome, setErroNome] = useState('');
   const [erroData, setErroData] = useState('');
@@ -228,18 +232,31 @@ export default function RegisterScreen() {
     if (!ok) return;
 
     if (papel === 'professor') {
-      await SecureStore.setItemAsync('kav_reg_senha', senha);
-      if (fotoUrl) await SecureStore.setItemAsync('kav_reg_foto', fotoUrl);
-      else await SecureStore.deleteItemAsync('kav_reg_foto').catch(() => {});
-      router.replace({
-        pathname: '/escolher-plano',
-        params: {
-          nome: nome.trim(),
-          email: email.toLowerCase().trim(),
-          telefone,
-          cursos: JSON.stringify(cursosSelecionados),
-        },
-      });
+      try {
+        const resposta = await fetchComRetry(`${BASE_URL}/api/professores/cadastro`, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nome: nome.trim(),
+            email: email.toLowerCase().trim(),
+            senha,
+            telefone,
+            cursos: cursosSelecionados,
+            fotoUrl: fotoUrl || undefined,
+          }),
+        });
+        let dados: any;
+        try { dados = JSON.parse(await resposta.text()); }
+        catch { Alert.alert('Erro no Servidor', 'Resposta inesperada. Tente novamente.'); return; }
+        if (!resposta.ok) { Alert.alert('Atenção', dados.erro || 'Não foi possível criar a conta.'); return; }
+
+        await SecureStore.setItemAsync('kav_token', dados.token);
+        await SecureStore.setItemAsync('kav_papel', 'professor');
+        await SecureStore.setItemAsync('kav_professor_id', String(dados.usuario.id));
+        router.replace('/(professor)');
+      } catch {
+        Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.\nVerifique sua internet e tente novamente.');
+      }
       return;
     }
 
@@ -320,6 +337,10 @@ export default function RegisterScreen() {
           <Text style={[styles.roleText, papel === 'professor' && styles.roleTextActive]}>  Professor</Text>
         </TouchableOpacity>
       </View>
+
+      {googleDisponivel && (
+        <GoogleButton onPress={entrarComGoogle} carregando={carregandoGoogle} texto="Cadastrar com Google" />
+      )}
 
       {/* Nome */}
       <Text style={styles.label}>{nomeLabel}</Text>
