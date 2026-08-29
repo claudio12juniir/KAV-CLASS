@@ -134,6 +134,9 @@ model Escola {
   alunos       Aluno[]
   convites     ConviteProfessor[]
   responsaveis ResponsavelFinanceiro[]
+  cursos       Curso[]
+  salas        Sala[]
+  turmas       Turma[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -171,6 +174,7 @@ model Professor {
   reposicoes   Reposicao[]
   notificacoes Notificacao[]
   mensagens    Mensagem[]
+  turmas       Turma[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -275,12 +279,22 @@ model Aula {
   aluno       Aluno      @relation(fields: [alunoId], references: [id])
   materiais   Material[]
 
+  // Opcionais: uma aula avulsa (o modo de hoje) não precisa de Turma nem
+  // Sala. Quando existem, servem pra agrupar/relatar por turma ou sala sem
+  // mudar nada de como a aula em si é criada ou tem presença registrada.
+  turmaId String?
+  turma   Turma?  @relation(fields: [turmaId], references: [id], onDelete: SetNull)
+  salaId  String?
+  sala    Sala?   @relation(fields: [salaId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
 
   @@index([professorId, dataHora])
   @@index([alunoId, dataHora])
   @@index([alunoId, status])
   @@index([professorId, presenca, dataHora])
+  @@index([turmaId])
+  @@index([salaId])
 }
 
 // ─── 4. FINANCEIRO & PAGAMENTOS ──────────────────────────────────
@@ -418,4 +432,77 @@ model ConviteProfessor {
 
   @@index([escolaId, aceitoEm])
   @@index([email])
+}
+
+// ─── 11. CURSO ────────────────────────────────────────────────────
+// Simplificado na v1: curso é uma entidade nomeada plana, sem a árvore
+// curso→módulo→disciplina→aula→tópico da Emusys. Convive por enquanto com
+// Professor.cursos (lista livre de texto) e Aluno.curso (texto livre) —
+// migrar esses campos pra apontar pra Curso é trabalho de UI de uma sprint
+// futura, não desta.
+model Curso {
+  id    String  @id @default(uuid())
+  nome  String
+  ativo Boolean @default(true)
+
+  escolaId String
+  escola   Escola  @relation(fields: [escolaId], references: [id])
+  turmas   Turma[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+}
+
+// ─── 12. SALA ─────────────────────────────────────────────────────
+model Sala {
+  id        String  @id @default(uuid())
+  nome      String
+  descricao String?
+  ativa     Boolean @default(true)
+
+  escolaId String
+  escola   Escola  @relation(fields: [escolaId], references: [id])
+  turmas   Turma[]
+  aulas    Aula[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+}
+
+// ─── 13. TURMA ────────────────────────────────────────────────────
+// v1 assume 1 professor por turma (o mesmo modelo que Aula já usa hoje).
+// "Múltiplos professores por turma" é uma config opcional da Emusys — fica
+// pra uma sprint futura via tabela de vínculo dedicada, pra não misturar
+// essa complexidade extra na primeira versão de Turma.
+model Turma {
+  id           String  @id @default(uuid())
+  nome         String
+  limiteAlunos Int?
+  ativa        Boolean @default(true)
+
+  cursoId String
+  curso   Curso  @relation(fields: [cursoId], references: [id])
+
+  salaId String?
+  sala   Sala?   @relation(fields: [salaId], references: [id])
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  aulas Aula[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+  @@index([professorId])
+  @@index([cursoId])
+  @@index([salaId])
 }

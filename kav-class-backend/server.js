@@ -2099,6 +2099,180 @@ app.get('/api/meus-cursos', exigirProfessor, async (req, res) => {
 });
 
 // ============================================================================
+// 10b. CURSO / SALA / TURMA (Fase 1, S1.2)
+//
+// Curso e Sala são catálogo da Escola — qualquer professor autenticado da
+// Escola vê e cria (inclusive quem está sozinho no Pacote Professor, que
+// também é uma Escola de 1 pessoa). Turma é sempre criada em nome de quem
+// está autenticado (professorId = req.auth.id, mesmo padrão do resto da
+// API) — atribuir turma a outro professor fica pra quando a Agenda geral
+// do GESTOR existir (Fase 1, S1.4).
+// ============================================================================
+
+// Roda depois de exigirProfessor: busca o escolaId uma vez e anexa em
+// req.auth.escolaId. 404 explícito se o professor do token não existir mais
+// (conta apagada com uma sessão ainda viva, ou token adulterado) — evita
+// que as rotas abaixo propaguem um escolaId nulo pro Prisma e estourem 500.
+async function carregarEscolaDoProfessor(req, res, next) {
+  const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+  if (!professor) { res.status(404).json({ erro: 'Professor não encontrado.' }); return; }
+  req.auth.escolaId = professor.escolaId;
+  next();
+}
+
+app.get('/api/cursos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const cursos = await prisma.curso.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { nome: 'asc' } });
+    res.json(cursos);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/cursos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome } = req.body;
+    if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
+    const curso = await prisma.curso.create({ data: { nome: nome.trim(), escolaId: req.auth.escolaId } });
+    res.status(201).json(curso);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar curso.' });
+  }
+});
+
+app.patch('/api/cursos/:id', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, ativo } = req.body;
+    const dados = {};
+    if (nome?.trim()) dados.nome = nome.trim();
+    if (typeof ativo === 'boolean') dados.ativo = ativo;
+    const { count } = await prisma.curso.updateMany({ where: { id: req.params.id, escolaId: req.auth.escolaId }, data: dados });
+    if (!count) return res.status(404).json({ erro: 'Curso não encontrado.' });
+    res.json({ mensagem: 'Curso atualizado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar curso.');
+  }
+});
+
+app.get('/api/salas', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const salas = await prisma.sala.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { nome: 'asc' } });
+    res.json(salas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/salas', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, descricao } = req.body;
+    if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
+    const sala = await prisma.sala.create({ data: { nome: nome.trim(), descricao: descricao?.trim() || null, escolaId: req.auth.escolaId } });
+    res.status(201).json(sala);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar sala.' });
+  }
+});
+
+app.patch('/api/salas/:id', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, descricao, ativa } = req.body;
+    const dados = {};
+    if (nome?.trim()) dados.nome = nome.trim();
+    if (descricao !== undefined) dados.descricao = descricao?.trim() || null;
+    if (typeof ativa === 'boolean') dados.ativa = ativa;
+    const { count } = await prisma.sala.updateMany({ where: { id: req.params.id, escolaId: req.auth.escolaId }, data: dados });
+    if (!count) return res.status(404).json({ erro: 'Sala não encontrada.' });
+    res.json({ mensagem: 'Sala atualizada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar sala.');
+  }
+});
+
+app.get('/api/turmas', exigirProfessor, async (req, res) => {
+  try {
+    const turmas = await prisma.turma.findMany({
+      where: { professorId: req.auth.id },
+      include: { curso: true, sala: true },
+      orderBy: { nome: 'asc' },
+    });
+    res.json(turmas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/turmas', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, cursoId, salaId, limiteAlunos } = req.body;
+    if (!nome?.trim() || !cursoId) return res.status(400).json({ erro: 'nome e cursoId são obrigatórios.' });
+
+    const escolaId = req.auth.escolaId;
+
+    // Curso (e sala, se informada) precisam ser da mesma Escola — sem isso
+    // dava pra criar uma turma amarrada a um curso/sala de outra escola.
+    const curso = await prisma.curso.findFirst({ where: { id: cursoId, escolaId } });
+    if (!curso) return res.status(400).json({ erro: 'Curso não encontrado.' });
+    if (salaId) {
+      const sala = await prisma.sala.findFirst({ where: { id: salaId, escolaId } });
+      if (!sala) return res.status(400).json({ erro: 'Sala não encontrada.' });
+    }
+
+    const limite = limiteAlunos != null ? parseInt(String(limiteAlunos), 10) : null;
+    const turma = await prisma.turma.create({
+      data: {
+        nome: nome.trim(),
+        cursoId,
+        salaId: salaId || null,
+        limiteAlunos: Number.isFinite(limite) ? limite : null,
+        professorId: req.auth.id,
+        escolaId,
+      },
+      include: { curso: true, sala: true },
+    });
+    res.status(201).json(turma);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar turma.' });
+  }
+});
+
+app.patch('/api/turmas/:id', exigirProfessor, async (req, res) => {
+  try {
+    const { nome, salaId, limiteAlunos, ativa } = req.body;
+    const dados = {};
+    if (nome?.trim()) dados.nome = nome.trim();
+    if (typeof ativa === 'boolean') dados.ativa = ativa;
+    if (limiteAlunos !== undefined) {
+      const limite = limiteAlunos != null ? parseInt(String(limiteAlunos), 10) : null;
+      dados.limiteAlunos = Number.isFinite(limite) ? limite : null;
+    }
+    if (salaId !== undefined) {
+      if (salaId) {
+        const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+        const sala = await prisma.sala.findFirst({ where: { id: salaId, escolaId: professor?.escolaId } });
+        if (!sala) return res.status(400).json({ erro: 'Sala não encontrada.' });
+      }
+      dados.salaId = salaId || null;
+    }
+
+    const { count } = await prisma.turma.updateMany({
+      where: { id: req.params.id, professorId: req.auth.id },
+      data: dados,
+    });
+    if (!count) return res.status(404).json({ erro: 'Turma não encontrada.' });
+    res.json({ mensagem: 'Turma atualizada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar turma.');
+  }
+});
+
+// ============================================================================
 // 11. AGENDAMENTO AVULSO DE AULA
 // ============================================================================
 
