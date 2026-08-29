@@ -8,6 +8,7 @@ import { StatusBar } from 'expo-status-bar';
 import React, { useState } from 'react';
 import {
   Alert,
+  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -288,6 +289,31 @@ export default function EscolherPlanoScreen() {
         </View>
       ))}
 
+      {/* Pacote Escola: preço sob consulta (várias escolas usam vários professores
+          e alunos com volumes muito diferentes) — mesmo modelo comercial observado
+          na Emusys para o segmento de escola. Não é checkout self-serve como os
+          planos acima; é um contato comercial que ativa o pacote depois, pelo
+          time interno. Ver docs/roadmap-escola.md, Fase 0. */}
+      <View style={styles.cardEscola}>
+        <View style={styles.escolaTopo}>
+          <Ionicons name="business" size={20} color="#fff" />
+          <Text style={styles.escolaTag}>PARA ESCOLAS</Text>
+        </View>
+        <Text style={styles.escolaTitulo}>Pacote Escola</Text>
+        <Text style={styles.escolaDescricao}>
+          Vários professores, alunos e turmas numa conta só, com painel de gestão.
+          Preço sob consulta, de acordo com o tamanho da sua escola.
+        </Text>
+        <TouchableOpacity
+          style={styles.escolaBtn}
+          onPress={() => Linking.openURL('https://kavsite.netlify.app')}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="chatbubble-ellipses-outline" size={16} color="#fff" style={{ marginRight: 6 }} />
+          <Text style={styles.escolaBtnTexto}>Falar com a gente</Text>
+        </TouchableOpacity>
+      </View>
+
       <View style={{ height: 40 }} />
     </ScrollView>
     </View>
@@ -383,4 +409,17 @@ const styles = StyleSheet.create({
   btnTexto: { fontSize: 14, fontWeight: 'bold', letterSpacing: 0.5 },
   btnTextoNormal: { color: CORES.acento },
   btnTextoDestaque: { color: '#fff' },
+
+  cardEscola: {
+    backgroundColor: CORES.primaria, borderRadius: 16, padding: 20, marginBottom: 16,
+  },
+  escolaTopo: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  escolaTag: { color: '#fff', fontSize: 11, fontWeight: 'bold', letterSpacing: 1.5, opacity: 0.8 },
+  escolaTitulo: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 6 },
+  escolaDescricao: { color: '#fff', fontSize: 13, lineHeight: 19, opacity: 0.85, marginBottom: 16 },
+  escolaBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    borderRadius: 10, height: 48, borderWidth: 1.5, borderColor: '#ffffff55',
+  },
+  escolaBtnTexto: { color: '#fff', fontSize: 14, fontWeight: 'bold', letterSpacing: 0.5 },
 });

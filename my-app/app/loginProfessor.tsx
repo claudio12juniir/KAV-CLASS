@@ -197,6 +197,10 @@ export default function LoginProfessorScreen() {
           <TouchableOpacity style={styles.linkEsqueci} onPress={() => router.push('/esqueceu-senha')}>
             <Text style={styles.textoLinkEsqueci}>Esqueci minha senha</Text>
           </TouchableOpacity>
+
+          <TouchableOpacity style={styles.linkEsqueci} onPress={() => router.push('/aceitar-convite-professor')}>
+            <Text style={styles.textoLinkEsqueci}>Fui convidado(a) por uma escola</Text>
+          </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
     );

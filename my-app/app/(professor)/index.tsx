@@ -188,6 +188,9 @@ export default function ProfessorDashboard() {
         setFotoProf(p.fotoUrl || null);
         if (p.nome) SecureStore.setItemAsync('kav_cache_prof_nome', p.nome);
         if (p.fotoUrl) SecureStore.setItemAsync('kav_cache_prof_foto', p.fotoUrl);
+        // Papel do professor dentro da própria Escola (DONO/GESTOR/PROFESSOR) — usado
+        // só pra decidir se o item "Minha Escola" aparece no menu (ver _layout.tsx).
+        if (p.papel) SecureStore.setItemAsync('kav_cache_prof_papel', p.papel);
       }
     } catch (err: any) {
       console.error("Erro no dashboard:", err);

@@ -91,6 +91,45 @@ enum StatusReposicao {
   SOLICITANDO_OUTRO
 }
 
+// Papel do Professor dentro da própria Escola. Todo Professor de hoje vira
+// DONO da sua Escola de 1 pessoa na migração (ver 20260829000000_add_escola_multi_tenant) —
+// GESTOR e o convite de mais professores para a mesma Escola só existem depois
+// que a Escola assina o Pacote Escola (ver Escola.pacote). Sem isso, nada muda
+// pra quem já usa o app hoje.
+enum PapelUsuario {
+  DONO
+  GESTOR
+  PROFESSOR
+}
+
+// Pacote comercial assinado pela Escola — decide qual conjunto de telas/rotas
+// fica disponível. Não é derivado do nº de professores: é uma escolha do
+// usuário na tela de assinatura (ver roadmap, Fase 0 / S0.2).
+enum PacoteAssinatura {
+  PACOTE_PROFESSOR
+  PACOTE_ESCOLA
+}
+
+// ─── 0. ESCOLA ───────────────────────────────────────────────────
+// Tenant raiz. Introduzida em S0.1 como infraestrutura aditiva: todo
+// Professor/Aluno existente ganha uma Escola de 1 pessoa via backfill,
+// sem nenhuma mudança de comportamento pra quem está no Pacote Professor.
+// Os campos de assinatura (Stripe etc.) continuam em Professor nesta sprint
+// — só migram pra cá numa sprint futura, junto da lógica de rota que os lê,
+// pra não misturar duas mudanças de risco na mesma migration.
+model Escola {
+  id     String           @id @default(uuid())
+  nome   String
+  pacote PacoteAssinatura @default(PACOTE_PROFESSOR)
+
+  professores Professor[]
+  alunos      Aluno[]
+  convites    ConviteProfessor[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 // ─── 1. PROFESSOR ───────────────────────────────────────────────
 model Professor {
   id                  String    @id @default(uuid())
@@ -112,6 +151,10 @@ model Professor {
   assinaturaFim    DateTime?
   stripeSessionId  String?
 
+  escolaId String
+  escola   Escola       @relation(fields: [escolaId], references: [id])
+  papel    PapelUsuario @default(DONO)
+
   alunos       Aluno[]
   aulas        Aula[]
   pagamentos   Pagamento[]
@@ -124,6 +167,7 @@ model Professor {
   updatedAt DateTime @updatedAt
 
   @@index([stripeCustomerId])
+  @@index([escolaId])
 }
 
 // ─── 2. ALUNO ────────────────────────────────────────────────────
@@ -155,6 +199,13 @@ model Aluno {
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])
 
+  // Cópia denormalizada do escolaId do professor no momento do cadastro.
+  // Existe pra permitir consultas futuras escopadas por Escola (ex: GESTOR
+  // vendo alunos de vários professores) sem precisar de join em toda rota.
+  // A fonte de verdade continua sendo professor.escolaId.
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
   aulas      Aula[]
   pagamentos Pagamento[]
   reposicoes Reposicao[]
@@ -163,6 +214,7 @@ model Aluno {
 
   @@index([professorId, status])
   @@index([status])
+  @@index([escolaId])
 }
 
 // ─── 3. AULAS & AGENDA ───────────────────────────────────────────
@@ -306,4 +358,24 @@ model Reposicao {
 
   @@index([professorId])
   @@index([alunoId])
+}
+
+// ─── 10. CONVITE DE PROFESSOR PRA ESCOLA ─────────────────────────
+// Só faz sentido pra Escola no Pacote Escola (ver Escola.pacote) — é como um
+// DONO/GESTOR traz outro professor pra dentro do mesmo tenant, em vez de
+// cada um ter sua própria Escola de 1 pessoa isolada.
+model ConviteProfessor {
+  id        String       @id @default(uuid())
+  email     String
+  token     String       @unique
+  papel     PapelUsuario @default(PROFESSOR)
+  expiresAt DateTime
+  aceitoEm  DateTime?
+  createdAt DateTime     @default(now())
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  @@index([escolaId, aceitoEm])
+  @@index([email])
 }

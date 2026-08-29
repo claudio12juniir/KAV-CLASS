@@ -61,6 +61,16 @@ function CustomDrawerContent(props: any) {
 
 export default function ProfessorLayout() {
   usePushToken();
+  // "Minha Escola" só aparece pra quem é DONO ou GESTOR de uma Escola no
+  // Pacote Escola — pra quem está no Pacote Professor (a imensa maioria hoje),
+  // o menu fica exatamente como sempre foi. Ver docs/roadmap-escola.md, Fase 0.
+  const [mostrarEscola, setMostrarEscola] = useState(false);
+  useEffect(() => {
+    SecureStore.getItemAsync('kav_cache_prof_papel').then(papel => {
+      setMostrarEscola(papel === 'DONO' || papel === 'GESTOR');
+    });
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <Drawer
@@ -82,6 +92,14 @@ export default function ProfessorLayout() {
         <Drawer.Screen name="reposicoes"  options={{ drawerLabel: 'Reposições',     drawerIcon: ({ color }) => <Ionicons name="repeat-outline"     size={22} color={color} /> }} />
         <Drawer.Screen name="relatorios"  options={{ drawerLabel: 'Relatórios',     drawerIcon: ({ color }) => <Ionicons name="bar-chart-outline"  size={22} color={color} /> }} />
         <Drawer.Screen name="chat"        options={{ drawerLabel: 'Mural da Turma', drawerIcon: ({ color }) => <Ionicons name="chatbubbles-outline" size={22} color={color} /> }} />
+        <Drawer.Screen
+          name="escola"
+          options={{
+            drawerLabel: 'Minha Escola',
+            drawerIcon: ({ color }) => <Ionicons name="business-outline" size={22} color={color} />,
+            drawerItemStyle: mostrarEscola ? undefined : { display: 'none' },
+          }}
+        />
         <Drawer.Screen name="perfil"      options={{ drawerItemStyle: { display: 'none' } }} />
       </Drawer>
     </GestureHandlerRootView>
