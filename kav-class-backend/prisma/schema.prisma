@@ -91,6 +91,14 @@ enum StatusReposicao {
   SOLICITANDO_OUTRO
 }
 
+// CONTRATANTE: o próprio aluno é o responsável financeiro (maior de idade,
+// paga por si). DEPENDENTE: outra pessoa (geralmente responsável legal de
+// aluno menor de idade) é quem paga — ver Emusys, "Cadastro de pessoas".
+enum VinculoResponsavel {
+  CONTRATANTE
+  DEPENDENTE
+}
+
 // Papel do Professor dentro da própria Escola. Todo Professor de hoje vira
 // DONO da sua Escola de 1 pessoa na migração (ver 20260829000000_add_escola_multi_tenant) —
 // GESTOR e o convite de mais professores para a mesma Escola só existem depois
@@ -122,9 +130,10 @@ model Escola {
   nome   String
   pacote PacoteAssinatura @default(PACOTE_PROFESSOR)
 
-  professores Professor[]
-  alunos      Aluno[]
-  convites    ConviteProfessor[]
+  professores  Professor[]
+  alunos       Aluno[]
+  convites     ConviteProfessor[]
+  responsaveis ResponsavelFinanceiro[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -206,6 +215,13 @@ model Aluno {
   escolaId String
   escola   Escola @relation(fields: [escolaId], references: [id])
 
+  // Nullable de propósito: alunos já cadastrados antes de S1.1 continuam
+  // funcionando sem responsável formal até alguém preencher via
+  // PUT /api/alunos/:id/responsavel (ver docs/roadmap-escola.md, Fase 1).
+  responsavelId      String?
+  responsavel        ResponsavelFinanceiro? @relation(fields: [responsavelId], references: [id])
+  vinculoResponsavel VinculoResponsavel?
+
   aulas      Aula[]
   pagamentos Pagamento[]
   reposicoes Reposicao[]
@@ -215,6 +231,30 @@ model Aluno {
   @@index([professorId, status])
   @@index([status])
   @@index([escolaId])
+  @@index([responsavelId])
+}
+
+// ─── 2b. RESPONSÁVEL FINANCEIRO ──────────────────────────────────
+// Pessoa que paga pelo aluno — pode ser o próprio aluno (CONTRATANTE) ou
+// outra pessoa, tipicamente responsável legal de um menor (DEPENDENTE).
+// Escopado por Escola (não por Professor) porque o mesmo responsável pode
+// pagar por mais de um aluno, inclusive de professores diferentes na mesma
+// Escola — ex.: dois irmãos com professores de instrumento diferentes.
+model ResponsavelFinanceiro {
+  id        String   @id @default(uuid())
+  nome      String
+  cpf       String?
+  email     String?
+  telefone  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  escolaId String
+  escola   Escola  @relation(fields: [escolaId], references: [id])
+  alunos   Aluno[]
+
+  @@index([escolaId])
+  @@index([escolaId, cpf])
 }
 
 // ─── 3. AULAS & AGENDA ───────────────────────────────────────────

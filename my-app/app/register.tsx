@@ -99,6 +99,13 @@ export default function RegisterScreen() {
   const [cursosSelecionados, setCursosSelecionados] = useState<string[]>([]);
   const [dropdownAberto, setDropdownAberto] = useState(false);
 
+  // Responsável financeiro — só entra em jogo quando o aluno é menor de
+  // idade (mesma regra da Emusys: "nome do aluno e do responsável, se menor").
+  const [respNome, setRespNome] = useState('');
+  const [respCpf, setRespCpf] = useState('');
+  const [respTelefone, setRespTelefone] = useState('');
+  const [erroRespNome, setErroRespNome] = useState('');
+
   const [fotoUrl, setFotoUrl] = useState<string | null>(null);
 
   const { disponivel: googleDisponivel, carregando: carregandoGoogle, entrarComGoogle } = useGoogleAuth(papel);
@@ -145,6 +152,17 @@ export default function RegisterScreen() {
     if (v.length >= 3) return `(${v.slice(0, 2)}) ${v.slice(2)}`;
     return v;
   };
+
+  const mascaraCpf = (t: string) => {
+    const v = t.replace(/\D/g, '').slice(0, 11);
+    if (v.length >= 10) return `${v.slice(0, 3)}.${v.slice(3, 6)}.${v.slice(6, 9)}-${v.slice(9)}`;
+    if (v.length >= 7) return `${v.slice(0, 3)}.${v.slice(3, 6)}.${v.slice(6)}`;
+    if (v.length >= 4) return `${v.slice(0, 3)}.${v.slice(3)}`;
+    return v;
+  };
+
+  const idadeAluno = calcularIdade(dataNascimento);
+  const alunoMenorDeIdade = papel === 'aluno' && idadeAluno !== null && idadeAluno >= 0 && idadeAluno < 18;
 
   const toggleCurso = (id: string) =>
     setCursosSelecionados(prev =>
@@ -229,6 +247,13 @@ export default function RegisterScreen() {
       ok = false;
     }
 
+    if (alunoMenorDeIdade && !respNome.trim()) {
+      setErroRespNome('Campo obrigatório para aluno menor de idade.');
+      ok = false;
+    } else {
+      setErroRespNome('');
+    }
+
     if (!ok) return;
 
     if (papel === 'professor') {
@@ -272,6 +297,9 @@ export default function RegisterScreen() {
           dataNascimento,
           codigoConvite: codigoConvite.toUpperCase().trim(),
           fotoUrl: fotoUrl || undefined,
+          responsavel: alunoMenorDeIdade
+            ? { nome: respNome.trim(), cpf: respCpf || undefined, telefone: respTelefone || undefined }
+            : undefined,
         }),
       });
       let dados: any;
@@ -413,6 +441,58 @@ export default function RegisterScreen() {
             autoCapitalize="characters"
             value={codigoConvite}
             onChangeText={setCodigoConvite}
+          />
+        </>
+      )}
+
+      {/* Responsável financeiro (aluno menor de idade) */}
+      {alunoMenorDeIdade && (
+        <View style={styles.destaqueLogin}>
+          <View style={styles.destaqueIconeWrap}>
+            <Ionicons name="people-outline" size={22} color="#32BCAD" />
+          </View>
+          <View style={styles.destaqueTextoWrap}>
+            <Text style={styles.destaqueTitulo}>Responsável financeiro</Text>
+            <Text style={styles.destaqueSubtitulo}>
+              Como você é menor de idade, precisamos dos dados de quem vai ser responsável pelo pagamento.
+            </Text>
+          </View>
+        </View>
+      )}
+      {alunoMenorDeIdade && (
+        <>
+          <Text style={styles.label}>Nome do Responsável</Text>
+          <TextInput
+            style={[styles.input, erroRespNome ? styles.inputErro : null]}
+            placeholder="Nome e sobrenome"
+            placeholderTextColor="#aaa"
+            autoCapitalize="words"
+            value={respNome}
+            onChangeText={setRespNome}
+            onBlur={() => setErroRespNome(respNome.trim() ? '' : 'Campo obrigatório para aluno menor de idade.')}
+          />
+          {erroRespNome ? <Text style={styles.erroTexto}>{erroRespNome}</Text> : null}
+
+          <Text style={styles.label}>CPF do Responsável <Text style={{ color: '#aaa', fontWeight: '400' }}>(opcional)</Text></Text>
+          <TextInput
+            style={styles.input}
+            placeholder="000.000.000-00"
+            placeholderTextColor="#aaa"
+            keyboardType="numeric"
+            maxLength={14}
+            value={respCpf}
+            onChangeText={t => setRespCpf(mascaraCpf(t))}
+          />
+
+          <Text style={styles.label}>Telefone do Responsável <Text style={{ color: '#aaa', fontWeight: '400' }}>(opcional)</Text></Text>
+          <TextInput
+            style={styles.input}
+            placeholder="(11) 99999-9999"
+            placeholderTextColor="#aaa"
+            keyboardType="phone-pad"
+            maxLength={15}
+            value={respTelefone}
+            onChangeText={t => setRespTelefone(mascaraTelefone(t))}
           />
         </>
       )}

@@ -474,9 +474,19 @@ function parseDataNascimento(valor) {
   return isNaN(data.getTime()) ? null : data;
 }
 
+function calcularIdadeAnos(dataNascimento) {
+  const hoje = new Date();
+  let idade = hoje.getUTCFullYear() - dataNascimento.getUTCFullYear();
+  const aindaNaoFezAniversario =
+    hoje.getUTCMonth() < dataNascimento.getUTCMonth() ||
+    (hoje.getUTCMonth() === dataNascimento.getUTCMonth() && hoje.getUTCDate() < dataNascimento.getUTCDate());
+  if (aindaNaoFezAniversario) idade--;
+  return idade;
+}
+
 app.post('/api/alunos/cadastro', async (req, res) => {
   try {
-    const { nome, email, senha, telefone, dataNascimento, codigoConvite, fotoUrl } = req.body;
+    const { nome, email, senha, telefone, dataNascimento, codigoConvite, fotoUrl, responsavel } = req.body;
     if (!nome || !email || !senha || !codigoConvite) return res.status(400).json({ erro: 'nome, email, senha e codigoConvite são obrigatórios.' });
 
     if (await prisma.aluno.findUnique({ where: { email: email.toLowerCase().trim() } }))
@@ -485,20 +495,56 @@ app.post('/api/alunos/cadastro', async (req, res) => {
     const professor = await prisma.professor.findFirst({ where: { codigoConvite: codigoConvite.toUpperCase().trim() } });
     if (!professor) return res.status(404).json({ erro: 'Código de convite inválido.' });
 
-    const salt = await bcrypt.genSalt(10);
-    const novoAluno = await prisma.aluno.create({
-      data: {
-        nome,
-        telefone: telefone || null,
-        dataNascimento: parseDataNascimento(dataNascimento),
-        email: email.toLowerCase().trim(),
-        senha: await bcrypt.hash(senha, salt),
-        professorId: professor.id,
-        // Aluno herda a Escola do professor que gerou o código de convite.
-        escolaId: professor.escolaId,
-        status: 'PENDENTE',
-        fotoUrl: fotoUrl || null,
-      },
+    // A idade decide o vínculo do responsável financeiro (Emusys: "nome do
+    // aluno e do responsável, se menor de idade"). Sem dataNascimento válida,
+    // não dá pra saber a idade — nesse caso o aluno fica sem responsável
+    // formal por ora, igual ao comportamento de antes desta sprint.
+    const dataNascParsed = parseDataNascimento(dataNascimento);
+    const menorDeIdade = dataNascParsed ? calcularIdadeAnos(dataNascParsed) < 18 : false;
+
+    if (menorDeIdade && !responsavel?.nome?.trim()) {
+      return res.status(400).json({ erro: 'Aluno menor de idade: informe o nome do responsável financeiro.' });
+    }
+
+    const senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
+
+    const novoAluno = await prisma.$transaction(async (tx) => {
+      let responsavelId = null;
+      let vinculoResponsavel = null;
+
+      if (dataNascParsed) {
+        const dadosResponsavel = menorDeIdade
+          ? {
+              nome: responsavel.nome.trim(),
+              cpf: responsavel.cpf?.trim() || null,
+              email: responsavel.email?.toLowerCase().trim() || null,
+              telefone: responsavel.telefone?.trim() || null,
+            }
+          : { nome, cpf: null, email: email.toLowerCase().trim(), telefone: telefone || null };
+
+        const respCriado = await tx.responsavelFinanceiro.create({
+          data: { ...dadosResponsavel, escolaId: professor.escolaId },
+        });
+        responsavelId = respCriado.id;
+        vinculoResponsavel = menorDeIdade ? 'DEPENDENTE' : 'CONTRATANTE';
+      }
+
+      return tx.aluno.create({
+        data: {
+          nome,
+          telefone: telefone || null,
+          dataNascimento: dataNascParsed,
+          email: email.toLowerCase().trim(),
+          senha: senhaHash,
+          professorId: professor.id,
+          // Aluno herda a Escola do professor que gerou o código de convite.
+          escolaId: professor.escolaId,
+          status: 'PENDENTE',
+          fotoUrl: fotoUrl || null,
+          responsavelId,
+          vinculoResponsavel,
+        },
+      });
     });
     res.status(201).json({ mensagem: 'Aluno cadastrado!', aluno: { id: novoAluno.id, nome: novoAluno.nome } });
   } catch (err) {
@@ -622,7 +668,7 @@ app.post('/api/auth/google/verificar', async (req, res) => {
 // perguntas obrigatórias do sistema que o Google não responde por nós.
 app.post('/api/auth/google/cadastrar', async (req, res) => {
   try {
-    const { idToken, papel, telefone, dataNascimento, cursos, codigoConvite } = req.body;
+    const { idToken, papel, telefone, dataNascimento, cursos, codigoConvite, responsavel } = req.body;
     if (!idToken || !papel) return res.status(400).json({ erro: 'idToken e papel são obrigatórios.' });
     if (papel !== 'professor' && papel !== 'aluno') return res.status(400).json({ erro: 'papel inválido.' });
 
@@ -676,20 +722,42 @@ app.post('/api/auth/google/cadastrar', async (req, res) => {
       const professor = await prisma.professor.findFirst({ where: { codigoConvite: codigoConvite.toUpperCase().trim() } });
       if (!professor) return res.status(404).json({ erro: 'Código de convite inválido.' });
 
-      usuario = await prisma.aluno.create({
-        data: {
-          nome,
-          email: emailNorm,
-          senha: senhaHash,
-          telefone,
-          dataNascimento: dataNasc,
-          fotoUrl: payload.picture || null,
-          googleId,
-          professorId: professor.id,
-          // Aluno herda a Escola do professor que gerou o código de convite.
-          escolaId: professor.escolaId,
-          status: 'PENDENTE',
-        },
+      const menorDeIdade = calcularIdadeAnos(dataNasc) < 18;
+      if (menorDeIdade && !responsavel?.nome?.trim()) {
+        return res.status(400).json({ erro: 'Aluno menor de idade: informe o nome do responsável financeiro.' });
+      }
+
+      usuario = await prisma.$transaction(async (tx) => {
+        const dadosResponsavel = menorDeIdade
+          ? {
+              nome: responsavel.nome.trim(),
+              cpf: responsavel.cpf?.trim() || null,
+              email: responsavel.email?.toLowerCase().trim() || null,
+              telefone: responsavel.telefone?.trim() || null,
+            }
+          : { nome, cpf: null, email: emailNorm, telefone };
+
+        const respCriado = await tx.responsavelFinanceiro.create({
+          data: { ...dadosResponsavel, escolaId: professor.escolaId },
+        });
+
+        return tx.aluno.create({
+          data: {
+            nome,
+            email: emailNorm,
+            senha: senhaHash,
+            telefone,
+            dataNascimento: dataNasc,
+            fotoUrl: payload.picture || null,
+            googleId,
+            professorId: professor.id,
+            // Aluno herda a Escola do professor que gerou o código de convite.
+            escolaId: professor.escolaId,
+            status: 'PENDENTE',
+            responsavelId: respCriado.id,
+            vinculoResponsavel: menorDeIdade ? 'DEPENDENTE' : 'CONTRATANTE',
+          },
+        });
       });
     }
 
@@ -1073,12 +1141,55 @@ app.patch('/api/alunos/:id/mensalidade', exigirProfessor, async (req, res) => {
   }
 });
 
+// PUT /api/alunos/:id/responsavel — cria ou atualiza o responsável
+// financeiro de um aluno que já existe (cadastrado antes de S1.1, ou que
+// nasceu sem responsável por falta de dataNascimento no cadastro). Sempre
+// cria um ResponsavelFinanceiro novo em vez de tentar reaproveitar um
+// existente por CPF — juntar responsáveis duplicados fica pra uma sprint
+// futura, com uma tela dedicada de busca, pra não arriscar linkar a pessoa
+// errada silenciosamente.
+app.put('/api/alunos/:id/responsavel', exigirProfessor, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const alunoAlvo = await prisma.aluno.findUnique({ where: { id }, select: { professorId: true, escolaId: true } });
+    if (!alunoAlvo || alunoAlvo.professorId !== req.auth.id) {
+      return res.status(404).json({ erro: 'Aluno não encontrado.' });
+    }
+
+    const { nome, cpf, email, telefone, vinculo } = req.body;
+    if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
+    const vinculoFinal = vinculo === 'DEPENDENTE' ? 'DEPENDENTE' : 'CONTRATANTE';
+
+    const atualizado = await prisma.$transaction(async (tx) => {
+      const responsavel = await tx.responsavelFinanceiro.create({
+        data: {
+          nome: nome.trim(),
+          cpf: cpf?.trim() || null,
+          email: email?.toLowerCase().trim() || null,
+          telefone: telefone?.trim() || null,
+          escolaId: alunoAlvo.escolaId,
+        },
+      });
+      return tx.aluno.update({
+        where: { id },
+        data: { responsavelId: responsavel.id, vinculoResponsavel: vinculoFinal },
+        select: { id: true, nome: true, responsavel: true, vinculoResponsavel: true },
+      });
+    });
+
+    res.json({ mensagem: 'Responsável financeiro salvo!', aluno: atualizado });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao salvar responsável financeiro.');
+  }
+});
+
 app.get('/api/meus-alunos', exigirProfessor, async (req, res) => {
   try {
     const professorId = req.auth.id;
     const alunos = await prisma.aluno.findMany({
       where: { professorId, status: 'ATIVO' },
       include: {
+        responsavel: true,
         aulas: {
           orderBy: { dataHora: 'desc' },
           include: { materiais: true },
@@ -1410,6 +1521,8 @@ app.get('/api/aluno/perfil', exigirAluno, async (req, res) => {
         status: true, valorMensalidade: true, diaVencimento: true,
         recorrenciaAula: true, diaSemanaAula: true, horarioAula: true,
         tempoContrato: true, dataInicioContrato: true, createdAt: true, fotoUrl: true,
+        vinculoResponsavel: true,
+        responsavel: { select: { nome: true, cpf: true, email: true, telefone: true } },
         professor: { select: { nome: true, telefone: true } },
       },
     });
