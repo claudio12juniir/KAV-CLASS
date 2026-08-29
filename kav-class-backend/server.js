@@ -281,6 +281,12 @@ async function enviarEmailRedefinicao(destinatario, codigo) {
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    // Sem isso, uma conexão SMTP que trava (rede bloqueando a porta, Gmail
+    // fora do ar) prende essa chamada indefinidamente — e com ela, quem
+    // estiver esperando a resposta HTTP.
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
   });
   await transporter.sendMail({
     from: `"KAV Class" <${process.env.EMAIL_USER}>`,
@@ -2650,6 +2656,12 @@ async function enviarEmailConviteProfessor(destinatario, escolaNome, codigo) {
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    // Sem isso, uma conexão SMTP que trava (rede bloqueando a porta, Gmail
+    // fora do ar) prende essa chamada indefinidamente — e com ela, quem
+    // estiver esperando a resposta HTTP.
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
   });
   await transporter.sendMail({
     from: `"KAV Class" <${process.env.EMAIL_USER}>`,
