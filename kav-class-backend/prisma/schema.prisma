@@ -159,6 +159,9 @@ model Escola {
   pacotesCredito  PacoteCredito[]
   reservasSala    ReservaSala[]
   contratos       Contrato[]
+  lancamentosCaixa LancamentoCaixa[]
+  fechamentosCaixa FechamentoCaixa[]
+  contasPagar      ContaPagar[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -852,4 +855,77 @@ model Contrato {
 
   @@index([matriculaId])
   @@index([escolaId])
+}
+
+// ─── 23. BACKOFFICE FINANCEIRO MÍNIMO ─────────────────────────────
+// Versão enxuta do módulo clássico de caixa da Emusys — só o necessário
+// pra escola não precisar de planilha paralela, sem tesouraria/conciliação
+// bancária/repasse de cartão (isso é ERP financeiro de verdade, fora de
+// escopo aqui).
+
+enum TipoLancamentoCaixa {
+  ENTRADA
+  SAIDA
+}
+
+// Movimento de caixa que já aconteceu de verdade (dinheiro entrou/saiu).
+// Pode ser avulso (professor lança na mão) ou gerado automaticamente ao
+// pagar uma ContaPagar (ver PUT /api/contas-pagar/:id/pagar).
+model LancamentoCaixa {
+  id        String              @id @default(uuid())
+  tipo      TipoLancamentoCaixa
+  descricao String
+  valor     Float
+  data      DateTime            @default(now())
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  contaPagarId String?
+  contaPagar   ContaPagar? @relation(fields: [contaPagarId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([escolaId, data])
+}
+
+// Fecha um dia: soma congelada no momento do fechamento — não recalcula
+// depois, mesmo que lançamentos daquele dia mudem (fechamento é uma foto,
+// não uma view). Um fechamento só por dia por Escola.
+model FechamentoCaixa {
+  id            String   @id @default(uuid())
+  data          DateTime
+  saldoInicial  Float
+  totalEntradas Float
+  totalSaidas   Float
+  saldoFinal    Float
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([escolaId, data])
+  @@index([escolaId])
+}
+
+// Despesa da escola — nasce sem afetar o caixa; só quando marcada como paga
+// (PUT /api/contas-pagar/:id/pagar) é que vira um LancamentoCaixa de saída.
+model ContaPagar {
+  id         String    @id @default(uuid())
+  descricao  String
+  valor      Float
+  vencimento DateTime
+  paga       Boolean   @default(false)
+  pagoEm     DateTime?
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  lancamentos LancamentoCaixa[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId, paga])
 }

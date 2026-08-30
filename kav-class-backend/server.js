@@ -3260,6 +3260,174 @@ app.put('/api/contratos/:id/cancelar', exigirProfessor, async (req, res) => {
 });
 
 // ============================================================================
+// 10g. BACKOFFICE FINANCEIRO MÍNIMO (Fase 3, S3.3)
+//
+// Versão enxuta do módulo de caixa da Emusys — sem tesouraria, sem
+// conciliação bancária, sem repasse de cartão. Só o necessário pra escola
+// não precisar de planilha paralela pro que já é dinheiro de verdade
+// (lançamento avulso, fechamento do dia, contas a pagar).
+// ============================================================================
+
+// "YYYY-MM-DD" puro é interpretado pelo JS como meia-noite UTC, não meia-
+// noite local — em qualquer fuso negativo (Brasil inteiro) isso cai no dia
+// anterior assim que passa por getFullYear()/getDate() (que já leem em
+// hora local). Por isso não dá pra só fazer `new Date(str)` e confiar:
+// parseamos o "YYYY-MM-DD" manualmente pra ancorar no dia certo.
+function ancorarNoDia(data) {
+  if (typeof data === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(data)) {
+    const [ano, mes, dia] = data.split('-').map(Number);
+    return new Date(ano, mes - 1, dia);
+  }
+  return new Date(data);
+}
+function inicioDoDia(data) {
+  const d = ancorarNoDia(data);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+}
+function fimDoDia(data) {
+  const d = ancorarNoDia(data);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+}
+
+app.get('/api/caixa/lancamentos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const dataRef = req.query.data || new Date();
+    const lancamentos = await prisma.lancamentoCaixa.findMany({
+      where: { escolaId: req.auth.escolaId, data: { gte: inicioDoDia(dataRef), lte: fimDoDia(dataRef) } },
+      orderBy: { data: 'asc' },
+    });
+    res.json(lancamentos);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/caixa/lancamentos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { tipo, descricao, valor, data } = req.body;
+    if (!['ENTRADA', 'SAIDA'].includes(tipo) || !descricao?.trim() || typeof valor !== 'number' || valor <= 0) {
+      return res.status(400).json({ erro: 'tipo (ENTRADA|SAIDA), descricao e valor (número > 0) são obrigatórios.' });
+    }
+    // Se "data" vier só "YYYY-MM-DD" (sem hora), ancora no meio-dia local em
+    // vez de deixar o parser tratar como meia-noite UTC — que em qualquer
+    // fuso do Brasil cai no dia anterior (ver inicioDoDia/fimDoDia acima).
+    const dataLancamento = data
+      ? (/^\d{4}-\d{2}-\d{2}$/.test(data) ? new Date(`${data}T12:00:00`) : new Date(data))
+      : new Date();
+    const lancamento = await prisma.lancamentoCaixa.create({
+      data: { tipo, descricao: descricao.trim(), valor, data: dataLancamento, escolaId: req.auth.escolaId },
+    });
+    res.status(201).json(lancamento);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar lançamento.' });
+  }
+});
+
+// POST /api/caixa/fechamento — fecha o dia. Saldo inicial vem do
+// saldoFinal do fechamento anterior (0 se nunca fechou antes) — é uma
+// foto congelada no momento do fechamento, não recalcula depois.
+app.post('/api/caixa/fechamento', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const escolaId = req.auth.escolaId;
+    const dataRef = req.body.data || new Date();
+    const inicio = inicioDoDia(dataRef);
+    const fim = fimDoDia(dataRef);
+
+    const jaFechado = await prisma.fechamentoCaixa.findUnique({ where: { escolaId_data: { escolaId, data: inicio } } });
+    if (jaFechado) return res.status(400).json({ erro: 'Esse dia já foi fechado.' });
+
+    const fechamento = await prisma.$transaction(async (tx) => {
+      // Precisa ser o fechamento cronologicamente ANTERIOR ao dia sendo
+      // fechado agora (data < inicio), não só "o mais recente que existe"
+      // — sem esse filtro, fechar um dia atrasado depois de já ter fechado
+      // um dia futuro (ex.: acerto de backlog) puxaria o saldo errado.
+      const ultimoFechamento = await tx.fechamentoCaixa.findFirst({ where: { escolaId, data: { lt: inicio } }, orderBy: { data: 'desc' } });
+      const saldoInicial = ultimoFechamento?.saldoFinal ?? 0;
+
+      const lancamentos = await tx.lancamentoCaixa.findMany({ where: { escolaId, data: { gte: inicio, lte: fim } } });
+      const totalEntradas = lancamentos.filter(l => l.tipo === 'ENTRADA').reduce((acc, l) => acc + l.valor, 0);
+      const totalSaidas = lancamentos.filter(l => l.tipo === 'SAIDA').reduce((acc, l) => acc + l.valor, 0);
+      const saldoFinal = saldoInicial + totalEntradas - totalSaidas;
+
+      return tx.fechamentoCaixa.create({
+        data: { data: inicio, saldoInicial, totalEntradas, totalSaidas, saldoFinal, escolaId },
+      });
+    });
+    res.status(201).json(fechamento);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao fechar caixa.' });
+  }
+});
+
+app.get('/api/caixa/fechamentos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const fechamentos = await prisma.fechamentoCaixa.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { data: 'desc' } });
+    res.json(fechamentos);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.get('/api/contas-pagar', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const contas = await prisma.contaPagar.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { vencimento: 'asc' } });
+    res.json(contas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/contas-pagar', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { descricao, valor, vencimento } = req.body;
+    if (!descricao?.trim() || typeof valor !== 'number' || valor <= 0 || !vencimento) {
+      return res.status(400).json({ erro: 'descricao, valor (número > 0) e vencimento são obrigatórios.' });
+    }
+    const conta = await prisma.contaPagar.create({
+      data: { descricao: descricao.trim(), valor, vencimento: new Date(vencimento), escolaId: req.auth.escolaId },
+    });
+    res.status(201).json(conta);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar conta a pagar.' });
+  }
+});
+
+// PUT /api/contas-pagar/:id/pagar — marca como paga E gera o lançamento de
+// saída no caixa na mesma transação, pra "saldo bater com o financeiro do
+// app" nunca depender de alguém lembrar de lançar as duas coisas separado.
+app.put('/api/contas-pagar/:id/pagar', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const conta = await prisma.contaPagar.findFirst({ where: { id: req.params.id, escolaId: req.auth.escolaId } });
+    if (!conta) return res.status(404).json({ erro: 'Conta a pagar não encontrada.' });
+    if (conta.paga) return res.status(400).json({ erro: 'Essa conta já está paga.' });
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      const atualizada = await tx.contaPagar.update({ where: { id: conta.id }, data: { paga: true, pagoEm: new Date() } });
+      const lancamento = await tx.lancamentoCaixa.create({
+        data: {
+          tipo: 'SAIDA',
+          descricao: `Pagamento: ${conta.descricao}`,
+          valor: conta.valor,
+          escolaId: conta.escolaId,
+          contaPagarId: conta.id,
+        },
+      });
+      return { atualizada, lancamento };
+    });
+    res.json({ mensagem: 'Conta paga e lançada no caixa.', ...resultado });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao pagar conta.' });
+  }
+});
+
+// ============================================================================
 // 11. AGENDAMENTO AVULSO DE AULA
 // ============================================================================
 
