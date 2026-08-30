@@ -1657,6 +1657,44 @@ app.get('/api/aluno/reposicoes', exigirAluno, async (req, res) => {
   }
 });
 
+// POST /api/aluno/reposicoes — aluno pede uma reposição por conta própria
+// (fluxo que faltava: até aqui só o professor conseguia propor uma data e
+// o aluno confirmar/pedir outra). Nasce em SOLICITADA, origem ALUNO — segue
+// o fluxo de duas camadas de aprovação (S2.1): professor precisa
+// autorizar antes de a Escola poder finalizar.
+app.post('/api/aluno/reposicoes', exigirAluno, async (req, res) => {
+  try {
+    const { dataOriginal, dataProposta, motivo } = req.body;
+    if (!dataProposta?.trim() || !motivo?.trim()) {
+      return res.status(400).json({ erro: 'dataProposta e motivo são obrigatórios.' });
+    }
+    const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { professorId: true } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
+
+    const reposicao = await prisma.reposicao.create({
+      data: {
+        professorId: aluno.professorId,
+        alunoId: req.auth.id,
+        dataOriginal: dataOriginal?.trim() || null,
+        dataProposta: dataProposta.trim(),
+        motivo: motivo.trim(),
+        status: 'SOLICITADA',
+        origem: 'ALUNO',
+      },
+    });
+
+    const professor = await prisma.professor.findUnique({ where: { id: aluno.professorId }, select: { expoPushToken: true } });
+    if (professor?.expoPushToken) {
+      await enviarPushNotificacao(professor.expoPushToken, 'Pedido de reposição', `Um aluno pediu reposição para ${dataProposta.trim()}.`, { tipo: 'NOVA_REPOSICAO', reposicaoId: reposicao.id });
+    }
+
+    res.status(201).json({ mensagem: 'Pedido enviado ao professor.', reposicao });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao solicitar reposição.' });
+  }
+});
+
 app.post('/api/reposicoes/:id/confirmar', exigirAluno, async (req, res) => {
   try {
     const { count } = await prisma.reposicao.updateMany({
@@ -1945,6 +1983,58 @@ app.put('/api/reposicoes/:id/nova-data', exigirProfessor, async (req, res) => {
     res.json({ mensagem: 'Nova data enviada!', reposicao });
   } catch (err) {
     tratarErro(err, res, 'Erro interno.');
+  }
+});
+
+// ─── Fluxo de reposição iniciada pelo aluno (S2.1): aprovar/negar são do
+// professor; finalizar é da Escola (DONO/GESTOR — no Pacote Professor, o
+// próprio professor solo, que é DONO da sua Escola de 1 pessoa). Ordem
+// obrigatória: só finaliza o que já foi autorizado pelo professor.
+
+app.put('/api/reposicoes/:id/aprovar', exigirProfessor, async (req, res) => {
+  try {
+    const { count } = await prisma.reposicao.updateMany({
+      where: { id: req.params.id, professorId: req.auth.id, origem: 'ALUNO', status: 'SOLICITADA' },
+      data: { status: 'AUTORIZADA' },
+    });
+    if (!count) return res.status(404).json({ erro: 'Nenhum pedido de reposição pendente com esse id.' });
+    res.json({ mensagem: 'Reposição autorizada. Aguardando a Escola finalizar.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao aprovar reposição.');
+  }
+});
+
+app.put('/api/reposicoes/:id/negar', exigirProfessor, async (req, res) => {
+  try {
+    const { count } = await prisma.reposicao.updateMany({
+      where: { id: req.params.id, professorId: req.auth.id, origem: 'ALUNO', status: 'SOLICITADA' },
+      data: { status: 'NEGADA' },
+    });
+    if (!count) return res.status(404).json({ erro: 'Nenhum pedido de reposição pendente com esse id.' });
+    res.json({ mensagem: 'Reposição negada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao negar reposição.');
+  }
+});
+
+app.put('/api/reposicoes/:id/finalizar', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const { count } = await prisma.reposicao.updateMany({
+      where: {
+        id: req.params.id,
+        origem: 'ALUNO',
+        status: 'AUTORIZADA',
+        professor: { escolaId: professor.escolaId }, // a reposição precisa ser de um professor da mesma Escola
+      },
+      data: { status: 'FINALIZADA' },
+    });
+    if (!count) return res.status(404).json({ erro: 'Nenhuma reposição autorizada com esse id nesta Escola.' });
+    res.json({ mensagem: 'Reposição finalizada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao finalizar reposição.');
   }
 });
 
@@ -2588,6 +2678,24 @@ app.post('/api/aulas', exigirProfessor, async (req, res) => {
 // 12. RELATÓRIOS
 // ============================================================================
 
+// GET /api/relatorios/aulas-sem-presenca (S2.1)
+// "Faltas duplas" da Emusys: aulas cujo horário já passou e ninguém
+// registrou presença de nenhum dos dois lados (presenca IS NULL) — útil
+// pra auditar aula que simplesmente não aconteceu e não foi tratada.
+app.get('/api/relatorios/aulas-sem-presenca', exigirProfessor, async (req, res) => {
+  try {
+    const aulas = await prisma.aula.findMany({
+      where: { professorId: req.auth.id, dataHora: { lt: new Date() }, presenca: null },
+      include: { aluno: { select: { nome: true } } },
+      orderBy: { dataHora: 'desc' },
+    });
+    res.json(aulas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
 app.get('/api/relatorios', exigirProfessor, async (req, res) => {
   try {
     const professorId = req.auth.id;
@@ -3067,6 +3175,25 @@ app.get('/api/escola/alunos', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao listar alunos.' });
+  }
+});
+
+// GET /api/escola/reposicoes — pedidos de reposição (origem ALUNO) já
+// autorizados pelo professor, aguardando a Escola finalizar (S2.1).
+app.get('/api/escola/reposicoes', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const reposicoes = await prisma.reposicao.findMany({
+      where: { origem: 'ALUNO', status: 'AUTORIZADA', professor: { escolaId: professor.escolaId } },
+      include: { aluno: { select: { nome: true } }, professor: { select: { nome: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    res.json(reposicoes);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao listar reposições.' });
   }
 });
 

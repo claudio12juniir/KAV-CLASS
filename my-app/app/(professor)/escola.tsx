@@ -24,6 +24,7 @@ export default function EscolaScreen() {
   const [pacote, setPacote] = useState<'PACOTE_PROFESSOR' | 'PACOTE_ESCOLA' | null>(null);
   const [professores, setProfessores] = useState<any[]>([]);
   const [alunos, setAlunos] = useState<any[]>([]);
+  const [reposicoesParaFinalizar, setReposicoesParaFinalizar] = useState<any[]>([]);
 
   const [emailConvite, setEmailConvite] = useState('');
   const [papelConvite, setPapelConvite] = useState<'PROFESSOR' | 'GESTOR'>('PROFESSOR');
@@ -37,10 +38,11 @@ export default function EscolaScreen() {
       const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
       const headers = { Authorization: `Bearer ${token}` };
 
-      const [resPerfil, resProfessores, resAlunos] = await Promise.all([
+      const [resPerfil, resProfessores, resAlunos, resReposicoes] = await Promise.all([
         fetchComRetry(`${API_URL}/api/professor/perfil?professorId=${professorId}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/alunos`, { headers }),
+        fetchComRetry(`${API_URL}/api/escola/reposicoes`, { headers }),
       ]);
 
       if (resPerfil.ok) {
@@ -49,6 +51,7 @@ export default function EscolaScreen() {
       }
       if (resProfessores.ok) setProfessores(await resProfessores.json());
       if (resAlunos.ok) setAlunos(await resAlunos.json());
+      if (resReposicoes.ok) setReposicoesParaFinalizar(await resReposicoes.json());
     } catch (err) {
       console.error('Erro ao carregar Minha Escola:', err);
     } finally {
@@ -86,6 +89,25 @@ export default function EscolaScreen() {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
     } finally {
       setEnviandoConvite(false);
+    }
+  };
+
+  const finalizarReposicao = async (id: string) => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/reposicoes/${id}/finalizar`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        Alert.alert('Finalizada!', dados.mensagem);
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível finalizar.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
     }
   };
 
@@ -170,6 +192,23 @@ export default function EscolaScreen() {
               <Ionicons name="copy-outline" size={18} color="#32BCAD" />
             </TouchableOpacity>
           )}
+        </View>
+      )}
+
+      {reposicoesParaFinalizar.length > 0 && (
+        <View style={styles.secaoLista}>
+          <Text style={styles.secaoTitulo}>Reposições pra finalizar ({reposicoesParaFinalizar.length})</Text>
+          {reposicoesParaFinalizar.map((r) => (
+            <View key={r.id} style={styles.cardReposicao}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.nomePessoa}>{r.aluno?.nome} · com {r.professor?.nome}</Text>
+                <Text style={styles.emailPessoa}>{r.dataProposta} — {r.motivo}</Text>
+              </View>
+              <TouchableOpacity style={styles.botaoFinalizar} onPress={() => finalizarReposicao(r.id)}>
+                <Text style={styles.botaoFinalizarTexto}>Finalizar</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
         </View>
       )}
 
@@ -279,4 +318,11 @@ const styles = StyleSheet.create({
   emailPessoa: { color: '#888', fontSize: 12, marginTop: 1 },
   badgePapel: { paddingHorizontal: 10, paddingVertical: 4, backgroundColor: '#F0F4F8', borderRadius: 12 },
   badgePapelTexto: { fontSize: 10, fontWeight: '700', color: '#555', letterSpacing: 0.5 },
+
+  cardReposicao: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F0F0F0',
+  },
+  botaoFinalizar: { backgroundColor: '#0D47A1', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 },
+  botaoFinalizarTexto: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
 });

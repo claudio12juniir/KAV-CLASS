@@ -20,9 +20,14 @@ import SyncLoader from '../../components/SyncLoader';
 const API_URL = BASE_URL;
 
 const statusConfig: Record<string, { cor: string; bg: string; label: string }> = {
-  aguardando: { cor: '#E65100', bg: '#FFF4E5', label: 'Aguardando' },
-  aprovada:   { cor: '#154a22', bg: '#E8F8EE', label: 'Aprovada'  },
-  recusada:   { cor: '#C62828', bg: '#FFEBEE', label: 'Recusada'  },
+  aguardando:   { cor: '#E65100', bg: '#FFF4E5', label: 'Aguardando' },
+  aprovada:     { cor: '#154a22', bg: '#E8F8EE', label: 'Aprovada'  },
+  recusada:     { cor: '#C62828', bg: '#FFEBEE', label: 'Recusada'  },
+  // Fluxo iniciado pelo aluno (S2.1)
+  solicitada:   { cor: '#E65100', bg: '#FFF4E5', label: 'Pedido do aluno' },
+  autorizada:   { cor: '#154a22', bg: '#E8F8EE', label: 'Autorizada'      },
+  negada:       { cor: '#C62828', bg: '#FFEBEE', label: 'Negada'         },
+  finalizada:   { cor: '#0D47A1', bg: '#E3F2FD', label: 'Finalizada'     },
 };
 
 function formatarDataHora(iso: string): string {
@@ -79,6 +84,27 @@ export default function ReposicoesScreen() {
       setCarregando(false);
     }
   };
+
+  const responderPedidoAluno = async (id: string, acao: 'aprovar' | 'negar') => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const resposta = await fetchComRetry(`${API_URL}/api/reposicoes/${id}/${acao}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const dados = await resposta.json();
+      if (resposta.ok) {
+        Alert.alert(acao === 'aprovar' ? 'Autorizado!' : 'Negado', dados.mensagem);
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível processar o pedido.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão com o servidor.');
+    }
+  };
+
+  const pedidosDeAlunos = reposicoes.filter((r) => r.origem === 'ALUNO' && r.status === 'SOLICITADA');
 
   // iOS: picker único datetime
   const aoMudarDataIOS = (_event: any, dataReal?: Date) => {
@@ -276,6 +302,39 @@ export default function ReposicoesScreen() {
           <Text style={styles.textoBotaoEnviar}>Solicitar Reposição</Text>
         </TouchableOpacity>
       </View>
+
+      {pedidosDeAlunos.length > 0 && (
+        <View style={styles.secao}>
+          <Text style={styles.tituloSecao}>Pedidos de Alunos</Text>
+          {pedidosDeAlunos.map((item) => (
+            <View key={item.id} style={[styles.card, { borderLeftColor: '#E65100' }]}>
+              <View style={styles.topoCard}>
+                <Text style={styles.nomeAluno}>{item.aluno?.nome ?? 'Aluno'}</Text>
+              </View>
+              <Text style={styles.motivoTexto}>
+                <Text style={{ fontWeight: 'bold' }}>Motivo:</Text> {item.motivo ?? '—'}
+              </Text>
+              <Text style={styles.dataTexto}>
+                <Text style={{ fontWeight: 'bold' }}>Data pedida:</Text> {item.dataProposta}
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={[styles.botaoEnviar, { flex: 1, backgroundColor: '#C62828', paddingVertical: 10 }]}
+                  onPress={() => responderPedidoAluno(item.id, 'negar')}
+                >
+                  <Text style={styles.textoBotaoEnviar}>Negar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.botaoEnviar, { flex: 1, paddingVertical: 10 }]}
+                  onPress={() => responderPedidoAluno(item.id, 'aprovar')}
+                >
+                  <Text style={styles.textoBotaoEnviar}>Autorizar</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
 
       <View style={styles.secao}>
         <Text style={styles.tituloSecao}>Solicitações Recentes</Text>

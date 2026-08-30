@@ -89,6 +89,21 @@ enum StatusReposicao {
   AGUARDANDO
   CONFIRMADA
   SOLICITANDO_OUTRO
+  // A partir daqui: fluxo iniciado pelo aluno (S2.1), separado do fluxo
+  // acima (professor propõe, aluno confirma). Emusys: "Solicitações de
+  // reagendamento pedidas pelo aluno" — Pendente → Recusada ou Finalizada,
+  // com aprovação do professor obrigatória antes da escola efetivar.
+  SOLICITADA
+  AUTORIZADA
+  NEGADA
+  FINALIZADA
+}
+
+// Quem começou o pedido de reposição — decide qual fluxo de status essa
+// linha segue (ver StatusReposicao).
+enum OrigemReposicao {
+  PROFESSOR
+  ALUNO
 }
 
 // CONTRATANTE: o próprio aluno é o responsável financeiro (maior de idade,
@@ -408,6 +423,9 @@ model Reposicao {
   dataProposta String
   motivo       String
   status       StatusReposicao @default(AGUARDANDO)
+  // Default PROFESSOR preserva o significado de toda linha já existente —
+  // até S2.1 só existia o fluxo iniciado pelo professor.
+  origem       OrigemReposicao @default(PROFESSOR)
   createdAt    DateTime        @default(now())
 
   professor Professor @relation(fields: [professorId], references: [id])

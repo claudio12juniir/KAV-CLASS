@@ -5,7 +5,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { CORES } from '../../constants/theme';
 
@@ -18,12 +18,25 @@ interface Reposicao {
   dataProposta: string;
   motivo: string;
   status: string;
+  origem: string;
 }
+
+const STATUS_SOLICITACAO: Record<string, { label: string; cor: string }> = {
+  SOLICITADA: { label: 'Aguardando o professor', cor: CORES.aviso },
+  AUTORIZADA: { label: 'Autorizada — aguardando a escola', cor: CORES.acento },
+  NEGADA: { label: 'Negada', cor: CORES.erro },
+  FINALIZADA: { label: 'Finalizada', cor: CORES.sucesso },
+};
 
 export default function ReposicoesScreen() {
   const navigation = useNavigation();
   const [reposicoes, setReposicoes] = useState<Reposicao[]>([]);
   const [carregando, setCarregando] = useState(true);
+
+  const [formularioAberto, setFormularioAberto] = useState(false);
+  const [dataPropostaForm, setDataPropostaForm] = useState('');
+  const [motivoForm, setMotivoForm] = useState('');
+  const [enviandoSolicitacao, setEnviandoSolicitacao] = useState(false);
 
   const carregarReposicoes = useCallback(async () => {
     try {
@@ -85,8 +98,39 @@ export default function ReposicoesScreen() {
     }
   };
 
+  const solicitarReposicao = async () => {
+    if (!dataPropostaForm.trim() || !motivoForm.trim()) {
+      Alert.alert('Atenção', 'Preencha a data desejada e o motivo.');
+      return;
+    }
+    setEnviandoSolicitacao(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const resposta = await fetchComRetry(`${API_URL}/api/aluno/reposicoes`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataProposta: dataPropostaForm.trim(), motivo: motivoForm.trim() }),
+      });
+      const dados = await resposta.json();
+      if (resposta.ok) {
+        Alert.alert('Pedido enviado!', 'O professor vai avaliar seu pedido de reposição.');
+        setDataPropostaForm('');
+        setMotivoForm('');
+        setFormularioAberto(false);
+        carregarReposicoes();
+      } else {
+        Alert.alert('Não foi possível enviar', dados.erro || 'Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão com o servidor.');
+    } finally {
+      setEnviandoSolicitacao(false);
+    }
+  };
+
   const pendentes = reposicoes.filter(r => r.status === 'AGUARDANDO');
   const confirmadas = reposicoes.filter(r => r.status === 'CONFIRMADA');
+  const minhasSolicitacoes = reposicoes.filter(r => r.origem === 'ALUNO');
 
   if (carregando) {
     return (
@@ -108,6 +152,71 @@ export default function ReposicoesScreen() {
         <Text style={styles.titulo}>REPOSIÇÕES</Text>
         <Text style={styles.subtitulo}>Gerencie seus horários remarcados</Text>
       </View>
+
+      <View style={styles.secao}>
+        <Text style={styles.tituloSecao}>Precisa repor uma aula?</Text>
+        {!formularioAberto ? (
+          <TouchableOpacity style={styles.botaoPedir} onPress={() => setFormularioAberto(true)}>
+            <Ionicons name="add-circle-outline" size={18} color={CORES.fundo} />
+            <Text style={styles.textoBotaoPedir}>Pedir reposição</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.cardForm}>
+            <Text style={styles.labelForm}>Data/horário desejado</Text>
+            <TextInput
+              style={styles.inputForm}
+              placeholder="Ex: 15/09 às 14h"
+              placeholderTextColor={CORES.secundaria}
+              value={dataPropostaForm}
+              onChangeText={setDataPropostaForm}
+            />
+            <Text style={styles.labelForm}>Motivo</Text>
+            <TextInput
+              style={[styles.inputForm, { height: 70 }]}
+              placeholder="Por que você precisa repor essa aula?"
+              placeholderTextColor={CORES.secundaria}
+              multiline
+              value={motivoForm}
+              onChangeText={setMotivoForm}
+            />
+            <View style={styles.boxBotoes}>
+              <TouchableOpacity
+                style={[styles.botaoAcao, styles.botaoRecusar]}
+                onPress={() => { setFormularioAberto(false); setDataPropostaForm(''); setMotivoForm(''); }}
+              >
+                <Text style={styles.textoBotaoRecusar}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.botaoAcao, styles.botaoConfirmar, enviandoSolicitacao && { opacity: 0.6 }]}
+                onPress={solicitarReposicao}
+                disabled={enviandoSolicitacao}
+              >
+                {enviandoSolicitacao ? <SyncLoader color={CORES.fundo} /> : <Text style={styles.textoBotaoConfirmar}>Enviar pedido</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </View>
+
+      {minhasSolicitacoes.length > 0 && (
+        <View style={styles.secao}>
+          <Text style={styles.tituloSecao}>Meus pedidos de reposição</Text>
+          {minhasSolicitacoes.map((item) => {
+            const cfg = STATUS_SOLICITACAO[item.status] || { label: item.status, cor: CORES.secundaria };
+            return (
+              <View key={item.id} style={styles.cardConfirmado}>
+                <View style={styles.infoConfirmado}>
+                  <Text style={styles.nomeProfessorConfirmado}>{item.dataProposta}</Text>
+                  <Text style={styles.motivoConfirmado}>{item.motivo}</Text>
+                </View>
+                <View style={[styles.badgeStatus, { borderColor: cfg.cor }]}>
+                  <Text style={[styles.textoBadgeStatus, { color: cfg.cor }]}>{cfg.label}</Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       <View style={styles.secao}>
         <Text style={styles.tituloSecao}>Aguardando sua confirmação</Text>
@@ -241,4 +350,21 @@ const styles = StyleSheet.create({
   textoDataConfirmada: { color: CORES.acento, fontSize: 13, fontWeight: 'bold', marginBottom: 4, fontFamily: 'monospace' },
   motivoConfirmado: { color: CORES.secundaria, fontSize: 12 },
   seloConfirmado: { marginLeft: 15 },
+
+  botaoPedir: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: CORES.acento, borderRadius: 10, paddingVertical: 14,
+  },
+  textoBotaoPedir: { color: CORES.fundo, fontWeight: 'bold', fontSize: 14 },
+  cardForm: {
+    backgroundColor: CORES.superficie, borderRadius: 12, padding: 18,
+    borderWidth: 1, borderColor: CORES.borda,
+  },
+  labelForm: { color: CORES.secundaria, fontSize: 12, fontWeight: 'bold', marginBottom: 6, marginTop: 4 },
+  inputForm: {
+    backgroundColor: CORES.fundo, borderRadius: 8, borderWidth: 1, borderColor: CORES.borda,
+    paddingHorizontal: 12, paddingVertical: 10, color: CORES.primaria, fontSize: 14, marginBottom: 10,
+  },
+  badgeStatus: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, borderWidth: 1.5, marginLeft: 10 },
+  textoBadgeStatus: { fontSize: 11, fontWeight: 'bold' },
 });
