@@ -2844,6 +2844,227 @@ app.get('/api/pagamentos/:id/recibo', autenticar, async (req, res) => {
 });
 
 // ============================================================================
+// 10e. AVALIAÇÃO / CRÉDITO DE HORAS / RESERVA DE SALA (Fase 2, S2.3)
+// ============================================================================
+
+// POST /api/aluno/avaliacoes — se vier aulaId, o professor avaliado é
+// derivado da própria aula (mais confiável). Sem aulaId, precisa vir
+// professorId explícito, validado contra o professor "principal" do aluno
+// ou qualquer Matricula dele — evita avaliar um professor qualquer da
+// Escola que nunca deu aula pra esse aluno.
+app.post('/api/aluno/avaliacoes', exigirAluno, async (req, res) => {
+  try {
+    const { nota, comentario, aulaId } = req.body;
+    let { professorId } = req.body;
+    if (!Number.isInteger(nota) || nota < 1 || nota > 5) {
+      return res.status(400).json({ erro: 'nota precisa ser um número inteiro de 1 a 5.' });
+    }
+
+    if (aulaId) {
+      const aula = await prisma.aula.findFirst({ where: { id: aulaId, alunoId: req.auth.id } });
+      if (!aula) return res.status(404).json({ erro: 'Aula não encontrada.' });
+      professorId = aula.professorId;
+    } else {
+      if (!professorId) return res.status(400).json({ erro: 'professorId ou aulaId é obrigatório.' });
+      const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { professorId: true } });
+      const temMatricula = await prisma.matricula.findFirst({ where: { alunoId: req.auth.id, professorId } });
+      if (aluno?.professorId !== professorId && !temMatricula) {
+        return res.status(400).json({ erro: 'Esse professor não dá aula pra você.' });
+      }
+    }
+
+    const avaliacao = await prisma.avaliacao.create({
+      data: { nota, comentario: comentario?.trim() || null, alunoId: req.auth.id, professorId, aulaId: aulaId || null },
+    });
+    res.status(201).json(avaliacao);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao registrar avaliação.' });
+  }
+});
+
+app.get('/api/professor/avaliacoes', exigirProfessor, async (req, res) => {
+  try {
+    const avaliacoes = await prisma.avaliacao.findMany({
+      where: { professorId: req.auth.id },
+      include: { aluno: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    const media = avaliacoes.length ? avaliacoes.reduce((acc, a) => acc + a.nota, 0) / avaliacoes.length : null;
+    res.json({ media, total: avaliacoes.length, avaliacoes });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.get('/api/pacotes-credito', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const pacotes = await prisma.pacoteCredito.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { horas: 'asc' } });
+    res.json(pacotes);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/pacotes-credito', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, horas } = req.body;
+    if (!nome?.trim() || typeof horas !== 'number' || horas <= 0) {
+      return res.status(400).json({ erro: 'nome e horas (número > 0) são obrigatórios.' });
+    }
+    const pacote = await prisma.pacoteCredito.create({ data: { nome: nome.trim(), horas, escolaId: req.auth.escolaId } });
+    res.status(201).json(pacote);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar pacote de crédito.' });
+  }
+});
+
+// POST /api/alunos/:id/creditos — professor concede um pacote de crédito
+// pro próprio aluno (mesmo modelo de confiança que já existe pra
+// pagamento/comprovante: sem gateway processando isso — é um registro
+// manual). "horas" fica gravado como snapshot do pacote no momento da
+// concessão, igual ValorPlano snapshotta preço.
+app.post('/api/alunos/:id/creditos', exigirProfessor, async (req, res) => {
+  try {
+    const alunoAlvo = await prisma.aluno.findUnique({ where: { id: req.params.id }, select: { professorId: true, escolaId: true } });
+    if (!alunoAlvo || alunoAlvo.professorId !== req.auth.id) {
+      return res.status(404).json({ erro: 'Aluno não encontrado.' });
+    }
+    const { pacoteCreditoId } = req.body;
+    const pacote = await prisma.pacoteCredito.findFirst({ where: { id: pacoteCreditoId, escolaId: alunoAlvo.escolaId } });
+    if (!pacote) return res.status(400).json({ erro: 'Pacote de crédito não encontrado.' });
+
+    const compra = await prisma.compraCredito.create({
+      data: { alunoId: req.params.id, pacoteCreditoId: pacote.id, horas: pacote.horas },
+    });
+    res.status(201).json(compra);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao conceder crédito.' });
+  }
+});
+
+// Saldo é sempre computado na hora, nunca guardado — soma de crédito
+// concedido menos soma de reserva ativa. Ver comentário no schema.prisma.
+async function calcularSaldoCredito(tx, alunoId) {
+  const [compras, reservas] = await Promise.all([
+    tx.compraCredito.aggregate({ where: { alunoId }, _sum: { horas: true } }),
+    tx.reservaSala.aggregate({ where: { alunoId, ativa: true }, _sum: { horas: true } }),
+  ]);
+  return (compras._sum.horas || 0) - (reservas._sum.horas || 0);
+}
+
+app.get('/api/aluno/creditos/saldo', exigirAluno, async (req, res) => {
+  try {
+    const saldo = await calcularSaldoCredito(prisma, req.auth.id);
+    res.json({ saldo });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.get('/api/aluno/salas', exigirAluno, async (req, res) => {
+  try {
+    const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+    const salas = await prisma.sala.findMany({ where: { escolaId: aluno.escolaId, ativa: true }, orderBy: { nome: 'asc' } });
+    res.json(salas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/aluno/reservas — critério de pronto de S2.3: sem crédito
+// suficiente, nem entra na transação. Recalcula o saldo dentro da própria
+// transação (não reaproveita um valor lido antes) pra reduzir — não
+// eliminar por completo, isso exigiria lock explícito — a janela de corrida
+// entre duas reservas simultâneas do mesmo aluno.
+app.post('/api/aluno/reservas', exigirAluno, async (req, res) => {
+  try {
+    const { salaId, dataHoraInicio, horas } = req.body;
+    if (!salaId || !dataHoraInicio || typeof horas !== 'number' || horas <= 0) {
+      return res.status(400).json({ erro: 'salaId, dataHoraInicio e horas (número > 0) são obrigatórios.' });
+    }
+    const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+    const sala = await prisma.sala.findFirst({ where: { id: salaId, escolaId: aluno.escolaId, ativa: true } });
+    if (!sala) return res.status(404).json({ erro: 'Sala não encontrada.' });
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      const saldo = await calcularSaldoCredito(tx, req.auth.id);
+      if (horas > saldo) {
+        return { erro: `Crédito insuficiente. Saldo atual: ${saldo}h, pedido: ${horas}h.` };
+      }
+      const reserva = await tx.reservaSala.create({
+        data: { alunoId: req.auth.id, salaId, escolaId: aluno.escolaId, dataHoraInicio: new Date(dataHoraInicio), horas },
+      });
+      return { reserva };
+    });
+
+    if (resultado.erro) return res.status(400).json({ erro: resultado.erro });
+    res.status(201).json(resultado.reserva);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao reservar sala.' });
+  }
+});
+
+app.get('/api/aluno/reservas', exigirAluno, async (req, res) => {
+  try {
+    const reservas = await prisma.reservaSala.findMany({
+      where: { alunoId: req.auth.id },
+      include: { sala: { select: { nome: true } } },
+      orderBy: { dataHoraInicio: 'desc' },
+    });
+    res.json(reservas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// PUT /api/reservas/:id/cancelar — dono (aluno) ou professor da Escola.
+// Devolve a hora pro saldo automaticamente (saldo é computado excluindo
+// reserva inativa, sem passo de estorno separado).
+app.put('/api/reservas/:id/cancelar', autenticar, async (req, res) => {
+  try {
+    const reserva = await prisma.reservaSala.findUnique({ where: { id: req.params.id } });
+    if (!reserva) return res.status(404).json({ erro: 'Reserva não encontrada.' });
+
+    let autorizado = false;
+    if (req.auth.papel === 'aluno' && reserva.alunoId === req.auth.id) {
+      autorizado = true;
+    } else if (req.auth.papel === 'professor') {
+      const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+      autorizado = professor?.escolaId === reserva.escolaId;
+    }
+    if (!autorizado) return res.status(404).json({ erro: 'Reserva não encontrada.' });
+
+    await prisma.reservaSala.update({ where: { id: reserva.id }, data: { ativa: false } });
+    res.json({ mensagem: 'Reserva cancelada. Crédito devolvido.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao cancelar reserva.');
+  }
+});
+
+app.get('/api/escola/reservas', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const reservas = await prisma.reservaSala.findMany({
+      where: { escolaId: req.auth.escolaId, ativa: true },
+      include: { aluno: { select: { nome: true } }, sala: { select: { nome: true } } },
+      orderBy: { dataHoraInicio: 'asc' },
+    });
+    res.json(reservas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
 // 11. AGENDAMENTO AVULSO DE AULA
 // ============================================================================
 

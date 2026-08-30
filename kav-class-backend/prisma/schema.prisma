@@ -156,6 +156,8 @@ model Escola {
   planosPagamento PlanoPagamento[]
   tabelasValores  TabelaValores[]
   matriculas      Matricula[]
+  pacotesCredito  PacoteCredito[]
+  reservasSala    ReservaSala[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -195,6 +197,7 @@ model Professor {
   mensagens    Mensagem[]
   turmas       Turma[]
   matriculas   Matricula[]
+  avaliacoes   Avaliacao[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -246,12 +249,15 @@ model Aluno {
   responsavel        ResponsavelFinanceiro? @relation(fields: [responsavelId], references: [id])
   vinculoResponsavel VinculoResponsavel?
 
-  aulas      Aula[]
-  pagamentos Pagamento[]
-  reposicoes Reposicao[]
-  mensagens  Mensagem[]
-  materiais  Material[]
-  matriculas Matricula[]
+  aulas          Aula[]
+  pagamentos     Pagamento[]
+  reposicoes     Reposicao[]
+  mensagens      Mensagem[]
+  materiais      Material[]
+  matriculas     Matricula[]
+  avaliacoes     Avaliacao[]
+  comprasCredito CompraCredito[]
+  reservasSala   ReservaSala[]
 
   @@index([professorId, status])
   @@index([status])
@@ -307,6 +313,8 @@ model Aula {
   turma   Turma?  @relation(fields: [turmaId], references: [id], onDelete: SetNull)
   salaId  String?
   sala    Sala?   @relation(fields: [salaId], references: [id], onDelete: SetNull)
+
+  avaliacoes Avaliacao[]
 
   createdAt DateTime @default(now())
 
@@ -505,6 +513,7 @@ model Sala {
   escola   Escola  @relation(fields: [escolaId], references: [id])
   turmas   Turma[]
   aulas    Aula[]
+  reservas ReservaSala[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -696,4 +705,98 @@ model Matricula {
   @@index([professorId])
   @@index([escolaId])
   @@index([turmaId])
+}
+
+// ─── 20. AVALIAÇÃO ────────────────────────────────────────────────
+// Aluno avalia o professor — opcionalmente amarrada a uma Aula específica
+// (nota + comentário). Sem constraint de "uma avaliação por aula": um
+// aluno pode reavaliar, o professor vê a média de todas.
+model Avaliacao {
+  id         String  @id @default(uuid())
+  nota       Int
+  comentario String?
+
+  alunoId String
+  aluno   Aluno  @relation(fields: [alunoId], references: [id])
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+
+  aulaId String?
+  aula   Aula?   @relation(fields: [aulaId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([professorId])
+  @@index([alunoId])
+}
+
+// ─── 21. CRÉDITO DE HORAS / RESERVA DE SALA ──────────────────────
+// Moeda interna pra reservar sala fora do horário de aula regular (Emusys).
+// Saldo do aluno é sempre computado na hora (soma de CompraCredito menos
+// soma de ReservaSala ativa) em vez de guardado num contador — evita
+// contador dessincronizado do que realmente aconteceu, ao custo de duas
+// agregações a mais por reserva. Escala tranquila pro volume desse app.
+
+// Catálogo de pacotes vendáveis pela Escola (ex.: "Pacote 10h Ensaio").
+model PacoteCredito {
+  id    String  @id @default(uuid())
+  nome  String
+  horas Float
+  ativo Boolean @default(true)
+
+  escolaId String
+  escola   Escola          @relation(fields: [escolaId], references: [id])
+  compras  CompraCredito[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+}
+
+// Ledger de crédito concedido a um aluno — "compra" no sentido de que o
+// professor registrou manualmente (mesmo modelo de confiança que já existe
+// pra Pagamento/comprovante: sem gateway processando isso). `horas` é um
+// snapshot do pacote no momento da concessão, igual ValorPlano snapshotta
+// preço — mudar o pacote depois não altera crédito já concedido.
+model CompraCredito {
+  id    String @id @default(uuid())
+  horas Float
+
+  alunoId String
+  aluno   Aluno  @relation(fields: [alunoId], references: [id])
+
+  pacoteCreditoId String
+  pacoteCredito   PacoteCredito @relation(fields: [pacoteCreditoId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([alunoId])
+}
+
+// Reserva de sala usando o crédito. `ativa = false` é como uma reserva é
+// cancelada — devolve a hora pro saldo automaticamente, já que o saldo é
+// computado excluindo reservas inativas (não precisa de um passo separado
+// de "estorno").
+model ReservaSala {
+  id             String   @id @default(uuid())
+  dataHoraInicio DateTime
+  horas          Float
+  ativa          Boolean  @default(true)
+
+  alunoId String
+  aluno   Aluno  @relation(fields: [alunoId], references: [id])
+
+  salaId String
+  sala   Sala   @relation(fields: [salaId], references: [id])
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([alunoId])
+  @@index([salaId, dataHoraInicio])
+  @@index([escolaId])
 }
