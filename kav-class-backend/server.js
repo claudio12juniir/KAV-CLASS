@@ -4219,6 +4219,180 @@ app.get('/api/relatorios/conversao-experimental', exigirProfessor, carregarEscol
 });
 
 // ============================================================================
+// 10k. AGENDA GERAL DA ESCOLA + CALENDÁRIO LETIVO (Fase 1, S1.4)
+//
+// Retomada depois de ter ficado pendente quando a Fase 1 original "terminou"
+// (S1.1–S1.3 concluídas, S1.4 pulada sem registro) — achado revisando o
+// roadmap antes de seguir pra Fase 5, já que S5.2 e S5.3 dependem dela.
+//
+// "Agenda respeita automaticamente" o calendário é aplicado no único ponto
+// de criação de aula avulsa que existe hoje (POST /api/aulas, seção 11,
+// logo abaixo). Não existe neste código um motor que gera Aula
+// automaticamente a partir de Turma/Matricula em uma rotina/cron — cada
+// Aula nasce como um registro concreto criado por essa rota — então não há
+// outro lugar pra "respeitar" o calendário além desse. Ver runbook de S1.4
+// pra essa decisão de escopo (inclusive por que não mexi nas rotas de
+// reposição já em produção, S2.1).
+// ============================================================================
+
+// GET /api/escola/calendario — qualquer professor da Escola pode consultar
+// (útil pra saber que dia evitar antes de tentar agendar).
+app.get('/api/escola/calendario', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const dias = await prisma.diaNaoLetivo.findMany({
+      where: { escolaId: req.auth.escolaId },
+      orderBy: { data: 'asc' },
+    });
+    res.json(dias);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/escola/calendario — só DONO/GESTOR: é uma configuração da
+// Escola como um todo, não de um professor específico.
+app.post('/api/escola/calendario', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { data, descricao, tipo } = req.body;
+    if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data) || !descricao?.trim()) {
+      return res.status(400).json({ erro: 'data (YYYY-MM-DD) e descricao são obrigatórios.' });
+    }
+    if (tipo && !['FERIADO', 'RECESSO'].includes(tipo)) {
+      return res.status(400).json({ erro: 'tipo deve ser FERIADO ou RECESSO.' });
+    }
+    const dia = await prisma.diaNaoLetivo.create({
+      data: { data: ancorarNoDia(data), descricao: descricao.trim(), tipo: tipo || 'FERIADO', escolaId: professor.escolaId },
+    });
+    res.status(201).json(dia);
+  } catch (err) {
+    if (err?.code === 'P2002') return res.status(400).json({ erro: 'Essa data já está no calendário.' });
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar dia não-letivo.' });
+  }
+});
+
+app.delete('/api/escola/calendario/:id', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { count } = await prisma.diaNaoLetivo.deleteMany({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!count) return res.status(404).json({ erro: 'Não encontrado.' });
+    res.json({ mensagem: 'Removido do calendário.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao remover.');
+  }
+});
+
+// GET /api/escola/agenda — visão de grade completa da Escola, escopo
+// GESTOR (é o que o roadmap pede: ver todo mundo, não só o próprio
+// professor). Agrupar por professor ou por sala é feito no cliente — a
+// resposta já vem com professor/sala/aluno/turma inclusos pra isso.
+app.get('/api/escola/agenda', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { de, ate } = req.query;
+    const where = { professor: { escolaId: professor.escolaId } };
+    if (de || ate) {
+      where.dataHora = {};
+      if (de) where.dataHora.gte = inicioDoDia(de);
+      if (ate) where.dataHora.lte = fimDoDia(ate);
+    }
+    const aulas = await prisma.aula.findMany({
+      where,
+      include: {
+        professor: { select: { nome: true } },
+        aluno: { select: { nome: true } },
+        sala: { select: { nome: true } },
+        turma: { select: { nome: true } },
+      },
+      orderBy: { dataHora: 'asc' },
+    });
+    res.json(aulas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// Carrega a Aula garantindo que pertence à Escola de quem está pedindo (via
+// DONO/GESTOR) — usada pelas três ações inline abaixo.
+async function carregarAulaDaEscola(req, res) {
+  const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+  if (!professor) return null;
+  const aula = await prisma.aula.findFirst({ where: { id: req.params.id, professor: { escolaId: professor.escolaId } } });
+  if (!aula) { res.status(404).json({ erro: 'Aula não encontrada.' }); return null; }
+  return { aula, professor };
+}
+
+app.put('/api/aulas/:id/trocar-professor', async (req, res) => {
+  try {
+    const carregado = await carregarAulaDaEscola(req, res);
+    if (!carregado) return;
+    const { professorId } = req.body;
+    const novoProfessor = await prisma.professor.findFirst({ where: { id: professorId, escolaId: carregado.professor.escolaId } });
+    if (!novoProfessor) return res.status(400).json({ erro: 'Professor não encontrado.' });
+    await prisma.aula.update({ where: { id: carregado.aula.id }, data: { professorId } });
+    res.json({ mensagem: `Aula transferida para ${novoProfessor.nome}.` });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao trocar professor.');
+  }
+});
+
+app.put('/api/aulas/:id/trocar-sala', async (req, res) => {
+  try {
+    const carregado = await carregarAulaDaEscola(req, res);
+    if (!carregado) return;
+    const { salaId } = req.body;
+    if (salaId) {
+      const sala = await prisma.sala.findFirst({ where: { id: salaId, escolaId: carregado.professor.escolaId } });
+      if (!sala) return res.status(400).json({ erro: 'Sala não encontrada.' });
+    }
+    await prisma.aula.update({ where: { id: carregado.aula.id }, data: { salaId: salaId || null } });
+    res.json({ mensagem: 'Sala atualizada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao trocar sala.');
+  }
+});
+
+// PUT /api/aulas/:id/cancelar — GESTOR cancela direto, sem precisar abrir o
+// app do professor original (critério de pronto do roadmap). Com
+// comReposicao=true, já nasce a solicitação de reposição (fluxo PROFESSOR
+// de S2.1 — o aluno ainda confirma a data, igual sempre foi).
+app.put('/api/aulas/:id/cancelar', async (req, res) => {
+  try {
+    const carregado = await carregarAulaDaEscola(req, res);
+    if (!carregado) return;
+    const { comReposicao, dataProposta, motivo } = req.body;
+    if (comReposicao && (!dataProposta?.trim() || !motivo?.trim())) {
+      return res.status(400).json({ erro: 'Com reposição, dataProposta e motivo são obrigatórios.' });
+    }
+
+    await prisma.aula.update({ where: { id: carregado.aula.id }, data: { status: 'CANCELADA' } });
+
+    let reposicao = null;
+    if (comReposicao) {
+      reposicao = await prisma.reposicao.create({
+        data: {
+          professorId: carregado.aula.professorId,
+          alunoId: carregado.aula.alunoId,
+          dataOriginal: carregado.aula.dataHora.toISOString().slice(0, 10),
+          dataProposta: dataProposta.trim(),
+          motivo: motivo.trim(),
+          origem: 'PROFESSOR',
+        },
+      });
+    }
+    res.json({ mensagem: comReposicao ? 'Aula cancelada e reposição proposta.' : 'Aula cancelada.', reposicao });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao cancelar aula.');
+  }
+});
+
+// ============================================================================
 // 11. AGENDAMENTO AVULSO DE AULA
 // ============================================================================
 
@@ -4247,6 +4421,24 @@ app.post('/api/aulas', exigirProfessor, async (req, res) => {
     const diaAlvo = diaSemana ?? 1;
     const diff = (diaAlvo - dataAula.getDay() + 7) % 7 || 7;
     dataAula.setDate(dataAula.getDate() + diff);
+
+    // Calendário da Escola (S1.4): checado ANTES de setUTCHours() abaixo,
+    // com os mesmos componentes de data locais que o resto desta rota já
+    // usa pra decidir "que dia é esse" — sem herdar (nem criar de novo) a
+    // conversão de fuso que essa rota já faz, que é só pro horário, não
+    // pro dia calendário.
+    const professorEscola = await prisma.professor.findUnique({ where: { id: professorId }, select: { escolaId: true } });
+    const diaNaoLetivo = await prisma.diaNaoLetivo.findFirst({
+      where: {
+        escolaId: professorEscola.escolaId,
+        data: new Date(dataAula.getFullYear(), dataAula.getMonth(), dataAula.getDate()),
+      },
+    });
+    if (diaNaoLetivo) {
+      const rotulo = diaNaoLetivo.tipo === 'FERIADO' ? 'feriado' : 'recesso';
+      return res.status(400).json({ erro: `${dataAula.toLocaleDateString('pt-BR')} é ${rotulo} (${diaNaoLetivo.descricao}) — escolha outra data.` });
+    }
+
     dataAula.setUTCHours(horas + 3, minutos, 0, 0);
 
     const aulasParaCriar = alunosIds.map((alunoId) => ({

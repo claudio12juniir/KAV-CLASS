@@ -40,6 +40,13 @@ export default function EscolaScreen() {
 
   const [relatorioConversao, setRelatorioConversao] = useState<{ totalExperimentais: number; convertidas: number; taxaConversao: number } | null>(null);
 
+  const [papel, setPapel] = useState<'DONO' | 'GESTOR' | 'PROFESSOR' | null>(null);
+  const [diasNaoLetivos, setDiasNaoLetivos] = useState<any[]>([]);
+  const [novaDataFeriado, setNovaDataFeriado] = useState('');
+  const [novaDescricaoFeriado, setNovaDescricaoFeriado] = useState('');
+  const [novoTipoFeriado, setNovoTipoFeriado] = useState<'FERIADO' | 'RECESSO'>('FERIADO');
+  const [salvandoFeriado, setSalvandoFeriado] = useState(false);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
@@ -52,7 +59,7 @@ export default function EscolaScreen() {
       trintaDiasAtras.setDate(hoje.getDate() - 30);
       const paraYYYYMMDD = (d: Date) => d.toISOString().slice(0, 10);
 
-      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao] = await Promise.all([
+      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao, resCalendario] = await Promise.all([
         fetchComRetry(`${API_URL}/api/professor/perfil?professorId=${professorId}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/alunos`, { headers }),
@@ -61,11 +68,13 @@ export default function EscolaScreen() {
         fetchComRetry(`${API_URL}/api/tarefas-lead`, { headers }),
         fetchComRetry(`${API_URL}/api/links-captacao`, { headers }),
         fetchComRetry(`${API_URL}/api/relatorios/conversao-experimental?de=${paraYYYYMMDD(trintaDiasAtras)}&ate=${paraYYYYMMDD(hoje)}`, { headers }),
+        fetchComRetry(`${API_URL}/api/escola/calendario`, { headers }),
       ]);
 
       if (resPerfil.ok) {
         const perfil = await resPerfil.json();
         setPacote(perfil.escola?.pacote || 'PACOTE_PROFESSOR');
+        setPapel(perfil.papel || null);
       }
       if (resProfessores.ok) setProfessores(await resProfessores.json());
       if (resAlunos.ok) setAlunos(await resAlunos.json());
@@ -78,6 +87,7 @@ export default function EscolaScreen() {
       if (resTarefas.ok) setTarefasPendentes(await resTarefas.json());
       if (resLinks.ok) setLinksCaptacao(await resLinks.json());
       if (resConversao.ok) setRelatorioConversao(await resConversao.json());
+      if (resCalendario.ok) setDiasNaoLetivos(await resCalendario.json());
     } catch (err) {
       console.error('Erro ao carregar Minha Escola:', err);
     } finally {
@@ -207,6 +217,53 @@ export default function EscolaScreen() {
     Alert.alert('Copiado!', 'Código do convite copiado.');
   };
 
+  const adicionarDiaNaoLetivo = async () => {
+    const dataNorm = novaDataFeriado.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dataNorm) || !novaDescricaoFeriado.trim()) {
+      Alert.alert('Atenção', 'Informe a data (AAAA-MM-DD) e uma descrição.');
+      return;
+    }
+    setSalvandoFeriado(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/escola/calendario`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: dataNorm, descricao: novaDescricaoFeriado.trim(), tipo: novoTipoFeriado }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        setNovaDataFeriado('');
+        setNovaDescricaoFeriado('');
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível adicionar.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setSalvandoFeriado(false);
+    }
+  };
+
+  const removerDiaNaoLetivo = async (id: string) => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/escola/calendario/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        carregarDados();
+      } else {
+        const dados = await res.json();
+        Alert.alert('Erro', dados.erro || 'Não foi possível remover.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    }
+  };
+
   if (carregando) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
@@ -326,6 +383,72 @@ export default function EscolaScreen() {
           </View>
         </View>
       )}
+
+      <View style={styles.secaoLista}>
+        <Text style={styles.secaoTitulo}>Calendário da Escola</Text>
+        <Text style={styles.textoAjuda}>
+          Feriados e recessos bloqueiam automaticamente o agendamento de aula avulsa nesse dia.
+        </Text>
+
+        {(papel === 'DONO' || papel === 'GESTOR') && (
+          <View style={styles.cardForm}>
+            <TextInput
+              style={styles.input}
+              placeholder="AAAA-MM-DD"
+              placeholderTextColor="#aaa"
+              value={novaDataFeriado}
+              onChangeText={setNovaDataFeriado}
+            />
+            <TextInput
+              style={styles.input}
+              placeholder="Descrição (ex: Feriado municipal)"
+              placeholderTextColor="#aaa"
+              value={novaDescricaoFeriado}
+              onChangeText={setNovaDescricaoFeriado}
+            />
+            <View style={styles.papelRow}>
+              {(['FERIADO', 'RECESSO'] as const).map((t) => (
+                <TouchableOpacity
+                  key={t}
+                  style={[styles.chipPapel, novoTipoFeriado === t && styles.chipPapelAtivo]}
+                  onPress={() => setNovoTipoFeriado(t)}
+                >
+                  <Text style={[styles.textoChip, novoTipoFeriado === t && { color: '#fff' }]}>
+                    {t === 'FERIADO' ? 'Feriado' : 'Recesso'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity
+              style={[styles.botaoConvidar, salvandoFeriado && { opacity: 0.6 }]}
+              onPress={adicionarDiaNaoLetivo}
+              disabled={salvandoFeriado}
+            >
+              {salvandoFeriado ? <SyncLoader color="#ffffff" /> : <Text style={styles.botaoConvidarTexto}>Adicionar ao calendário</Text>}
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {diasNaoLetivos.length === 0 ? (
+          <Text style={styles.textoVazio}>Nenhum feriado ou recesso cadastrado.</Text>
+        ) : (
+          diasNaoLetivos.map((d) => (
+            <View key={d.id} style={styles.cardReposicao}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.nomePessoa}>
+                  {new Date(d.data).toLocaleDateString('pt-BR', { timeZone: 'UTC' })} · {d.tipo === 'FERIADO' ? 'Feriado' : 'Recesso'}
+                </Text>
+                <Text style={styles.emailPessoa}>{d.descricao}</Text>
+              </View>
+              {(papel === 'DONO' || papel === 'GESTOR') && (
+                <TouchableOpacity style={styles.botaoIcone} onPress={() => removerDiaNaoLetivo(d.id)}>
+                  <Ionicons name="trash-outline" size={18} color="#B00020" />
+                </TouchableOpacity>
+              )}
+            </View>
+          ))
+        )}
+      </View>
 
       <View style={styles.secaoLista}>
         <Text style={styles.secaoTitulo}>Links de captação</Text>

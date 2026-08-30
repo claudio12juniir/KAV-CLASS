@@ -176,6 +176,7 @@ model Escola {
   tarefasLead      TarefaLead[]
   linksCaptacao    LinkCaptacao[]
   aulasExperimentais AulaExperimental[]
+  diasNaoLetivos   DiaNaoLetivo[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1118,4 +1119,32 @@ model AulaExperimental {
 
   @@index([escolaId, dataHora])
   @@index([leadId])
+}
+
+// ─── CALENDÁRIO DA ESCOLA (Fase 1, S1.4) ─────────────────────────
+//
+// Feriados/recessos por Escola. "Agenda respeita automaticamente" (S1.4)
+// é aplicado no ponto de criação de aula avulsa (POST /api/aulas) — não
+// existe neste código um motor de geração recorrente de aula a partir de
+// Turma/Matricula pra "respeitar" em outro lugar (cada Aula nasce como um
+// registro concreto, não derivado de uma regra semanal). Ver runbook de
+// S1.4 pra essa decisão de escopo, registrada, não assumida em silêncio.
+enum TipoDiaNaoLetivo {
+  FERIADO
+  RECESSO
+}
+
+model DiaNaoLetivo {
+  id        String           @id @default(uuid())
+  data      DateTime
+  descricao String
+  tipo      TipoDiaNaoLetivo @default(FERIADO)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([escolaId, data])
+  @@index([escolaId])
 }
