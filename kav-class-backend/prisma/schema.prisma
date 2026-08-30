@@ -134,9 +134,12 @@ model Escola {
   alunos       Aluno[]
   convites     ConviteProfessor[]
   responsaveis ResponsavelFinanceiro[]
-  cursos       Curso[]
-  salas        Sala[]
-  turmas       Turma[]
+  cursos          Curso[]
+  salas           Sala[]
+  turmas          Turma[]
+  modalidades     Modalidade[]
+  planosPagamento PlanoPagamento[]
+  tabelasValores  TabelaValores[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -449,10 +452,17 @@ model Curso {
   escola   Escola  @relation(fields: [escolaId], references: [id])
   turmas   Turma[]
 
+  // Opcional: um curso pode apontar pra uma TabelaValores compartilhada
+  // (S1.3). Sem tabela vinculada, o preço continua sendo o que já existe
+  // hoje — digitado direto em Aluno.valorMensalidade por /api/configurar-aluno.
+  tabelaValoresId String?
+  tabelaValores   TabelaValores? @relation(fields: [tabelaValoresId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([escolaId])
+  @@index([tabelaValoresId])
 }
 
 // ─── 12. SALA ─────────────────────────────────────────────────────
@@ -505,4 +515,113 @@ model Turma {
   @@index([professorId])
   @@index([cursoId])
   @@index([salaId])
+}
+
+// Plano de pagamento: mensal, semestral, anual, livre — cada um pode ter um
+// preço diferente pra mesma tabela de valores.
+enum PeriodicidadePlano {
+  MENSAL
+  SEMESTRAL
+  ANUAL
+  LIVRE
+}
+
+// ─── 14. MODALIDADE ───────────────────────────────────────────────
+// Frequência + duração da aula (ex.: "Semanal 60min"). Reaproveita o enum
+// RecorrenciaAula que já existe pra Aluno, em vez de duplicar SEMANAL/
+// QUINZENAL/MENSAL num enum novo.
+model Modalidade {
+  id              String          @id @default(uuid())
+  nome            String
+  frequencia      RecorrenciaAula
+  duracaoMinutos  Int
+  padrao          Boolean         @default(false)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+}
+
+// ─── 15. PLANO DE PAGAMENTO ───────────────────────────────────────
+model PlanoPagamento {
+  id            String             @id @default(uuid())
+  nome          String
+  periodicidade PeriodicidadePlano
+
+  escolaId String
+  escola   Escola       @relation(fields: [escolaId], references: [id])
+  valores  ValorPlano[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+}
+
+// ─── 16. TABELA DE VALORES ────────────────────────────────────────
+// Uma tabela pode ser reaproveitada por vários Curso (ver Curso.tabelaValoresId)
+// — editar/versionar a tabela propaga o preço pra todos eles.
+model TabelaValores {
+  id   String @id @default(uuid())
+  nome String
+
+  escolaId String
+  escola   Escola                @relation(fields: [escolaId], references: [id])
+  cursos   Curso[]
+  versoes  VersaoTabelaValores[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+}
+
+// ─── 17. VERSÃO DA TABELA DE VALORES ──────────────────────────────
+// O motor do reajuste anual: uma nova versão pode ser criada com
+// antecedência (ativa=false) e só passa a valer quando ativada. Matrícula
+// já existente nunca lê a versão ativa em tempo real — o valor já foi
+// gravado em Aluno.valorMensalidade no momento da matrícula/renovação, então
+// trocar a versão ativa aqui não altera nada de quem já está pagando. "Só
+// uma versão ativa por tabela" é garantido na rota de ativação (desativa as
+// irmãs na mesma transação), não por constraint de banco — evita a
+// complexidade de um índice único parcial só pra isso.
+model VersaoTabelaValores {
+  id     String  @id @default(uuid())
+  ativa  Boolean @default(false)
+
+  tabelaId String
+  tabela   TabelaValores @relation(fields: [tabelaId], references: [id])
+  valores  ValorPlano[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tabelaId, ativa])
+}
+
+// ─── 18. VALOR POR PLANO / FORMA DE PAGAMENTO ─────────────────────
+// metodo = null é o valor "qualquer forma de pagamento" (fallback); uma
+// linha com metodo preenchido (PIX/CARTAO/BOLETO) sobrepõe esse fallback só
+// pra aquela forma específica — mesma regra da Emusys.
+model ValorPlano {
+  id     String           @id @default(uuid())
+  metodo MetodoPagamento?
+  valor  Float
+
+  versaoId String
+  versao   VersaoTabelaValores @relation(fields: [versaoId], references: [id])
+
+  planoPagamentoId String
+  planoPagamento   PlanoPagamento @relation(fields: [planoPagamentoId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([versaoId, planoPagamentoId, metodo])
+  @@index([versaoId])
+  @@index([planoPagamentoId])
 }

@@ -2150,11 +2150,19 @@ app.post('/api/cursos', exigirProfessor, carregarEscolaDoProfessor, async (req, 
 
 app.patch('/api/cursos/:id', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
   try {
-    const { nome, ativo } = req.body;
+    const { nome, ativo, tabelaValoresId } = req.body;
+    const escolaId = req.auth.escolaId;
     const dados = {};
     if (nome?.trim()) dados.nome = nome.trim();
     if (typeof ativo === 'boolean') dados.ativo = ativo;
-    const { count } = await prisma.curso.updateMany({ where: { id: req.params.id, escolaId: req.auth.escolaId }, data: dados });
+    if (tabelaValoresId !== undefined) {
+      if (tabelaValoresId) {
+        const tabela = await prisma.tabelaValores.findFirst({ where: { id: tabelaValoresId, escolaId } });
+        if (!tabela) return res.status(400).json({ erro: 'Tabela de valores não encontrada.' });
+      }
+      dados.tabelaValoresId = tabelaValoresId || null;
+    }
+    const { count } = await prisma.curso.updateMany({ where: { id: req.params.id, escolaId }, data: dados });
     if (!count) return res.status(404).json({ erro: 'Curso não encontrado.' });
     res.json({ mensagem: 'Curso atualizado.' });
   } catch (err) {
@@ -2275,6 +2283,256 @@ app.patch('/api/turmas/:id', exigirProfessor, async (req, res) => {
     res.json({ mensagem: 'Turma atualizada.' });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar turma.');
+  }
+});
+
+// ============================================================================
+// 10c. TABELA DE VALORES (Fase 1, S1.3)
+//
+// Motor de precificação: Modalidade e PlanoPagamento são catálogo da
+// Escola; TabelaValores tem N versões, cada versão tem um preço por
+// combinação (PlanoPagamento, forma de pagamento). Ativar uma versão
+// desativa as irmãs na mesma transação — não existe constraint de banco
+// garantindo "só uma ativa por tabela" de propósito (índice único parcial
+// adicionaria complexidade só pra isso; a rota de ativação já garante o
+// invariante do jeito mais simples).
+//
+// Importante: nada aqui altera Aluno.valorMensalidade. Esse motor só entra
+// em jogo quando algo novo (uma futura tela de matrícula) decidir ler o
+// preço vigente — o que já está configurado continua exatamente como está.
+// ============================================================================
+
+app.get('/api/modalidades', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const modalidades = await prisma.modalidade.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { nome: 'asc' } });
+    res.json(modalidades);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/modalidades', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, frequencia, duracaoMinutos, padrao } = req.body;
+    if (!nome?.trim() || !frequencia || !duracaoMinutos) {
+      return res.status(400).json({ erro: 'nome, frequencia e duracaoMinutos são obrigatórios.' });
+    }
+    const escolaId = req.auth.escolaId;
+
+    const modalidade = await prisma.$transaction(async (tx) => {
+      if (padrao === true) {
+        await tx.modalidade.updateMany({ where: { escolaId, padrao: true }, data: { padrao: false } });
+      }
+      return tx.modalidade.create({
+        data: { nome: nome.trim(), frequencia, duracaoMinutos: parseInt(String(duracaoMinutos), 10), padrao: !!padrao, escolaId },
+      });
+    });
+    res.status(201).json(modalidade);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar modalidade.' });
+  }
+});
+
+app.patch('/api/modalidades/:id', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, frequencia, duracaoMinutos, padrao } = req.body;
+    const escolaId = req.auth.escolaId;
+    const dados = {};
+    if (nome?.trim()) dados.nome = nome.trim();
+    if (frequencia) dados.frequencia = frequencia;
+    if (duracaoMinutos != null) dados.duracaoMinutos = parseInt(String(duracaoMinutos), 10);
+    if (typeof padrao === 'boolean') dados.padrao = padrao;
+
+    const atualizado = await prisma.$transaction(async (tx) => {
+      if (padrao === true) {
+        await tx.modalidade.updateMany({ where: { escolaId, padrao: true }, data: { padrao: false } });
+      }
+      return tx.modalidade.updateMany({ where: { id: req.params.id, escolaId }, data: dados });
+    });
+    if (!atualizado.count) return res.status(404).json({ erro: 'Modalidade não encontrada.' });
+    res.json({ mensagem: 'Modalidade atualizada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar modalidade.');
+  }
+});
+
+app.get('/api/planos-pagamento', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const planos = await prisma.planoPagamento.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { nome: 'asc' } });
+    res.json(planos);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/planos-pagamento', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, periodicidade } = req.body;
+    const validos = ['MENSAL', 'SEMESTRAL', 'ANUAL', 'LIVRE'];
+    if (!nome?.trim() || !validos.includes(periodicidade)) {
+      return res.status(400).json({ erro: 'nome é obrigatório e periodicidade deve ser ' + validos.join('|') });
+    }
+    const plano = await prisma.planoPagamento.create({
+      data: { nome: nome.trim(), periodicidade, escolaId: req.auth.escolaId },
+    });
+    res.status(201).json(plano);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar plano de pagamento.' });
+  }
+});
+
+app.get('/api/tabelas-valores', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const tabelas = await prisma.tabelaValores.findMany({
+      where: { escolaId: req.auth.escolaId },
+      include: { versoes: { where: { ativa: true }, include: { valores: true } } },
+      orderBy: { nome: 'asc' },
+    });
+    res.json(tabelas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.get('/api/tabelas-valores/:id', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const tabela = await prisma.tabelaValores.findFirst({
+      where: { id: req.params.id, escolaId: req.auth.escolaId },
+      include: {
+        cursos: { select: { id: true, nome: true } },
+        versoes: {
+          orderBy: { createdAt: 'desc' },
+          include: { valores: { include: { planoPagamento: true } } },
+        },
+      },
+    });
+    if (!tabela) return res.status(404).json({ erro: 'Tabela não encontrada.' });
+    res.json(tabela);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/tabelas-valores', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome } = req.body;
+    if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
+    const tabela = await prisma.tabelaValores.create({ data: { nome: nome.trim(), escolaId: req.auth.escolaId } });
+    res.status(201).json(tabela);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar tabela de valores.' });
+  }
+});
+
+// POST /api/tabelas-valores/:id/versoes
+// Body: { ativarImediatamente?: boolean, valores: [{ planoPagamentoId, metodo?, valor }] }
+// Cria uma versão nova (rascunho, por padrão não-ativa) — dá pra preparar o
+// reajuste do ano que vem com antecedência sem afetar ninguém até ativar.
+app.post('/api/tabelas-valores/:id/versoes', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const escolaId = req.auth.escolaId;
+    const tabela = await prisma.tabelaValores.findFirst({ where: { id: req.params.id, escolaId } });
+    if (!tabela) return res.status(404).json({ erro: 'Tabela não encontrada.' });
+
+    const { valores, ativarImediatamente } = req.body;
+    if (!Array.isArray(valores) || valores.length === 0) {
+      return res.status(400).json({ erro: 'valores (array) é obrigatório.' });
+    }
+    const metodosValidos = ['PIX', 'CARTAO', 'BOLETO'];
+    for (const v of valores) {
+      if (!v.planoPagamentoId || typeof v.valor !== 'number' || v.valor < 0) {
+        return res.status(400).json({ erro: 'Cada item de valores precisa de planoPagamentoId e valor (número ≥ 0).' });
+      }
+      if (v.metodo && !metodosValidos.includes(v.metodo)) {
+        return res.status(400).json({ erro: 'metodo inválido: ' + v.metodo });
+      }
+    }
+    // Todos os planos referenciados precisam ser da mesma Escola.
+    const planoIds = [...new Set(valores.map(v => v.planoPagamentoId))];
+    const planosValidos = await prisma.planoPagamento.count({ where: { id: { in: planoIds }, escolaId } });
+    if (planosValidos !== planoIds.length) {
+      return res.status(400).json({ erro: 'Um ou mais planos de pagamento não pertencem a esta Escola.' });
+    }
+
+    const versao = await prisma.$transaction(async (tx) => {
+      if (ativarImediatamente === true) {
+        await tx.versaoTabelaValores.updateMany({ where: { tabelaId: tabela.id, ativa: true }, data: { ativa: false } });
+      }
+      return tx.versaoTabelaValores.create({
+        data: {
+          tabelaId: tabela.id,
+          ativa: ativarImediatamente === true,
+          valores: { create: valores.map(v => ({ planoPagamentoId: v.planoPagamentoId, metodo: v.metodo || null, valor: v.valor })) },
+        },
+        include: { valores: true },
+      });
+    });
+    res.status(201).json(versao);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar versão da tabela.' });
+  }
+});
+
+// PUT /api/tabelas-valores/versoes/:id/ativar
+// Desativa qualquer outra versão da mesma tabela antes de ativar esta —
+// nunca duas versões ativas ao mesmo tempo. Não toca em nenhum Aluno: quem
+// já está matriculado manteve o valor gravado na hora da matrícula.
+app.put('/api/tabelas-valores/versoes/:id/ativar', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const versao = await prisma.versaoTabelaValores.findFirst({
+      where: { id: req.params.id, tabela: { escolaId: req.auth.escolaId } },
+      select: { id: true, tabelaId: true },
+    });
+    if (!versao) return res.status(404).json({ erro: 'Versão não encontrada.' });
+
+    await prisma.$transaction([
+      prisma.versaoTabelaValores.updateMany({ where: { tabelaId: versao.tabelaId, ativa: true }, data: { ativa: false } }),
+      prisma.versaoTabelaValores.update({ where: { id: versao.id }, data: { ativa: true } }),
+    ]);
+    res.json({ mensagem: 'Versão ativada. Matrículas já existentes não são afetadas.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao ativar versão.');
+  }
+});
+
+// GET /api/cursos/:id/preco?planoPagamentoId=X&metodo=PIX
+// Resolve o preço vigente (versão ativa da tabela do curso). metodo=null
+// (ou ausente) cai no valor "qualquer forma de pagamento", se existir.
+app.get('/api/cursos/:id/preco', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { planoPagamentoId, metodo } = req.query;
+    if (!planoPagamentoId) return res.status(400).json({ erro: 'planoPagamentoId é obrigatório.' });
+
+    const curso = await prisma.curso.findFirst({
+      where: { id: req.params.id, escolaId: req.auth.escolaId },
+      select: { id: true, nome: true, tabelaValoresId: true },
+    });
+    if (!curso) return res.status(404).json({ erro: 'Curso não encontrado.' });
+    if (!curso.tabelaValoresId) return res.status(404).json({ erro: 'Este curso não tem tabela de valores vinculada.' });
+
+    const versaoAtiva = await prisma.versaoTabelaValores.findFirst({
+      where: { tabelaId: curso.tabelaValoresId, ativa: true },
+      include: { valores: true },
+    });
+    if (!versaoAtiva) return res.status(404).json({ erro: 'Esta tabela ainda não tem nenhuma versão ativa.' });
+
+    const especifico = metodo ? versaoAtiva.valores.find(v => v.planoPagamentoId === planoPagamentoId && v.metodo === metodo) : null;
+    const fallback = versaoAtiva.valores.find(v => v.planoPagamentoId === planoPagamentoId && v.metodo === null);
+    const encontrado = especifico || fallback;
+    if (!encontrado) return res.status(404).json({ erro: 'Não há preço configurado para esse plano/forma de pagamento.' });
+
+    res.json({ curso: curso.nome, versaoId: versaoAtiva.id, valor: encontrado.valor, metodoAplicado: encontrado.metodo });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao resolver preço.' });
   }
 });
 
