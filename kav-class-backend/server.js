@@ -2697,7 +2697,7 @@ app.get('/api/matriculas', exigirProfessor, async (req, res) => {
 
 app.post('/api/matriculas', exigirProfessor, async (req, res) => {
   try {
-    const { alunoId, valorMensalidade, diaVencimento, turmaId, planoPagamentoId } = req.body;
+    const { alunoId, valorMensalidade, diaVencimento, turmaId, planoPagamentoId, leadId } = req.body;
     if (!alunoId || typeof valorMensalidade !== 'number' || valorMensalidade <= 0) {
       return res.status(400).json({ erro: 'alunoId e valorMensalidade (número > 0) são obrigatórios.' });
     }
@@ -2714,6 +2714,13 @@ app.post('/api/matriculas', exigirProfessor, async (req, res) => {
       const plano = await prisma.planoPagamento.findFirst({ where: { id: planoPagamentoId, escolaId: aluno.escolaId } });
       if (!plano) return res.status(400).json({ erro: 'Plano de pagamento não encontrado.' });
     }
+    // Vínculo de conversão (S4.3, opcional): marca que esta matrícula nasceu
+    // de um Lead, pro relatório de conversão experimental → matrícula.
+    if (leadId) {
+      const lead = await prisma.lead.findFirst({ where: { id: leadId, escolaId: aluno.escolaId }, include: { matricula: true } });
+      if (!lead) return res.status(400).json({ erro: 'Lead não encontrado.' });
+      if (lead.matricula) return res.status(400).json({ erro: 'Esse Lead já está vinculado a outra matrícula.' });
+    }
 
     const matricula = await prisma.matricula.create({
       data: {
@@ -2724,6 +2731,7 @@ app.post('/api/matriculas', exigirProfessor, async (req, res) => {
         diaVencimento: diaVencimento != null ? parseInt(String(diaVencimento), 10) : 10,
         turmaId: turmaId || null,
         planoPagamentoId: planoPagamentoId || null,
+        leadId: leadId || null,
       },
     });
     res.status(201).json(matricula);
@@ -4041,6 +4049,173 @@ app.get('/cadastro-lead/:token', limitarTaxaPublica(60, 10 * 60 * 1000), (req, r
     });
   </script>
 </body></html>`);
+});
+
+// ============================================================================
+// 10j. AULA EXPERIMENTAL + CONVERSÃO (Fase 4, S4.3)
+//
+// Fecha o funil: aula-teste vinculada a um Lead (ele ainda não é Aluno).
+// A "conversão" não é um campo próprio — é derivada em tempo de consulta,
+// olhando se o Lead ganhou uma Matricula (Matricula.leadId, vinculada em
+// POST /api/matriculas) depois da dataHora da experimental, respeitando a
+// regra configurável da Escola (Escola.regraConversaoExperimental).
+// ============================================================================
+
+// POST /api/leads/:id/aula-experimental — professor agenda a aula-teste.
+app.post('/api/leads/:id/aula-experimental', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const escolaId = req.auth.escolaId;
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, escolaId } });
+    if (!lead) return res.status(404).json({ erro: 'Lead não encontrado.' });
+
+    const { dataHora, cursoId, professorId, observacao } = req.body;
+    if (!dataHora || isNaN(new Date(dataHora).getTime())) {
+      return res.status(400).json({ erro: 'dataHora é obrigatória e precisa ser uma data válida.' });
+    }
+    if (cursoId) {
+      const curso = await prisma.curso.findFirst({ where: { id: cursoId, escolaId } });
+      if (!curso) return res.status(400).json({ erro: 'Curso não encontrado.' });
+    }
+    if (professorId) {
+      const professor = await prisma.professor.findFirst({ where: { id: professorId, escolaId } });
+      if (!professor) return res.status(400).json({ erro: 'Professor não encontrado.' });
+    }
+
+    const aula = await prisma.aulaExperimental.create({
+      data: {
+        dataHora: new Date(dataHora),
+        cursoId: cursoId || null,
+        professorId: professorId || req.auth.id,
+        observacao: observacao?.trim() || null,
+        leadId: lead.id,
+        escolaId,
+      },
+    });
+    res.status(201).json(aula);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao agendar aula experimental.' });
+  }
+});
+
+app.get('/api/aulas-experimentais', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const escolaId = req.auth.escolaId;
+    const where = { escolaId };
+    if (req.query.status) where.status = req.query.status;
+    const aulas = await prisma.aulaExperimental.findMany({
+      where,
+      include: {
+        lead: { select: { nome: true, telefone: true } },
+        curso: { select: { nome: true } },
+        professor: { select: { nome: true } },
+      },
+      orderBy: { dataHora: 'asc' },
+    });
+    res.json(aulas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.put('/api/aulas-experimentais/:id/status', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['AGENDADA', 'REALIZADA', 'NAO_COMPARECEU', 'CANCELADA'].includes(status)) {
+      return res.status(400).json({ erro: 'status inválido.' });
+    }
+    const { count } = await prisma.aulaExperimental.updateMany({
+      where: { id: req.params.id, escolaId: req.auth.escolaId },
+      data: { status },
+    });
+    if (!count) return res.status(404).json({ erro: 'Aula experimental não encontrada.' });
+    res.json({ mensagem: 'Status atualizado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar status.');
+  }
+});
+
+// PUT /api/escola/regra-conversao — só DONO/GESTOR, é uma configuração da
+// Escola como um todo, não de uma aula/lead específico.
+app.put('/api/escola/regra-conversao', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { regra } = req.body;
+    if (!['QUALQUER_MATRICULA', 'MESMO_CURSO_PROFESSOR'].includes(regra)) {
+      return res.status(400).json({ erro: 'regra deve ser QUALQUER_MATRICULA ou MESMO_CURSO_PROFESSOR.' });
+    }
+    await prisma.escola.update({ where: { id: professor.escolaId }, data: { regraConversaoExperimental: regra } });
+    res.json({ mensagem: 'Regra de conversão atualizada.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao atualizar regra.' });
+  }
+});
+
+// GET /api/relatorios/conversao-experimental?de=&ate= — o critério de
+// pronto do roadmap: taxa de conversão experimental → matrícula por período.
+app.get('/api/relatorios/conversao-experimental', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const escolaId = req.auth.escolaId;
+    const { de, ate } = req.query;
+    const where = { escolaId };
+    if (de || ate) {
+      where.dataHora = {};
+      if (de) where.dataHora.gte = inicioDoDia(de);
+      if (ate) where.dataHora.lte = fimDoDia(ate);
+    }
+
+    const [escola, experimentais] = await Promise.all([
+      prisma.escola.findUnique({ where: { id: escolaId }, select: { regraConversaoExperimental: true } }),
+      prisma.aulaExperimental.findMany({
+        where,
+        include: {
+          lead: {
+            include: {
+              matricula: { include: { turma: { select: { cursoId: true } } } },
+            },
+          },
+        },
+        orderBy: { dataHora: 'asc' },
+      }),
+    ]);
+
+    let convertidas = 0;
+    const detalhes = experimentais.map((exp) => {
+      const matricula = exp.lead.matricula;
+      let convertida = false;
+      if (matricula && matricula.createdAt >= exp.dataHora) {
+        if (escola.regraConversaoExperimental === 'QUALQUER_MATRICULA') {
+          convertida = true;
+        } else {
+          const mesmoProfessor = !exp.professorId || matricula.professorId === exp.professorId;
+          const mesmoCurso = !exp.cursoId || matricula.turma?.cursoId === exp.cursoId;
+          convertida = mesmoProfessor && mesmoCurso;
+        }
+      }
+      if (convertida) convertidas++;
+      return {
+        leadNome: exp.lead.nome,
+        dataHora: exp.dataHora,
+        status: exp.status,
+        convertida,
+        dataConversao: convertida ? matricula.createdAt : null,
+      };
+    });
+
+    res.json({
+      totalExperimentais: experimentais.length,
+      convertidas,
+      taxaConversao: experimentais.length ? Math.round((convertidas / experimentais.length) * 1000) / 10 : 0,
+      regra: escola.regraConversaoExperimental,
+      detalhes,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
 });
 
 // ============================================================================

@@ -38,6 +38,8 @@ export default function EscolaScreen() {
   const [linksCaptacao, setLinksCaptacao] = useState<any[]>([]);
   const [criandoLink, setCriandoLink] = useState(false);
 
+  const [relatorioConversao, setRelatorioConversao] = useState<{ totalExperimentais: number; convertidas: number; taxaConversao: number } | null>(null);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
@@ -45,7 +47,12 @@ export default function EscolaScreen() {
       const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
       const headers = { Authorization: `Bearer ${token}` };
 
-      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks] = await Promise.all([
+      const hoje = new Date();
+      const trintaDiasAtras = new Date();
+      trintaDiasAtras.setDate(hoje.getDate() - 30);
+      const paraYYYYMMDD = (d: Date) => d.toISOString().slice(0, 10);
+
+      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao] = await Promise.all([
         fetchComRetry(`${API_URL}/api/professor/perfil?professorId=${professorId}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/alunos`, { headers }),
@@ -53,6 +60,7 @@ export default function EscolaScreen() {
         fetchComRetry(`${API_URL}/api/funil/resumo`, { headers }),
         fetchComRetry(`${API_URL}/api/tarefas-lead`, { headers }),
         fetchComRetry(`${API_URL}/api/links-captacao`, { headers }),
+        fetchComRetry(`${API_URL}/api/relatorios/conversao-experimental?de=${paraYYYYMMDD(trintaDiasAtras)}&ate=${paraYYYYMMDD(hoje)}`, { headers }),
       ]);
 
       if (resPerfil.ok) {
@@ -69,6 +77,7 @@ export default function EscolaScreen() {
       }
       if (resTarefas.ok) setTarefasPendentes(await resTarefas.json());
       if (resLinks.ok) setLinksCaptacao(await resLinks.json());
+      if (resConversao.ok) setRelatorioConversao(await resConversao.json());
     } catch (err) {
       console.error('Erro ao carregar Minha Escola:', err);
     } finally {
@@ -297,6 +306,27 @@ export default function EscolaScreen() {
         </View>
       )}
 
+      {relatorioConversao && relatorioConversao.totalExperimentais > 0 && (
+        <View style={styles.secaoLista}>
+          <Text style={styles.secaoTitulo}>Conversão experimental → matrícula</Text>
+          <Text style={styles.textoAjuda}>Últimos 30 dias</Text>
+          <View style={styles.conversaoRow}>
+            <View style={styles.conversaoCard}>
+              <Text style={styles.estagioTotal}>{relatorioConversao.totalExperimentais}</Text>
+              <Text style={styles.estagioNome}>Experimentais</Text>
+            </View>
+            <View style={styles.conversaoCard}>
+              <Text style={styles.estagioTotal}>{relatorioConversao.convertidas}</Text>
+              <Text style={styles.estagioNome}>Matricularam</Text>
+            </View>
+            <View style={[styles.conversaoCard, styles.conversaoCardDestaque]}>
+              <Text style={[styles.estagioTotal, { color: '#fff' }]}>{relatorioConversao.taxaConversao}%</Text>
+              <Text style={[styles.estagioNome, { color: '#eee' }]}>Conversão</Text>
+            </View>
+          </View>
+        </View>
+      )}
+
       <View style={styles.secaoLista}>
         <Text style={styles.secaoTitulo}>Links de captação</Text>
         <Text style={styles.textoAjuda}>
@@ -489,6 +519,13 @@ const styles = StyleSheet.create({
   },
   estagioTotal: { fontSize: 22, fontWeight: 'bold', color: '#000' },
   estagioNome: { fontSize: 11, color: '#666', marginTop: 4, textAlign: 'center' },
+
+  conversaoRow: { flexDirection: 'row', gap: 10 },
+  conversaoCard: {
+    flex: 1, alignItems: 'center', paddingVertical: 14,
+    backgroundColor: '#F0F4F8', borderRadius: 12, borderWidth: 1, borderColor: '#D0D8DC',
+  },
+  conversaoCardDestaque: { backgroundColor: '#000', borderColor: '#000' },
 
   linhaPessoa: {
     flexDirection: 'row', alignItems: 'center', gap: 12,

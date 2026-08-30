@@ -145,6 +145,15 @@ model Escola {
   nome   String
   pacote PacoteAssinatura @default(PACOTE_PROFESSOR)
 
+  // Regra de conversão experimental → matrícula (S4.3), configurável por
+  // Escola. QUALQUER_MATRICULA (default): conta como conversão qualquer
+  // matrícula do lead depois da experimental, sem checar curso/professor —
+  // é o default mais permissivo, pra não esconder conversões reais numa
+  // Escola que ainda não configurou nada. MESMO_CURSO_PROFESSOR: só conta
+  // se a matrícula bater o mesmo professor (e o mesmo curso, quando a
+  // experimental tinha um curso definido) da aula-teste.
+  regraConversaoExperimental RegraConversaoExperimental @default(QUALQUER_MATRICULA)
+
   professores  Professor[]
   alunos       Aluno[]
   convites     ConviteProfessor[]
@@ -166,6 +175,7 @@ model Escola {
   leads            Lead[]
   tarefasLead      TarefaLead[]
   linksCaptacao    LinkCaptacao[]
+  aulasExperimentais AulaExperimental[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -209,6 +219,7 @@ model Professor {
   leadsDeInteresse Lead[]
   tarefasLead      TarefaLead[]
   linksCaptacao    LinkCaptacao[]
+  aulasExperimentais AulaExperimental[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -506,6 +517,8 @@ model Curso {
   tabelaValoresId String?
   tabelaValores   TabelaValores? @relation(fields: [tabelaValoresId], references: [id], onDelete: SetNull)
 
+  aulasExperimentais AulaExperimental[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -706,6 +719,13 @@ model Matricula {
 
   planoPagamentoId String?
   planoPagamento   PlanoPagamento? @relation(fields: [planoPagamentoId], references: [id], onDelete: SetNull)
+
+  // Preenchido quando esta matrícula nasce da conversão de um Lead (S4.3) —
+  // é o que alimenta o relatório de conversão experimental → matrícula.
+  // Não confundir com AulaExperimental.leadId: aqui é o RESULTADO
+  // (a matrícula em si), lá é o EVENTO (a aula-teste que pode ou não converter).
+  leadId String? @unique
+  lead   Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
 
   pagamentos Pagamento[]
   contratos  Contrato[]
@@ -990,6 +1010,9 @@ model Lead {
   escola   Escola @relation(fields: [escolaId], references: [id])
 
   tarefas TarefaLead[]
+  aulasExperimentais AulaExperimental[]
+  // Lado "um" da relação 1:1 — a FK única de verdade mora em Matricula.leadId.
+  matricula Matricula?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1051,4 +1074,48 @@ model LinkCaptacao {
   createdAt DateTime @default(now())
 
   @@index([escolaId])
+}
+
+// ─── AULA EXPERIMENTAL (Fase 4, S4.3) ────────────────────────────
+//
+// Aula-teste vinculada a um Lead (não a um Aluno — ele ainda não é aluno).
+// A conversão em si não é um campo aqui: é derivada em tempo de consulta,
+// olhando se o Lead ganhou uma Matricula (Matricula.leadId) depois da
+// dataHora desta aula-teste, respeitando a regra configurável da Escola
+// (Escola.regraConversaoExperimental). Ver GET /api/relatorios/conversao-experimental.
+enum StatusAulaExperimental {
+  AGENDADA
+  REALIZADA
+  NAO_COMPARECEU
+  CANCELADA
+}
+
+enum RegraConversaoExperimental {
+  QUALQUER_MATRICULA
+  MESMO_CURSO_PROFESSOR
+}
+
+model AulaExperimental {
+  id         String                 @id @default(uuid())
+  dataHora   DateTime
+  status     StatusAulaExperimental @default(AGENDADA)
+  observacao String?
+
+  leadId String
+  lead   Lead   @relation(fields: [leadId], references: [id])
+
+  cursoId String?
+  curso   Curso?  @relation(fields: [cursoId], references: [id], onDelete: SetNull)
+
+  professorId String?
+  professor   Professor? @relation(fields: [professorId], references: [id], onDelete: SetNull)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId, dataHora])
+  @@index([leadId])
 }
