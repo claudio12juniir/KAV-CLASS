@@ -3428,6 +3428,215 @@ app.put('/api/contas-pagar/:id/pagar', exigirProfessor, carregarEscolaDoProfesso
 });
 
 // ============================================================================
+// 10h. CRM DE LEADS (Fase 4, S4.1)
+//
+// "Sem refresh manual" no critério de pronto do roadmap é atendido pelo
+// mesmo padrão que toda outra tela deste app já usa: refetch ao focar a
+// tela (useFocusEffect). Notificação em tempo real via websocket/push fica
+// fora de escopo desta sprint — registrado aqui, não é suposição silenciosa.
+// ============================================================================
+
+app.get('/api/estagios-funil', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const estagios = await prisma.estagioFunil.findMany({ where: { escolaId: req.auth.escolaId, ativo: true }, orderBy: { ordem: 'asc' } });
+    res.json(estagios);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/estagios-funil', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, ordem } = req.body;
+    if (!nome?.trim() || !Number.isInteger(ordem)) {
+      return res.status(400).json({ erro: 'nome e ordem (número inteiro) são obrigatórios.' });
+    }
+    const estagio = await prisma.estagioFunil.create({ data: { nome: nome.trim(), ordem, escolaId: req.auth.escolaId } });
+    res.status(201).json(estagio);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar estágio.' });
+  }
+});
+
+app.get('/api/leads', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const arquivado = req.query.arquivado === 'true';
+    const leads = await prisma.lead.findMany({
+      where: { escolaId: req.auth.escolaId, arquivado },
+      include: { estagio: true, professor: { select: { nome: true } } },
+      orderBy: { updatedAt: 'desc' },
+    });
+    res.json(leads);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/leads', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, telefone, email, origem, estagioId, professorId } = req.body;
+    if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
+    const escolaId = req.auth.escolaId;
+
+    let estagioFinal = estagioId;
+    if (estagioFinal) {
+      const estagio = await prisma.estagioFunil.findFirst({ where: { id: estagioFinal, escolaId } });
+      if (!estagio) return res.status(400).json({ erro: 'Estágio não encontrado.' });
+    } else {
+      // Sem estágio informado, cai no primeiro da fila (menor ordem).
+      const primeiro = await prisma.estagioFunil.findFirst({ where: { escolaId, ativo: true }, orderBy: { ordem: 'asc' } });
+      if (!primeiro) return res.status(400).json({ erro: 'Essa Escola ainda não tem nenhum estágio de funil configurado.' });
+      estagioFinal = primeiro.id;
+    }
+
+    if (professorId) {
+      const professor = await prisma.professor.findFirst({ where: { id: professorId, escolaId } });
+      if (!professor) return res.status(400).json({ erro: 'Professor não encontrado.' });
+    }
+
+    const lead = await prisma.lead.create({
+      data: {
+        nome: nome.trim(),
+        telefone: telefone?.trim() || null,
+        email: email?.trim() || null,
+        origem: origem?.trim() || null,
+        estagioId: estagioFinal,
+        professorId: professorId || null,
+        escolaId,
+      },
+      include: { estagio: true },
+    });
+    res.status(201).json(lead);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar lead.' });
+  }
+});
+
+app.put('/api/leads/:id/estagio', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { estagioId } = req.body;
+    const escolaId = req.auth.escolaId;
+    const estagio = await prisma.estagioFunil.findFirst({ where: { id: estagioId, escolaId } });
+    if (!estagio) return res.status(400).json({ erro: 'Estágio não encontrado.' });
+
+    const { count } = await prisma.lead.updateMany({ where: { id: req.params.id, escolaId }, data: { estagioId } });
+    if (!count) return res.status(404).json({ erro: 'Lead não encontrado.' });
+    res.json({ mensagem: `Lead movido para "${estagio.nome}".` });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao mover lead.');
+  }
+});
+
+app.put('/api/leads/:id/arquivar', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { motivo } = req.body;
+    const { count } = await prisma.lead.updateMany({
+      where: { id: req.params.id, escolaId: req.auth.escolaId },
+      data: { arquivado: true, motivoArquivamento: motivo?.trim() || null },
+    });
+    if (!count) return res.status(404).json({ erro: 'Lead não encontrado.' });
+    res.json({ mensagem: 'Lead arquivado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao arquivar lead.');
+  }
+});
+
+app.put('/api/leads/:id/desarquivar', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { count } = await prisma.lead.updateMany({
+      where: { id: req.params.id, escolaId: req.auth.escolaId },
+      data: { arquivado: false, motivoArquivamento: null },
+    });
+    if (!count) return res.status(404).json({ erro: 'Lead não encontrado.' });
+    res.json({ mensagem: 'Lead desarquivado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao desarquivar lead.');
+  }
+});
+
+app.post('/api/leads/:id/tarefas', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, escolaId: req.auth.escolaId } });
+    if (!lead) return res.status(404).json({ erro: 'Lead não encontrado.' });
+
+    const { descricao, dataPrevista, responsavelId } = req.body;
+    if (!descricao?.trim() || !dataPrevista) {
+      return res.status(400).json({ erro: 'descricao e dataPrevista são obrigatórios.' });
+    }
+    const tarefa = await prisma.tarefaLead.create({
+      data: {
+        descricao: descricao.trim(),
+        dataPrevista: new Date(dataPrevista),
+        leadId: lead.id,
+        responsavelId: responsavelId || req.auth.id,
+        escolaId: req.auth.escolaId,
+      },
+    });
+    res.status(201).json(tarefa);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar tarefa.' });
+  }
+});
+
+// GET /api/tarefas-lead — tarefas pendentes da Escola, pra tela inicial do
+// gestor (ver comentário sobre "sem refresh manual" no topo da seção).
+app.get('/api/tarefas-lead', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const concluida = req.query.concluida === 'true';
+    const tarefas = await prisma.tarefaLead.findMany({
+      where: { escolaId: req.auth.escolaId, concluida },
+      include: { lead: { select: { nome: true } }, responsavel: { select: { nome: true } } },
+      orderBy: { dataPrevista: 'asc' },
+    });
+    res.json(tarefas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.put('/api/tarefas-lead/:id/concluir', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { count } = await prisma.tarefaLead.updateMany({
+      where: { id: req.params.id, escolaId: req.auth.escolaId },
+      data: { concluida: true, concluidaEm: new Date() },
+    });
+    if (!count) return res.status(404).json({ erro: 'Tarefa não encontrada.' });
+    res.json({ mensagem: 'Tarefa concluída.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao concluir tarefa.');
+  }
+});
+
+// GET /api/funil/resumo — contagem de leads por estágio + total de tarefas
+// pendentes, pensado pra alimentar a tela inicial do gestor num tiro só.
+app.get('/api/funil/resumo', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const escolaId = req.auth.escolaId;
+    const [estagios, tarefasPendentes] = await Promise.all([
+      prisma.estagioFunil.findMany({
+        where: { escolaId, ativo: true },
+        orderBy: { ordem: 'asc' },
+        include: { _count: { select: { leads: { where: { arquivado: false } } } } },
+      }),
+      prisma.tarefaLead.count({ where: { escolaId, concluida: false } }),
+    ]);
+    res.json({
+      estagios: estagios.map(e => ({ id: e.id, nome: e.nome, ordem: e.ordem, totalLeads: e._count.leads })),
+      tarefasPendentes,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
 // 11. AGENDAMENTO AVULSO DE AULA
 // ============================================================================
 

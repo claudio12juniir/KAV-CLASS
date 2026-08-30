@@ -31,6 +31,10 @@ export default function EscolaScreen() {
   const [enviandoConvite, setEnviandoConvite] = useState(false);
   const [ultimoCodigo, setUltimoCodigo] = useState<string | null>(null);
 
+  const [estagiosFunil, setEstagiosFunil] = useState<{ id: string; nome: string; ordem: number; totalLeads: number }[]>([]);
+  const [totalTarefasPendentes, setTotalTarefasPendentes] = useState(0);
+  const [tarefasPendentes, setTarefasPendentes] = useState<any[]>([]);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
@@ -38,11 +42,13 @@ export default function EscolaScreen() {
       const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
       const headers = { Authorization: `Bearer ${token}` };
 
-      const [resPerfil, resProfessores, resAlunos, resReposicoes] = await Promise.all([
+      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas] = await Promise.all([
         fetchComRetry(`${API_URL}/api/professor/perfil?professorId=${professorId}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/alunos`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/reposicoes`, { headers }),
+        fetchComRetry(`${API_URL}/api/funil/resumo`, { headers }),
+        fetchComRetry(`${API_URL}/api/tarefas-lead`, { headers }),
       ]);
 
       if (resPerfil.ok) {
@@ -52,6 +58,12 @@ export default function EscolaScreen() {
       if (resProfessores.ok) setProfessores(await resProfessores.json());
       if (resAlunos.ok) setAlunos(await resAlunos.json());
       if (resReposicoes.ok) setReposicoesParaFinalizar(await resReposicoes.json());
+      if (resFunil.ok) {
+        const funil = await resFunil.json();
+        setEstagiosFunil(funil.estagios || []);
+        setTotalTarefasPendentes(funil.tarefasPendentes || 0);
+      }
+      if (resTarefas.ok) setTarefasPendentes(await resTarefas.json());
     } catch (err) {
       console.error('Erro ao carregar Minha Escola:', err);
     } finally {
@@ -105,6 +117,24 @@ export default function EscolaScreen() {
         carregarDados();
       } else {
         Alert.alert('Erro', dados.erro || 'Não foi possível finalizar.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    }
+  };
+
+  const concluirTarefa = async (id: string) => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/tarefas-lead/${id}/concluir`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        carregarDados();
+      } else {
+        const dados = await res.json();
+        Alert.alert('Erro', dados.erro || 'Não foi possível concluir.');
       }
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
@@ -192,6 +222,44 @@ export default function EscolaScreen() {
               <Ionicons name="copy-outline" size={18} color="#32BCAD" />
             </TouchableOpacity>
           )}
+        </View>
+      )}
+
+      {estagiosFunil.length > 0 && (
+        <View style={styles.secaoLista}>
+          <View style={styles.linhaTituloFunil}>
+            <Text style={styles.secaoTitulo}>Funil de captação</Text>
+            {totalTarefasPendentes > 0 && (
+              <View style={styles.badgeAlerta}>
+                <Text style={styles.badgeAlertaTexto}>{totalTarefasPendentes} tarefa{totalTarefasPendentes > 1 ? 's' : ''}</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.funilRow}>
+            {estagiosFunil.map((e) => (
+              <View key={e.id} style={styles.estagioCard}>
+                <Text style={styles.estagioTotal}>{e.totalLeads}</Text>
+                <Text style={styles.estagioNome} numberOfLines={2}>{e.nome}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
+
+      {tarefasPendentes.length > 0 && (
+        <View style={styles.secaoLista}>
+          <Text style={styles.secaoTitulo}>Follow-ups pendentes ({tarefasPendentes.length})</Text>
+          {tarefasPendentes.map((t) => (
+            <View key={t.id} style={styles.cardReposicao}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.nomePessoa}>{t.lead?.nome}</Text>
+                <Text style={styles.emailPessoa}>{t.descricao} · {new Date(t.dataPrevista).toLocaleDateString('pt-BR')}</Text>
+              </View>
+              <TouchableOpacity style={styles.botaoFinalizar} onPress={() => concluirTarefa(t.id)}>
+                <Text style={styles.botaoFinalizarTexto}>Concluir</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
         </View>
       )}
 
@@ -304,6 +372,17 @@ const styles = StyleSheet.create({
   secaoLista: { paddingHorizontal: 20, marginTop: 24 },
   secaoTitulo: { fontSize: 16, fontWeight: 'bold', color: '#000', marginBottom: 12 },
   textoVazio: { color: '#999', fontSize: 13, fontStyle: 'italic' },
+
+  linhaTituloFunil: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  badgeAlerta: { backgroundColor: '#FFF3CD', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: '#F0DFA0' },
+  badgeAlertaTexto: { fontSize: 11, fontWeight: '700', color: '#8A6D00' },
+  funilRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  estagioCard: {
+    minWidth: 90, flexGrow: 1, alignItems: 'center', paddingVertical: 14,
+    backgroundColor: '#F0F4F8', borderRadius: 12, borderWidth: 1, borderColor: '#D0D8DC',
+  },
+  estagioTotal: { fontSize: 22, fontWeight: 'bold', color: '#000' },
+  estagioNome: { fontSize: 11, color: '#666', marginTop: 4, textAlign: 'center' },
 
   linhaPessoa: {
     flexDirection: 'row', alignItems: 'center', gap: 12,

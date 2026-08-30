@@ -162,6 +162,9 @@ model Escola {
   lancamentosCaixa LancamentoCaixa[]
   fechamentosCaixa FechamentoCaixa[]
   contasPagar      ContaPagar[]
+  estagiosFunil    EstagioFunil[]
+  leads            Lead[]
+  tarefasLead      TarefaLead[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -202,6 +205,8 @@ model Professor {
   turmas       Turma[]
   matriculas   Matricula[]
   avaliacoes   Avaliacao[]
+  leadsDeInteresse Lead[]
+  tarefasLead      TarefaLead[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -928,4 +933,83 @@ model ContaPagar {
   updatedAt DateTime @updatedAt
 
   @@index([escolaId, paga])
+}
+
+// ─── 24. CRM DE LEADS ──────────────────────────────────────────────
+// Funil configurável por Escola — cada Escola define seus próprios
+// estágios (ex.: "Em Diálogo", "Aula experimental marcada"), não um enum
+// fixo. "Sem refresh manual" no critério de pronto do roadmap é atendido
+// pelo mesmo padrão que o resto do app já usa (refetch ao focar a tela);
+// notificação por websocket/push em tempo real fica fora de escopo desta
+// sprint, registrado no runbook, não é suposição silenciosa.
+
+model EstagioFunil {
+  id     String  @id @default(uuid())
+  nome   String
+  ordem  Int
+  ativo  Boolean @default(true)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+  leads    Lead[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+}
+
+model Lead {
+  id        String  @id @default(uuid())
+  nome      String
+  telefone  String?
+  email     String?
+  origem    String? // texto livre: "Instagram", "Indicação", etc.
+
+  arquivado           Boolean @default(false)
+  motivoArquivamento  String?
+
+  estagioId String
+  estagio   EstagioFunil @relation(fields: [estagioId], references: [id])
+
+  // Professor de interesse (opcional) — em quem o lead tem interesse, se já
+  // souber. Não confundir com "quem está cuidando do follow-up", que é por
+  // TarefaLead.
+  professorId String?
+  professor   Professor? @relation(fields: [professorId], references: [id], onDelete: SetNull)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  tarefas TarefaLead[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId, arquivado])
+  @@index([estagioId])
+}
+
+// Tarefa de follow-up — "aparece na tela inicial" do gestor/professor
+// responsável enquanto não concluída.
+model TarefaLead {
+  id           String    @id @default(uuid())
+  descricao    String
+  dataPrevista DateTime
+  concluida    Boolean   @default(false)
+  concluidaEm  DateTime?
+
+  leadId String
+  lead   Lead   @relation(fields: [leadId], references: [id])
+
+  responsavelId String?
+  responsavel   Professor? @relation(fields: [responsavelId], references: [id], onDelete: SetNull)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([escolaId, concluida])
+  @@index([leadId])
 }
