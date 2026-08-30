@@ -274,10 +274,13 @@ function gerarAulasRecorrentes(aluno) {
 }
 
 async function enviarEmailRedefinicao(destinatario, codigo) {
-  const nodemailer = require('nodemailer');
+  // Checa antes de carregar o módulo — sem isso, um require() que trava
+  // (visto em sandbox local) prende a chamada mesmo sem credencial nenhuma
+  // configurada, quando o certo é falhar rápido e claro.
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     throw new Error('Variáveis EMAIL_USER e EMAIL_PASS não configuradas no servidor.');
   }
+  const nodemailer = require('nodemailer');
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
@@ -2742,6 +2745,14 @@ app.post('/api/matriculas/:id/faturas', exigirProfessor, async (req, res) => {
     const matricula = await carregarMatriculaDoDono(req, res);
     if (!matricula) return;
 
+    // S3.2: se a matrícula tem contrato, cobrança só sai depois de
+    // ASSINADO. Sem contrato nenhum vinculado, comportamento não muda em
+    // nada (é assim que S2.2 sempre funcionou).
+    const contrato = await prisma.contrato.findFirst({ where: { matriculaId: matricula.id } });
+    if (contrato && contrato.status !== 'ASSINADO') {
+      return res.status(400).json({ erro: `Essa matrícula tem um contrato pendente (status: ${contrato.status}). Cobrança só sai depois do contrato assinado.` });
+    }
+
     const { valor, vencimento } = req.body;
     if (!vencimento) return res.status(400).json({ erro: 'vencimento é obrigatório.' });
     const valorFinal = typeof valor === 'number' && valor > 0 ? valor : matricula.valorMensalidade;
@@ -3061,6 +3072,190 @@ app.get('/api/escola/reservas', exigirProfessor, carregarEscolaDoProfessor, asyn
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// 10f. CONTRATO DIGITAL (Fase 3, S3.2)
+//
+// IMPORTANTE: isto é confirmação por código enviado por e-mail, o mesmo
+// modelo de confiança que já existe em TokenRedefinicaoSenha e
+// ConviteProfessor — NÃO é assinatura eletrônica com validade jurídica
+// plena (ICP-Brasil, carimbo de tempo). Integrar um parceiro tipo
+// Clicksign/D4Sign pra isso fica registrado como decisão de negócio em
+// aberto no roadmap, não é suposição silenciosa. O que isso já resolve de
+// verdade: cobrança só sai depois que as duas partes confirmaram (ver o
+// gate em POST /api/matriculas/:id/faturas, algumas telas acima).
+// ============================================================================
+
+async function enviarEmailContrato(destinatario, escolaNome, codigo) {
+  // Checa antes de carregar o módulo — sem isso, um require() que trava
+  // (visto em sandbox local) prende a chamada mesmo sem credencial nenhuma
+  // configurada, quando o certo é falhar rápido e claro.
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    throw new Error('Variáveis EMAIL_USER e EMAIL_PASS não configuradas no servidor.');
+  }
+  const nodemailer = require('nodemailer');
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
+  });
+  await transporter.sendMail({
+    from: `"KAV Class" <${process.env.EMAIL_USER}>`,
+    to: destinatario,
+    subject: `Contrato de matrícula – ${escolaNome}`,
+    html: `<h2>Contrato de matrícula</h2><p><b>${escolaNome}</b> te enviou um contrato de matrícula pra assinar.</p><p>No app, use o código abaixo pra revisar e confirmar:</p><h1 style="letter-spacing:6px">${codigo}</h1>`,
+  });
+}
+
+// POST /api/matriculas/:id/contrato — professor gera e envia o contrato.
+app.post('/api/matriculas/:id/contrato', exigirProfessor, async (req, res) => {
+  try {
+    const matricula = await carregarMatriculaDoDono(req, res);
+    if (!matricula) return;
+
+    const { testemunhas } = req.body;
+    const [aluno, escola] = await Promise.all([
+      prisma.aluno.findUnique({
+        where: { id: matricula.alunoId },
+        select: { nome: true, email: true, responsavel: { select: { nome: true, email: true } } },
+      }),
+      prisma.escola.findUnique({ where: { id: matricula.escolaId }, select: { nome: true } }),
+    ]);
+    // Manda pro e-mail do responsável se houver um cadastrado (S1.1); sem
+    // isso, cai no e-mail do próprio aluno (caso CONTRATANTE, é a mesma pessoa).
+    const destinatario = aluno?.responsavel?.email || aluno?.email;
+
+    const codigo = gerarCodigoConvite();
+    const contrato = await prisma.contrato.create({
+      data: {
+        token: codigo,
+        testemunhas: Array.isArray(testemunhas) ? testemunhas.filter(t => typeof t === 'string' && t.trim()) : [],
+        matriculaId: matricula.id,
+        escolaId: matricula.escolaId,
+      },
+    });
+
+    let emailEnviado = true;
+    try {
+      await enviarEmailContrato(destinatario, escola?.nome || 'Escola', codigo);
+    } catch (err) {
+      emailEnviado = false;
+      console.error('[Contrato] Falha ao enviar e-mail (código segue válido):', err.message);
+    }
+
+    res.status(201).json({
+      mensagem: emailEnviado ? 'Contrato enviado por e-mail.' : 'Contrato criado. Compartilhe o código manualmente — o e-mail não pôde ser enviado.',
+      contrato,
+      emailEnviado,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar contrato.' });
+  }
+});
+
+// GET /api/contratos/:id?token=X — consulta pública (o responsável não tem
+// necessariamente conta no app) pra revisar antes de assinar.
+app.get('/api/contratos/:id', async (req, res) => {
+  try {
+    const { token } = req.query;
+    if (!token) return res.status(400).json({ erro: 'token é obrigatório.' });
+
+    const contrato = await prisma.contrato.findFirst({
+      where: { id: req.params.id, token: String(token).toUpperCase().trim() },
+      include: {
+        matricula: {
+          select: {
+            valorMensalidade: true,
+            aluno: { select: { nome: true } },
+            professor: { select: { nome: true } },
+          },
+        },
+        escola: { select: { nome: true } },
+      },
+    });
+    if (!contrato) return res.status(404).json({ erro: 'Contrato não encontrado ou código incorreto.' });
+    res.json(contrato);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/contratos/:id/assinar-responsavel — pública, o token é a prova
+// de identidade (mesmo padrão de /api/escola/convites/aceitar).
+app.post('/api/contratos/:id/assinar-responsavel', async (req, res) => {
+  try {
+    const { token, nome, cpf } = req.body;
+    if (!token || !nome?.trim()) return res.status(400).json({ erro: 'token e nome são obrigatórios.' });
+
+    const contrato = await prisma.contrato.findUnique({ where: { id: req.params.id } });
+    if (!contrato || contrato.token !== String(token).toUpperCase().trim()) {
+      return res.status(404).json({ erro: 'Contrato não encontrado ou código incorreto.' });
+    }
+    if (contrato.status !== 'ENVIADO') {
+      return res.status(400).json({ erro: `Contrato já está em status ${contrato.status} — não dá mais pra assinar essa etapa.` });
+    }
+
+    const atualizado = await prisma.contrato.update({
+      where: { id: contrato.id },
+      data: {
+        nomeAssinanteResponsavel: nome.trim(),
+        cpfAssinanteResponsavel: cpf?.trim() || null,
+        assinadoPeloResponsavelEm: new Date(),
+        status: 'PREENCHIDO',
+      },
+    });
+    res.json({ mensagem: 'Assinado! Aguardando confirmação da escola.', contrato: atualizado });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao assinar contrato.');
+  }
+});
+
+// POST /api/contratos/:id/assinar-representante — só DONO/GESTOR (é a
+// Escola assinando, não qualquer professor) e só depois que o responsável
+// já assinou a própria parte.
+app.post('/api/contratos/:id/assinar-representante', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const contrato = await prisma.contrato.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!contrato) return res.status(404).json({ erro: 'Contrato não encontrado.' });
+    if (contrato.status !== 'PREENCHIDO') {
+      return res.status(400).json({ erro: 'O responsável ainda não assinou a parte dele.' });
+    }
+
+    const { nomeRepresentante } = req.body;
+    const atualizado = await prisma.contrato.update({
+      where: { id: contrato.id },
+      data: {
+        nomeRepresentanteEscola: nomeRepresentante?.trim() || professor.nome,
+        assinadoPeloRepresentanteEm: new Date(),
+        status: 'ASSINADO',
+      },
+    });
+    res.json({ mensagem: 'Contrato assinado! Cobrança liberada pra essa matrícula.', contrato: atualizado });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao assinar contrato.');
+  }
+});
+
+app.put('/api/contratos/:id/cancelar', exigirProfessor, async (req, res) => {
+  try {
+    const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+    const { count } = await prisma.contrato.updateMany({
+      where: { id: req.params.id, escolaId: professor?.escolaId, status: { not: 'ASSINADO' } },
+      data: { status: 'CANCELADO' },
+    });
+    if (!count) return res.status(404).json({ erro: 'Contrato não encontrado, ou já está assinado (não dá pra cancelar).' });
+    res.json({ mensagem: 'Contrato cancelado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao cancelar contrato.');
   }
 });
 
@@ -3453,10 +3648,13 @@ async function exigirPapelNaEscola(req, res, papeisPermitidos) {
 }
 
 async function enviarEmailConviteProfessor(destinatario, escolaNome, codigo) {
-  const nodemailer = require('nodemailer');
+  // Checa antes de carregar o módulo — sem isso, um require() que trava
+  // (visto em sandbox local) prende a chamada mesmo sem credencial nenhuma
+  // configurada, quando o certo é falhar rápido e claro.
   if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
     throw new Error('Variáveis EMAIL_USER e EMAIL_PASS não configuradas no servidor.');
   }
+  const nodemailer = require('nodemailer');
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },

@@ -158,6 +158,7 @@ model Escola {
   matriculas      Matricula[]
   pacotesCredito  PacoteCredito[]
   reservasSala    ReservaSala[]
+  contratos       Contrato[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -697,6 +698,7 @@ model Matricula {
   planoPagamento   PlanoPagamento? @relation(fields: [planoPagamentoId], references: [id], onDelete: SetNull)
 
   pagamentos Pagamento[]
+  contratos  Contrato[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -798,5 +800,56 @@ model ReservaSala {
 
   @@index([alunoId])
   @@index([salaId, dataHoraInicio])
+  @@index([escolaId])
+}
+
+// Ciclo de vida do contrato: ENVIADO (professor mandou, aguardando o
+// responsável) -> PREENCHIDO (responsável assinou a parte dele, aguardando
+// a Escola) -> ASSINADO (representante da Escola assinou também) — ou
+// CANCELADO a qualquer momento antes de ASSINADO.
+enum StatusContrato {
+  ENVIADO
+  PREENCHIDO
+  ASSINADO
+  CANCELADO
+}
+
+// ─── 22. CONTRATO DIGITAL ─────────────────────────────────────────
+// IMPORTANTE — escopo desta sprint (S3.2): isto é uma confirmação por token
+// enviado por e-mail, o mesmo modelo de confiança que já existe em
+// TokenRedefinicaoSenha e ConviteProfessor — NÃO é assinatura eletrônica
+// com validade jurídica plena (ICP-Brasil, carimbo de tempo, etc.), que é
+// o que um parceiro como Clicksign/D4Sign entrega de verdade. Integrar um
+// parceiro desses fica como decisão de negócio em aberto (ver roadmap).
+// Isso aqui já resolve o problema prático imediato: cobrança só sai depois
+// que as duas partes confirmaram.
+model Contrato {
+  id     String         @id @default(uuid())
+  status StatusContrato @default(ENVIADO)
+
+  // Token que o responsável usa pra acessar e assinar — é o "segredo" que
+  // prova que quem está confirmando recebeu o e-mail (mesmo padrão do
+  // código de convite). Não reaproveitável depois de PREENCHIDO.
+  token String @unique
+
+  testemunhas String[] // nomes livres, configurável por contrato
+
+  nomeAssinanteResponsavel String?
+  cpfAssinanteResponsavel  String?
+  assinadoPeloResponsavelEm DateTime?
+
+  nomeRepresentanteEscola     String?
+  assinadoPeloRepresentanteEm DateTime?
+
+  matriculaId String
+  matricula   Matricula @relation(fields: [matriculaId], references: [id])
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([matriculaId])
   @@index([escolaId])
 }
