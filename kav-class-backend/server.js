@@ -2627,6 +2627,223 @@ app.get('/api/cursos/:id/preco', exigirProfessor, carregarEscolaDoProfessor, asy
 });
 
 // ============================================================================
+// 10d. MATRÍCULA E FATURAS (Fase 2, S2.2)
+//
+// Matricula é aditiva: existe em paralelo ao vínculo "implícito" que Aluno
+// já carrega (professorId, curso, valorMensalidade) — esse continua
+// funcionando exatamente como sempre funcionou, sem nenhuma mudança. Um
+// mesmo Aluno pode ter mais de uma Matricula (curso/professor diferentes na
+// mesma Escola), cada uma com seu próprio conjunto de faturas.
+// ============================================================================
+
+app.get('/api/matriculas', exigirProfessor, async (req, res) => {
+  try {
+    const matriculas = await prisma.matricula.findMany({
+      where: { professorId: req.auth.id },
+      include: { aluno: { select: { nome: true } }, turma: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(matriculas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/matriculas', exigirProfessor, async (req, res) => {
+  try {
+    const { alunoId, valorMensalidade, diaVencimento, turmaId, planoPagamentoId } = req.body;
+    if (!alunoId || typeof valorMensalidade !== 'number' || valorMensalidade <= 0) {
+      return res.status(400).json({ erro: 'alunoId e valorMensalidade (número > 0) são obrigatórios.' });
+    }
+    const professorId = req.auth.id;
+
+    const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, professorId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a este professor.' });
+
+    if (turmaId) {
+      const turma = await prisma.turma.findFirst({ where: { id: turmaId, professorId } });
+      if (!turma) return res.status(400).json({ erro: 'Turma não encontrada.' });
+    }
+    if (planoPagamentoId) {
+      const plano = await prisma.planoPagamento.findFirst({ where: { id: planoPagamentoId, escolaId: aluno.escolaId } });
+      if (!plano) return res.status(400).json({ erro: 'Plano de pagamento não encontrado.' });
+    }
+
+    const matricula = await prisma.matricula.create({
+      data: {
+        alunoId,
+        professorId,
+        escolaId: aluno.escolaId,
+        valorMensalidade,
+        diaVencimento: diaVencimento != null ? parseInt(String(diaVencimento), 10) : 10,
+        turmaId: turmaId || null,
+        planoPagamentoId: planoPagamentoId || null,
+      },
+    });
+    res.status(201).json(matricula);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar matrícula.' });
+  }
+});
+
+app.get('/api/aluno/matriculas', exigirAluno, async (req, res) => {
+  try {
+    const matriculas = await prisma.matricula.findMany({
+      where: { alunoId: req.auth.id },
+      include: { professor: { select: { nome: true } }, turma: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(matriculas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// Carrega a matrícula garantindo que quem pediu (professor OU aluno, os dois
+// autenticados por token de verdade) é dono dela. Devolve null (já com o
+// status certo respondido) se não for.
+async function carregarMatriculaDoDono(req, res) {
+  const matricula = await prisma.matricula.findUnique({ where: { id: req.params.id } });
+  if (!matricula) { res.status(404).json({ erro: 'Matrícula não encontrada.' }); return null; }
+  const dono = req.auth.papel === 'professor' ? matricula.professorId === req.auth.id : matricula.alunoId === req.auth.id;
+  if (!dono) { res.status(404).json({ erro: 'Matrícula não encontrada.' }); return null; }
+  return matricula;
+}
+
+// GET /api/matriculas/:id/faturas — faturas agrupadas por status, igual ao
+// que a Emusys mostra no app do aluno (Abertas/Pagas/Em Atraso).
+app.get('/api/matriculas/:id/faturas', autenticar, async (req, res) => {
+  try {
+    const matricula = await carregarMatriculaDoDono(req, res);
+    if (!matricula) return;
+
+    const pagamentos = await prisma.pagamento.findMany({
+      where: { matriculaId: matricula.id },
+      orderBy: { vencimento: 'asc' },
+    });
+    const agora = new Date();
+    const abertas = pagamentos.filter(p => p.status === 'PENDENTE' && p.vencimento >= agora);
+    const atrasadas = pagamentos.filter(p => (p.status === 'PENDENTE' && p.vencimento < agora) || p.status === 'ATRASADO');
+    const pagas = pagamentos.filter(p => p.status === 'PAGO');
+    const outras = pagamentos.filter(p => !abertas.includes(p) && !atrasadas.includes(p) && !pagas.includes(p));
+
+    res.json({ abertas, atrasadas, pagas, outras });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/matriculas/:id/faturas', exigirProfessor, async (req, res) => {
+  try {
+    const matricula = await carregarMatriculaDoDono(req, res);
+    if (!matricula) return;
+
+    const { valor, vencimento } = req.body;
+    if (!vencimento) return res.status(400).json({ erro: 'vencimento é obrigatório.' });
+    const valorFinal = typeof valor === 'number' && valor > 0 ? valor : matricula.valorMensalidade;
+
+    const fatura = await prisma.pagamento.create({
+      data: {
+        valor: valorFinal,
+        vencimento: new Date(vencimento),
+        status: 'PENDENTE',
+        professorId: matricula.professorId,
+        alunoId: matricula.alunoId,
+        matriculaId: matricula.id,
+      },
+    });
+    res.status(201).json(fatura);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao gerar fatura.' });
+  }
+});
+
+// PUT /api/pagamentos/:id/dividir — corta uma fatura PENDENTE em N partes.
+// A soma das partes precisa bater com o valor original (com tolerância de
+// 1 centavo pra arredondamento). A fatura original é cancelada — nada some,
+// fica no histórico marcada como CANCELADO — e as N novas nascem PENDENTE.
+app.put('/api/pagamentos/:id/dividir', exigirProfessor, async (req, res) => {
+  try {
+    const original = await prisma.pagamento.findFirst({ where: { id: req.params.id, professorId: req.auth.id } });
+    if (!original) return res.status(404).json({ erro: 'Fatura não encontrada.' });
+    if (original.status !== 'PENDENTE' && original.status !== 'ATRASADO') {
+      return res.status(400).json({ erro: 'Só dá pra dividir fatura em aberto.' });
+    }
+
+    const { partes } = req.body;
+    if (!Array.isArray(partes) || partes.length < 2) {
+      return res.status(400).json({ erro: 'partes precisa ser um array com pelo menos 2 itens.' });
+    }
+    for (const p of partes) {
+      if (typeof p.valor !== 'number' || p.valor <= 0) {
+        return res.status(400).json({ erro: 'Cada parte precisa de um valor (número > 0).' });
+      }
+    }
+    const soma = partes.reduce((acc, p) => acc + p.valor, 0);
+    if (Math.abs(soma - original.valor) > 0.01) {
+      return res.status(400).json({ erro: `A soma das partes (${soma.toFixed(2)}) precisa bater com o valor original (${original.valor.toFixed(2)}).` });
+    }
+
+    const novasFaturas = await prisma.$transaction(async (tx) => {
+      await tx.pagamento.update({ where: { id: original.id }, data: { status: 'CANCELADO' } });
+      const criadas = [];
+      for (const p of partes) {
+        criadas.push(await tx.pagamento.create({
+          data: {
+            valor: p.valor,
+            vencimento: p.vencimento ? new Date(p.vencimento) : original.vencimento,
+            status: 'PENDENTE',
+            professorId: original.professorId,
+            alunoId: original.alunoId,
+            matriculaId: original.matriculaId,
+          },
+        }));
+      }
+      return criadas;
+    });
+
+    res.status(201).json({ mensagem: 'Fatura dividida.', faturas: novasFaturas });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao dividir fatura.' });
+  }
+});
+
+// GET /api/pagamentos/:id/recibo — só emite recibo de fatura já paga. Sem
+// gerador de PDF nesta sprint (nenhuma outra parte do app gera PDF ainda) —
+// devolve os dados estruturados prontos pra tela montar/compartilhar.
+app.get('/api/pagamentos/:id/recibo', autenticar, async (req, res) => {
+  try {
+    const pagamento = await prisma.pagamento.findUnique({
+      where: { id: req.params.id },
+      include: { aluno: { select: { nome: true } }, professor: { select: { nome: true, chavePix: true } } },
+    });
+    if (!pagamento) return res.status(404).json({ erro: 'Fatura não encontrada.' });
+    const dono = req.auth.papel === 'professor' ? pagamento.professorId === req.auth.id : pagamento.alunoId === req.auth.id;
+    if (!dono) return res.status(404).json({ erro: 'Fatura não encontrada.' });
+    if (pagamento.status !== 'PAGO') return res.status(400).json({ erro: 'Só dá pra emitir recibo de fatura paga.' });
+
+    res.json({
+      numeroRecibo: pagamento.id.slice(0, 8).toUpperCase(),
+      aluno: pagamento.aluno.nome,
+      professor: pagamento.professor.nome,
+      valor: pagamento.valor,
+      metodo: pagamento.metodo,
+      dataPagamento: pagamento.dataPagamento,
+      emitidoEm: new Date(),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao gerar recibo.' });
+  }
+});
+
+// ============================================================================
 // 11. AGENDAMENTO AVULSO DE AULA
 // ============================================================================
 

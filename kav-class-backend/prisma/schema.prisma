@@ -155,6 +155,7 @@ model Escola {
   modalidades     Modalidade[]
   planosPagamento PlanoPagamento[]
   tabelasValores  TabelaValores[]
+  matriculas      Matricula[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -193,6 +194,7 @@ model Professor {
   notificacoes Notificacao[]
   mensagens    Mensagem[]
   turmas       Turma[]
+  matriculas   Matricula[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -249,6 +251,7 @@ model Aluno {
   reposicoes Reposicao[]
   mensagens  Mensagem[]
   materiais  Material[]
+  matriculas Matricula[]
 
   @@index([professorId, status])
   @@index([status])
@@ -333,12 +336,20 @@ model Pagamento {
   alunoId     String
   aluno       Aluno     @relation(fields: [alunoId], references: [id])
 
+  // Nullable de propósito: os pagamentos gerados por /api/configurar-aluno
+  // continuam existindo do jeito que sempre existiram, sem matrícula
+  // vinculada. Só faturas geradas a partir de S2.2 (POST
+  // /api/matriculas/:id/faturas) preenchem isso.
+  matriculaId String?
+  matricula   Matricula? @relation(fields: [matriculaId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([professorId, status])
   @@index([professorId, vencimento])
   @@index([alunoId, vencimento])
+  @@index([matriculaId])
 }
 
 // ─── 5. MATERIAIS DIDÁTICOS ──────────────────────────────────────
@@ -524,7 +535,8 @@ model Turma {
   escolaId String
   escola   Escola @relation(fields: [escolaId], references: [id])
 
-  aulas Aula[]
+  aulas      Aula[]
+  matriculas Matricula[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -573,6 +585,7 @@ model PlanoPagamento {
   escolaId String
   escola   Escola       @relation(fields: [escolaId], references: [id])
   valores  ValorPlano[]
+  matriculas Matricula[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -642,4 +655,45 @@ model ValorPlano {
   @@unique([versaoId, planoPagamentoId, metodo])
   @@index([versaoId])
   @@index([planoPagamentoId])
+}
+
+// ─── 19. MATRÍCULA ────────────────────────────────────────────────
+// Entidade nova e aditiva (S2.2): representa UM vínculo específico de
+// aluno com curso/turma/professor, com suas próprias faturas. Existe em
+// paralelo ao vínculo "implícito" que Aluno já carrega (professorId, curso,
+// valorMensalidade) — esse continua funcionando exatamente como sempre
+// funcionou, sem nenhuma mudança. Matricula é o jeito de um mesmo Aluno ter
+// mais de um vínculo simultâneo (ex.: dois cursos, dois professores),
+// cada um com seu próprio conjunto de faturas agrupadas.
+model Matricula {
+  id               String      @id @default(uuid())
+  valorMensalidade Float
+  diaVencimento    Int         @default(10)
+  status           StatusAluno @default(ATIVO)
+  dataInicio       DateTime    @default(now())
+
+  alunoId String
+  aluno   Aluno  @relation(fields: [alunoId], references: [id])
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  turmaId String?
+  turma   Turma?  @relation(fields: [turmaId], references: [id], onDelete: SetNull)
+
+  planoPagamentoId String?
+  planoPagamento   PlanoPagamento? @relation(fields: [planoPagamentoId], references: [id], onDelete: SetNull)
+
+  pagamentos Pagamento[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([alunoId])
+  @@index([professorId])
+  @@index([escolaId])
+  @@index([turmaId])
 }
