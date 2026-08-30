@@ -165,6 +165,7 @@ model Escola {
   estagiosFunil    EstagioFunil[]
   leads            Lead[]
   tarefasLead      TarefaLead[]
+  linksCaptacao    LinkCaptacao[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -207,6 +208,7 @@ model Professor {
   avaliacoes   Avaliacao[]
   leadsDeInteresse Lead[]
   tarefasLead      TarefaLead[]
+  linksCaptacao    LinkCaptacao[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -969,6 +971,12 @@ model Lead {
   arquivado           Boolean @default(false)
   motivoArquivamento  String?
 
+  // Link público de auto-cadastro pra ESTE lead específico (S4.2) — gerado
+  // sob demanda por POST /api/leads/:id/link-cadastro. Diferente de
+  // LinkCaptacao (que é reutilizável e cria leads NOVOS), este token deixa o
+  // próprio lead completar telefone/email sem precisar de conta no app.
+  tokenPublico String? @unique
+
   estagioId String
   estagio   EstagioFunil @relation(fields: [estagioId], references: [id])
 
@@ -1012,4 +1020,35 @@ model TarefaLead {
 
   @@index([escolaId, concluida])
   @@index([leadId])
+}
+
+// ─── LINK DE CAPTAÇÃO (Fase 4, S4.2) ────────────────────────────
+//
+// Link público reutilizável (não expira sozinho, só via "ativo") pra captar
+// lead SEM conta e SEM app instalado: formulário embutível em site/redes, ou
+// agendamento de aula experimental. Token é o único jeito de achar o
+// registro — sem rota de listagem pública nem enumeração por id sequencial.
+enum TipoLinkCaptacao {
+  CADASTRO
+  AGENDAMENTO_EXPERIMENTAL
+}
+
+model LinkCaptacao {
+  id    String           @id @default(uuid())
+  token String           @unique
+  tipo  TipoLinkCaptacao
+  ativo Boolean          @default(true)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  // Se preenchido, todo lead capturado por este link já nasce atribuído a
+  // este professor (link pessoal, ex.: no Instagram do próprio professor).
+  // Se nulo, é um link da Escola em geral.
+  professorId String?
+  professor   Professor? @relation(fields: [professorId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([escolaId])
 }

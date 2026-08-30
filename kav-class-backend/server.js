@@ -185,6 +185,48 @@ function gerarOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+// Token público imprevisível (48 hex chars) — usado pelas rotas públicas de
+// captação de lead (S4.2), onde o token É a credencial, sem login nenhum.
+// Diferente de gerarCodigoConvite() (4 chars, mas sempre enviado por e-mail
+// só pro dono da caixa de entrada): aqui o link pode ser divulgado em
+// site/redes, então precisa ser longo o bastante pra não ser adivinhável.
+function gerarTokenPublico() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+// Limitador de taxa em memória pras rotas PÚBLICAS de captação (S4.2) — sem
+// dependência nova, só o necessário pra um formulário exposto na internet
+// não virar porta aberta pra um bot martelar criação de leads. Em memória:
+// reseta a cada restart e não é compartilhado entre instâncias — ok pra um
+// único processo (é como este serviço roda hoje no Render); se a app
+// escalar horizontalmente isso precisa virar um store compartilhado —
+// registrado aqui, não é suposição silenciosa.
+const _janelasRequisicaoPublica = new Map();
+setInterval(() => {
+  const umaHora = 60 * 60 * 1000;
+  const agora = Date.now();
+  for (const [chave, registro] of _janelasRequisicaoPublica) {
+    if (agora - registro.inicio > umaHora) _janelasRequisicaoPublica.delete(chave);
+  }
+}, 30 * 60 * 1000).unref();
+
+function limitarTaxaPublica(maxRequisicoes, janelaMs) {
+  return (req, res, next) => {
+    const chave = `${req.ip}:${req.method}:${req.path}`;
+    const agora = Date.now();
+    const registro = _janelasRequisicaoPublica.get(chave);
+    if (!registro || agora - registro.inicio > janelaMs) {
+      _janelasRequisicaoPublica.set(chave, { inicio: agora, contagem: 1 });
+      return next();
+    }
+    if (registro.contagem >= maxRequisicoes) {
+      return res.status(429).json({ erro: 'Muitas tentativas. Tente novamente em alguns minutos.' });
+    }
+    registro.contagem++;
+    next();
+  };
+}
+
 // Valida o idToken do Google no próprio servidor (nunca confiar em dados que o
 // app alega ter vindo do Google sem checar a assinatura contra o Google).
 // Lança um erro com `.status` para as rotas devolverem o código HTTP certo.
@@ -3634,6 +3676,371 @@ app.get('/api/funil/resumo', exigirProfessor, carregarEscolaDoProfessor, async (
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
   }
+});
+
+// ============================================================================
+// 10i. CAPTAÇÃO DE LEADS (Fase 4, S4.2)
+//
+// Duas rotas públicas (sem login, sem app) atendem os dois casos do
+// roadmap: (a) link de auto-cadastro pra um Lead JÁ existente completar os
+// próprios dados, e (b) link reutilizável de captação (formulário
+// embutível ou agendamento de aula experimental) que cria leads NOVOS.
+//
+// O "agendamento de aula experimental" aqui é capturado como Lead + uma
+// TarefaLead de follow-up ("Confirmar aula experimental") — formalizar
+// isso como uma entidade própria (Aula-teste vinculada a Lead, com relatório
+// de conversão) é escopo explícito de S4.3, não desta sprint.
+// ============================================================================
+
+const EMAIL_REGEX_PUBLICO = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// POST /api/leads/:id/link-cadastro — professor gera (ou reaproveita) o
+// link público pra ESTE lead completar o próprio cadastro.
+app.post('/api/leads/:id/link-cadastro', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, escolaId: req.auth.escolaId } });
+    if (!lead) return res.status(404).json({ erro: 'Lead não encontrado.' });
+
+    const token = lead.tokenPublico || gerarTokenPublico();
+    if (!lead.tokenPublico) {
+      await prisma.lead.update({ where: { id: lead.id }, data: { tokenPublico: token } });
+    }
+    res.json({ token });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao gerar link.' });
+  }
+});
+
+app.get('/api/links-captacao', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const links = await prisma.linkCaptacao.findMany({
+      where: { escolaId: req.auth.escolaId },
+      include: { professor: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(links);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/links-captacao', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { tipo, professorId } = req.body;
+    if (!['CADASTRO', 'AGENDAMENTO_EXPERIMENTAL'].includes(tipo)) {
+      return res.status(400).json({ erro: 'tipo deve ser CADASTRO ou AGENDAMENTO_EXPERIMENTAL.' });
+    }
+    const escolaId = req.auth.escolaId;
+    if (professorId) {
+      const professor = await prisma.professor.findFirst({ where: { id: professorId, escolaId } });
+      if (!professor) return res.status(400).json({ erro: 'Professor não encontrado.' });
+    }
+    const link = await prisma.linkCaptacao.create({
+      data: { token: gerarTokenPublico(), tipo, professorId: professorId || null, escolaId },
+    });
+    res.status(201).json(link);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar link.' });
+  }
+});
+
+app.put('/api/links-captacao/:id/desativar', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { count } = await prisma.linkCaptacao.updateMany({
+      where: { id: req.params.id, escolaId: req.auth.escolaId },
+      data: { ativo: false },
+    });
+    if (!count) return res.status(404).json({ erro: 'Link não encontrado.' });
+    res.json({ mensagem: 'Link desativado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao desativar link.');
+  }
+});
+
+app.put('/api/links-captacao/:id/reativar', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { count } = await prisma.linkCaptacao.updateMany({
+      where: { id: req.params.id, escolaId: req.auth.escolaId },
+      data: { ativo: true },
+    });
+    if (!count) return res.status(404).json({ erro: 'Link não encontrado.' });
+    res.json({ mensagem: 'Link reativado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao reativar link.');
+  }
+});
+
+// ─── Rotas públicas — sem autenticação, o token é a única credencial ──────
+
+// GET /api/publico/lead/:token — dados mínimos pra saudar a pessoa antes
+// dela preencher o próprio contato.
+app.get('/api/publico/lead/:token', limitarTaxaPublica(30, 10 * 60 * 1000), async (req, res) => {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { tokenPublico: req.params.token },
+      select: { nome: true, telefone: true, email: true, escola: { select: { nome: true } } },
+    });
+    if (!lead) return res.status(404).json({ erro: 'Link inválido.' });
+    res.json(lead);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// PUT /api/publico/lead/:token — a própria pessoa completa telefone/email.
+// Só esses dois campos — nome e estágio continuam controlados pela Escola.
+app.put('/api/publico/lead/:token', limitarTaxaPublica(10, 10 * 60 * 1000), async (req, res) => {
+  try {
+    const { telefone, email } = req.body;
+    if (email && !EMAIL_REGEX_PUBLICO.test(String(email).trim())) {
+      return res.status(400).json({ erro: 'E-mail inválido.' });
+    }
+    const dados = {};
+    if (telefone?.trim()) dados.telefone = telefone.trim();
+    if (email?.trim()) dados.email = email.trim().toLowerCase();
+    if (!Object.keys(dados).length) return res.status(400).json({ erro: 'Informe telefone e/ou e-mail.' });
+
+    const { count } = await prisma.lead.updateMany({ where: { tokenPublico: req.params.token }, data: dados });
+    if (!count) return res.status(404).json({ erro: 'Link inválido.' });
+    res.json({ mensagem: 'Dados atualizados. Obrigado!' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// GET /api/publico/captacao/:token — o app/site consulta antes de mostrar o
+// formulário certo (cadastro simples ou agendamento de experimental).
+app.get('/api/publico/captacao/:token', limitarTaxaPublica(30, 10 * 60 * 1000), async (req, res) => {
+  try {
+    const link = await prisma.linkCaptacao.findUnique({
+      where: { token: req.params.token },
+      select: { tipo: true, ativo: true, escola: { select: { nome: true } } },
+    });
+    if (!link || !link.ativo) return res.status(404).json({ erro: 'Link inválido ou desativado.' });
+    res.json({ tipo: link.tipo, escolaNome: link.escola.nome });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/publico/captacao/:token — cria o lead novo. Pra links do tipo
+// AGENDAMENTO_EXPERIMENTAL, "mensagem" vira automaticamente uma TarefaLead
+// de follow-up pro professor confirmar (ver nota de escopo no topo da seção).
+app.post('/api/publico/captacao/:token', limitarTaxaPublica(10, 10 * 60 * 1000), async (req, res) => {
+  try {
+    const link = await prisma.linkCaptacao.findUnique({ where: { token: req.params.token } });
+    if (!link || !link.ativo) return res.status(404).json({ erro: 'Link inválido ou desativado.' });
+
+    const { nome, telefone, email, mensagem } = req.body;
+    if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
+    if (email && !EMAIL_REGEX_PUBLICO.test(String(email).trim())) {
+      return res.status(400).json({ erro: 'E-mail inválido.' });
+    }
+
+    const primeiroEstagio = await prisma.estagioFunil.findFirst({
+      where: { escolaId: link.escolaId, ativo: true },
+      orderBy: { ordem: 'asc' },
+    });
+    if (!primeiroEstagio) {
+      return res.status(503).json({ erro: 'Essa Escola ainda não configurou o funil de captação. Tente novamente mais tarde.' });
+    }
+
+    const origem = link.tipo === 'AGENDAMENTO_EXPERIMENTAL' ? 'Agendamento de aula experimental' : 'Formulário público';
+    const lead = await prisma.lead.create({
+      data: {
+        nome: nome.trim(),
+        telefone: telefone?.trim() || null,
+        email: email?.trim().toLowerCase() || null,
+        origem,
+        estagioId: primeiroEstagio.id,
+        professorId: link.professorId,
+        escolaId: link.escolaId,
+      },
+    });
+
+    if (link.tipo === 'AGENDAMENTO_EXPERIMENTAL') {
+      const amanha = new Date();
+      amanha.setDate(amanha.getDate() + 1);
+      await prisma.tarefaLead.create({
+        data: {
+          descricao: mensagem?.trim()
+            ? `Confirmar aula experimental — ${mensagem.trim()}`
+            : 'Confirmar aula experimental agendada pelo link público.',
+          dataPrevista: amanha,
+          leadId: lead.id,
+          responsavelId: link.professorId,
+          escolaId: link.escolaId,
+        },
+      });
+    }
+
+    res.status(201).json({ mensagem: 'Recebido! Em breve alguém da escola entra em contato.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao registrar contato.' });
+  }
+});
+
+// ─── Páginas públicas (HTML) ───────────────────────────────────────────────
+//
+// Decisão de escopo, registrada aqui (não é suposição silenciosa): o app
+// Expo não tem deploy web (render.yaml só publica este backend), então
+// "alguém sem conta e sem app" precisa de uma página de verdade servida por
+// algo que já está no ar — este mesmo serviço Express. São páginas HTML
+// simples, sem build, sem dependência nova, feitas pra funcionar tanto
+// acessadas direto quanto embutidas via <iframe> (o "formulário embutível"
+// do roadmap). Uma versão com a marca da Escola fica pra depois, sem
+// mudar o contrato da API pública usada aqui.
+
+const ESTILO_PAGINA_PUBLICA = `
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:420px;margin:48px auto;padding:0 20px;color:#111}
+  h1{font-size:20px;margin-bottom:4px}
+  p.sub{color:#666;font-size:14px;margin-top:0;margin-bottom:24px}
+  input,textarea{width:100%;padding:12px;margin-bottom:12px;border:1px solid #D0D8DC;border-radius:8px;font-size:15px;font-family:inherit}
+  textarea{resize:vertical;min-height:70px}
+  button{width:100%;padding:14px;background:#000;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:bold;cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  #msg{margin-top:16px;font-size:14px;line-height:1.4}
+  #msg.erro{color:#B00020}
+  #msg.ok{color:#1B7A3D}
+`;
+
+// GET /captacao/:token — página do link reutilizável (formulário embutível
+// ou agendamento de aula experimental).
+app.get('/captacao/:token', limitarTaxaPublica(60, 10 * 60 * 1000), (req, res) => {
+  const token = String(req.params.token);
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fale com a escola</title><style>${ESTILO_PAGINA_PUBLICA}</style></head>
+<body>
+  <div id="carregando">Carregando...</div>
+  <div id="conteudo" style="display:none">
+    <h1 id="titulo"></h1>
+    <p class="sub" id="subtitulo"></p>
+    <form id="form">
+      <input id="nome" placeholder="Seu nome" required>
+      <input id="telefone" placeholder="Telefone / WhatsApp">
+      <input id="email" type="email" placeholder="E-mail">
+      <textarea id="mensagem" style="display:none" placeholder="Alguma preferência de dia/horário?"></textarea>
+      <button type="submit" id="btn">Enviar</button>
+    </form>
+    <div id="msg"></div>
+  </div>
+  <script>
+    const TOKEN = ${JSON.stringify(token)};
+    fetch('/api/publico/captacao/' + TOKEN)
+      .then(function(r){ if(!r.ok) throw new Error('Link inválido ou desativado.'); return r.json(); })
+      .then(function(link){
+        document.getElementById('carregando').style.display = 'none';
+        document.getElementById('conteudo').style.display = 'block';
+        document.getElementById('titulo').textContent = link.escolaNome;
+        if (link.tipo === 'AGENDAMENTO_EXPERIMENTAL') {
+          document.getElementById('subtitulo').textContent = 'Quer agendar uma aula experimental? Deixe seu contato.';
+          document.getElementById('mensagem').style.display = 'block';
+        } else {
+          document.getElementById('subtitulo').textContent = 'Deixe seu contato que alguém da escola te chama.';
+        }
+      })
+      .catch(function(e){
+        document.getElementById('carregando').textContent = e.message || 'Não foi possível carregar.';
+      });
+
+    document.getElementById('form').addEventListener('submit', function(ev){
+      ev.preventDefault();
+      const btn = document.getElementById('btn');
+      const msg = document.getElementById('msg');
+      btn.disabled = true; msg.textContent = ''; msg.className = '';
+      fetch('/api/publico/captacao/' + TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nome: document.getElementById('nome').value,
+          telefone: document.getElementById('telefone').value,
+          email: document.getElementById('email').value,
+          mensagem: document.getElementById('mensagem').value,
+        }),
+      })
+        .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, dados: d }; }); })
+        .then(function(res){
+          if (!res.ok) { msg.textContent = res.dados.erro || 'Não foi possível enviar.'; msg.className = 'erro'; btn.disabled = false; return; }
+          msg.textContent = res.dados.mensagem;
+          msg.className = 'ok';
+          document.getElementById('form').style.display = 'none';
+        })
+        .catch(function(){ msg.textContent = 'Sem conexão. Tente novamente.'; msg.className = 'erro'; btn.disabled = false; });
+    });
+  </script>
+</body></html>`);
+});
+
+// GET /cadastro-lead/:token — página do link individual de um Lead já
+// existente completar o próprio telefone/e-mail.
+app.get('/cadastro-lead/:token', limitarTaxaPublica(60, 10 * 60 * 1000), (req, res) => {
+  const token = String(req.params.token);
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Complete seu cadastro</title><style>${ESTILO_PAGINA_PUBLICA}</style></head>
+<body>
+  <div id="carregando">Carregando...</div>
+  <div id="conteudo" style="display:none">
+    <h1 id="titulo"></h1>
+    <p class="sub" id="subtitulo"></p>
+    <form id="form">
+      <input id="telefone" placeholder="Telefone / WhatsApp">
+      <input id="email" type="email" placeholder="E-mail">
+      <button type="submit" id="btn">Salvar</button>
+    </form>
+    <div id="msg"></div>
+  </div>
+  <script>
+    const TOKEN = ${JSON.stringify(token)};
+    fetch('/api/publico/lead/' + TOKEN)
+      .then(function(r){ if(!r.ok) throw new Error('Link inválido.'); return r.json(); })
+      .then(function(lead){
+        document.getElementById('carregando').style.display = 'none';
+        document.getElementById('conteudo').style.display = 'block';
+        document.getElementById('titulo').textContent = 'Olá, ' + lead.nome + '!';
+        document.getElementById('subtitulo').textContent = (lead.escola && lead.escola.nome ? lead.escola.nome + ' pediu ' : 'Pedimos ') + 'pra você completar seu contato.';
+        if (lead.telefone) document.getElementById('telefone').value = lead.telefone;
+        if (lead.email) document.getElementById('email').value = lead.email;
+      })
+      .catch(function(e){
+        document.getElementById('carregando').textContent = e.message || 'Não foi possível carregar.';
+      });
+
+    document.getElementById('form').addEventListener('submit', function(ev){
+      ev.preventDefault();
+      const btn = document.getElementById('btn');
+      const msg = document.getElementById('msg');
+      btn.disabled = true; msg.textContent = ''; msg.className = '';
+      fetch('/api/publico/lead/' + TOKEN, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          telefone: document.getElementById('telefone').value,
+          email: document.getElementById('email').value,
+        }),
+      })
+        .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, dados: d }; }); })
+        .then(function(res){
+          if (!res.ok) { msg.textContent = res.dados.erro || 'Não foi possível salvar.'; msg.className = 'erro'; btn.disabled = false; return; }
+          msg.textContent = res.dados.mensagem;
+          msg.className = 'ok';
+          document.getElementById('form').style.display = 'none';
+        })
+        .catch(function(){ msg.textContent = 'Sem conexão. Tente novamente.'; msg.className = 'erro'; btn.disabled = false; });
+    });
+  </script>
+</body></html>`);
 });
 
 // ============================================================================

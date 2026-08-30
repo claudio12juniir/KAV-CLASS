@@ -35,6 +35,9 @@ export default function EscolaScreen() {
   const [totalTarefasPendentes, setTotalTarefasPendentes] = useState(0);
   const [tarefasPendentes, setTarefasPendentes] = useState<any[]>([]);
 
+  const [linksCaptacao, setLinksCaptacao] = useState<any[]>([]);
+  const [criandoLink, setCriandoLink] = useState(false);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
@@ -42,13 +45,14 @@ export default function EscolaScreen() {
       const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
       const headers = { Authorization: `Bearer ${token}` };
 
-      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas] = await Promise.all([
+      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks] = await Promise.all([
         fetchComRetry(`${API_URL}/api/professor/perfil?professorId=${professorId}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/alunos`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/reposicoes`, { headers }),
         fetchComRetry(`${API_URL}/api/funil/resumo`, { headers }),
         fetchComRetry(`${API_URL}/api/tarefas-lead`, { headers }),
+        fetchComRetry(`${API_URL}/api/links-captacao`, { headers }),
       ]);
 
       if (resPerfil.ok) {
@@ -64,6 +68,7 @@ export default function EscolaScreen() {
         setTotalTarefasPendentes(funil.tarefasPendentes || 0);
       }
       if (resTarefas.ok) setTarefasPendentes(await resTarefas.json());
+      if (resLinks.ok) setLinksCaptacao(await resLinks.json());
     } catch (err) {
       console.error('Erro ao carregar Minha Escola:', err);
     } finally {
@@ -139,6 +144,52 @@ export default function EscolaScreen() {
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
     }
+  };
+
+  const criarLinkCaptacao = async (tipo: 'CADASTRO' | 'AGENDAMENTO_EXPERIMENTAL') => {
+    setCriandoLink(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/links-captacao`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tipo }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível criar o link.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setCriandoLink(false);
+    }
+  };
+
+  const alternarLinkCaptacao = async (id: string, ativo: boolean) => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const rota = ativo ? 'desativar' : 'reativar';
+      const res = await fetchComRetry(`${API_URL}/api/links-captacao/${id}/${rota}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        carregarDados();
+      } else {
+        const dados = await res.json();
+        Alert.alert('Erro', dados.erro || 'Não foi possível atualizar o link.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    }
+  };
+
+  const copiarLinkCaptacao = async (linkToken: string) => {
+    await Clipboard.setStringAsync(`${API_URL}/captacao/${linkToken}`);
+    Alert.alert('Copiado!', 'Link de captação copiado.');
   };
 
   const copiarCodigo = async () => {
@@ -245,6 +296,54 @@ export default function EscolaScreen() {
           </View>
         </View>
       )}
+
+      <View style={styles.secaoLista}>
+        <Text style={styles.secaoTitulo}>Links de captação</Text>
+        <Text style={styles.textoAjuda}>
+          Compartilhe em redes sociais ou embuta no seu site — quem abrir preenche o contato sem precisar do app.
+        </Text>
+
+        <View style={styles.papelRow}>
+          <TouchableOpacity
+            style={[styles.chipPapel, criandoLink && { opacity: 0.6 }]}
+            disabled={criandoLink}
+            onPress={() => criarLinkCaptacao('CADASTRO')}
+          >
+            <Text style={styles.textoChip}>+ Formulário de contato</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.chipPapel, criandoLink && { opacity: 0.6 }]}
+            disabled={criandoLink}
+            onPress={() => criarLinkCaptacao('AGENDAMENTO_EXPERIMENTAL')}
+          >
+            <Text style={styles.textoChip}>+ Aula experimental</Text>
+          </TouchableOpacity>
+        </View>
+
+        {linksCaptacao.length === 0 ? (
+          <Text style={styles.textoVazio}>Nenhum link criado ainda.</Text>
+        ) : (
+          linksCaptacao.map((l) => (
+            <View key={l.id} style={styles.cardLink}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.nomePessoa}>
+                  {l.tipo === 'AGENDAMENTO_EXPERIMENTAL' ? 'Aula experimental' : 'Formulário de contato'}
+                  {l.professor?.nome ? ` · ${l.professor.nome}` : ''}
+                </Text>
+                <Text style={[styles.emailPessoa, !l.ativo && { color: '#B00020' }]}>
+                  {l.ativo ? 'Ativo' : 'Desativado'}
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.botaoIcone} onPress={() => copiarLinkCaptacao(l.token)}>
+                <Ionicons name="copy-outline" size={18} color="#32BCAD" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.botaoIcone} onPress={() => alternarLinkCaptacao(l.id, l.ativo)}>
+                <Ionicons name={l.ativo ? 'pause-circle-outline' : 'play-circle-outline'} size={20} color="#555" />
+              </TouchableOpacity>
+            </View>
+          ))
+        )}
+      </View>
 
       {tarefasPendentes.length > 0 && (
         <View style={styles.secaoLista}>
@@ -372,6 +471,13 @@ const styles = StyleSheet.create({
   secaoLista: { paddingHorizontal: 20, marginTop: 24 },
   secaoTitulo: { fontSize: 16, fontWeight: 'bold', color: '#000', marginBottom: 12 },
   textoVazio: { color: '#999', fontSize: 13, fontStyle: 'italic' },
+  textoAjuda: { color: '#888', fontSize: 12, marginTop: -6, marginBottom: 12, lineHeight: 16 },
+
+  cardLink: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F0F0F0',
+  },
+  botaoIcone: { padding: 6 },
 
   linhaTituloFunil: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
   badgeAlerta: { backgroundColor: '#FFF3CD', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4, borderWidth: 1, borderColor: '#F0DFA0' },
