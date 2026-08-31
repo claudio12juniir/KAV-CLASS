@@ -4701,13 +4701,233 @@ app.get('/api/comunicados/:id/envios', async (req, res) => {
 });
 
 // ============================================================================
+// 10m. ESTOQUE SIMPLES + RENOVAÇÃO EM LOTE (Fase 5, S5.5)
+//
+// Três itens de cauda longa do roadmap, sem dependência forte entre si —
+// o link de aula online ficou junto de POST /api/aulas (seção 11, logo
+// abaixo) por já morar ali. Aqui: estoque de produtos e renovação em lote.
+// ============================================================================
+
+app.get('/api/produtos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const produtos = await prisma.produto.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { nome: 'asc' } });
+    res.json(produtos);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/produtos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, descricao, quantidadeInicial } = req.body;
+    if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
+    const inicial = Number.isInteger(quantidadeInicial) && quantidadeInicial >= 0 ? quantidadeInicial : 0;
+    const produto = await prisma.produto.create({
+      data: { nome: nome.trim(), descricao: descricao?.trim() || null, quantidadeEstoque: inicial, escolaId: req.auth.escolaId },
+    });
+    res.status(201).json(produto);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar produto.' });
+  }
+});
+
+app.patch('/api/produtos/:id', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { nome, descricao, ativo } = req.body;
+    const dados = {};
+    if (nome?.trim()) dados.nome = nome.trim();
+    if (descricao !== undefined) dados.descricao = descricao?.trim() || null;
+    if (typeof ativo === 'boolean') dados.ativo = ativo;
+    const { count } = await prisma.produto.updateMany({ where: { id: req.params.id, escolaId: req.auth.escolaId }, data: dados });
+    if (!count) return res.status(404).json({ erro: 'Produto não encontrado.' });
+    res.json({ mensagem: 'Produto atualizado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar produto.');
+  }
+});
+
+// POST /api/produtos/:id/movimentacoes — cada movimentação atualiza o
+// saldo (Produto.quantidadeEstoque) na hora, dentro de uma transação —
+// "simples" não quer dizer recalculado do zero a cada consulta.
+app.post('/api/produtos/:id/movimentacoes', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const escolaId = req.auth.escolaId;
+    const produto = await prisma.produto.findFirst({ where: { id: req.params.id, escolaId } });
+    if (!produto) return res.status(404).json({ erro: 'Produto não encontrado.' });
+
+    const { tipo, quantidade, alunoId, observacao } = req.body;
+    if (!['ENTRADA', 'SAIDA', 'EMPRESTIMO', 'DEVOLUCAO'].includes(tipo)) {
+      return res.status(400).json({ erro: 'tipo deve ser ENTRADA, SAIDA, EMPRESTIMO ou DEVOLUCAO.' });
+    }
+    if (!Number.isInteger(quantidade) || quantidade <= 0) {
+      return res.status(400).json({ erro: 'quantidade deve ser um número inteiro maior que zero.' });
+    }
+    if ((tipo === 'EMPRESTIMO' || tipo === 'DEVOLUCAO') && !alunoId) {
+      return res.status(400).json({ erro: 'alunoId é obrigatório pra empréstimo/devolução.' });
+    }
+    if (alunoId) {
+      const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, escolaId } });
+      if (!aluno) return res.status(400).json({ erro: 'Aluno não encontrado.' });
+    }
+
+    const saida = tipo === 'SAIDA' || tipo === 'EMPRESTIMO';
+    if (saida && produto.quantidadeEstoque < quantidade) {
+      return res.status(400).json({ erro: `Estoque insuficiente — só há ${produto.quantidadeEstoque} unidade(s).` });
+    }
+    const delta = saida ? -quantidade : quantidade;
+
+    const [movimentacao] = await prisma.$transaction([
+      prisma.movimentacaoEstoque.create({
+        data: { tipo, quantidade, observacao: observacao?.trim() || null, produtoId: produto.id, alunoId: alunoId || null, escolaId },
+      }),
+      prisma.produto.update({ where: { id: produto.id }, data: { quantidadeEstoque: { increment: delta } } }),
+    ]);
+    res.status(201).json(movimentacao);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao registrar movimentação.' });
+  }
+});
+
+app.get('/api/produtos/:id/movimentacoes', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const produto = await prisma.produto.findFirst({ where: { id: req.params.id, escolaId: req.auth.escolaId } });
+    if (!produto) return res.status(404).json({ erro: 'Produto não encontrado.' });
+    const movimentacoes = await prisma.movimentacaoEstoque.findMany({
+      where: { produtoId: produto.id },
+      include: { aluno: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(movimentacoes);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// GET /api/estoque/emprestimos-ativos — derivado, não um registro formal
+// de "empréstimo aberto": soma EMPRESTIMO menos DEVOLUCAO por produto+aluno,
+// só devolve quem ainda está com saldo positivo (ver comentário no schema).
+app.get('/api/estoque/emprestimos-ativos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const movimentacoes = await prisma.movimentacaoEstoque.findMany({
+      where: { escolaId: req.auth.escolaId, tipo: { in: ['EMPRESTIMO', 'DEVOLUCAO'] }, alunoId: { not: null } },
+      include: { produto: { select: { nome: true } }, aluno: { select: { nome: true } } },
+    });
+    const saldos = new Map();
+    for (const m of movimentacoes) {
+      const chave = `${m.produtoId}:${m.alunoId}`;
+      const atual = saldos.get(chave) || { produtoNome: m.produto.nome, alunoNome: m.aluno.nome, saldo: 0 };
+      atual.saldo += m.tipo === 'EMPRESTIMO' ? m.quantidade : -m.quantidade;
+      saldos.set(chave, atual);
+    }
+    const ativos = [...saldos.values()].filter((s) => s.saldo > 0);
+    res.json(ativos);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// GET /api/renovacoes/vencendo?dias=30 — mesma fórmula de "fim de contrato"
+// já usada pelo cron verificarContratosExpirados (dataInicioContrato +
+// tempoContrato meses), reaproveitada aqui pra alimentar a renovação em
+// lote. Inclui quem já venceu (diasRestantes negativo), não só o futuro —
+// é quem mais precisa de ação do GESTOR.
+app.get('/api/renovacoes/vencendo', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const dias = Number.isInteger(parseInt(req.query.dias, 10)) ? parseInt(req.query.dias, 10) : 30;
+
+    const alunos = await prisma.aluno.findMany({
+      where: { escolaId: professor.escolaId, status: 'ATIVO', dataInicioContrato: { not: null }, tempoContrato: { not: null } },
+      select: { id: true, nome: true, valorMensalidade: true, tempoContrato: true, dataInicioContrato: true },
+    });
+
+    const hoje = new Date();
+    const vencendo = alunos
+      .map((a) => {
+        const fimContrato = new Date(a.dataInicioContrato);
+        fimContrato.setMonth(fimContrato.getMonth() + a.tempoContrato);
+        const diasRestantes = Math.ceil((fimContrato - hoje) / 86400000);
+        return { ...a, fimContrato, diasRestantes };
+      })
+      .filter((a) => a.diasRestantes <= dias)
+      .sort((a, b) => a.diasRestantes - b.diasRestantes);
+
+    res.json(vencendo);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/renovacoes/lote — critério de pronto do roadmap: GESTOR renova
+// vários alunos de uma vez, ajustando o valor (já com desconto aplicado,
+// se houver) individualmente antes de confirmar. Renovar = reiniciar a
+// contagem do contrato a partir de hoje. Tolerante a falha por item — um
+// aluno com dado inconsistente não derruba a renovação dos outros (mesmo
+// padrão de resiliência já usado no envio de Comunicados, S5.1).
+//
+// Fora de escopo, de propósito: isto não gera Pagamento/fatura nova — essa
+// continua sendo a rotina de cobrança já existente no app, baseada em
+// Aluno.diaVencimento/valorMensalidade. Renovação aqui só estende a janela
+// do contrato e atualiza o valor.
+app.post('/api/renovacoes/lote', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { renovacoes } = req.body;
+    if (!Array.isArray(renovacoes) || !renovacoes.length) {
+      return res.status(400).json({ erro: 'renovacoes deve ser uma lista não vazia.' });
+    }
+
+    const resultados = [];
+    for (const item of renovacoes) {
+      try {
+        const { alunoId, novoValorMensalidade, novoTempoContrato } = item;
+        if (typeof novoValorMensalidade !== 'number' || novoValorMensalidade <= 0) {
+          resultados.push({ alunoId, sucesso: false, erro: 'novoValorMensalidade inválido.' });
+          continue;
+        }
+        const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, escolaId: professor.escolaId } });
+        if (!aluno) {
+          resultados.push({ alunoId, sucesso: false, erro: 'Aluno não encontrado.' });
+          continue;
+        }
+        await prisma.aluno.update({
+          where: { id: alunoId },
+          data: {
+            valorMensalidade: novoValorMensalidade,
+            tempoContrato: Number.isInteger(novoTempoContrato) && novoTempoContrato > 0 ? novoTempoContrato : aluno.tempoContrato,
+            dataInicioContrato: new Date(),
+          },
+        });
+        resultados.push({ alunoId, sucesso: true });
+      } catch (err) {
+        resultados.push({ alunoId: item?.alunoId, sucesso: false, erro: 'Erro interno.' });
+      }
+    }
+
+    const sucesso = resultados.filter((r) => r.sucesso).length;
+    res.json({ mensagem: `${sucesso}/${resultados.length} matrícula(s) renovada(s).`, resultados });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao renovar em lote.' });
+  }
+});
+
+// ============================================================================
 // 11. AGENDAMENTO AVULSO DE AULA
 // ============================================================================
 
 app.post('/api/aulas', exigirProfessor, async (req, res) => {
   try {
     const professorId = req.auth.id;
-    const { alunosIds, diaSemana, horario, curso } = req.body;
+    const { alunosIds, diaSemana, horario, curso, linkOnline } = req.body;
     if (!Array.isArray(alunosIds) || alunosIds.length === 0) {
       return res.status(400).json({ erro: 'alunosIds é obrigatório.' });
     }
@@ -4754,6 +4974,7 @@ app.post('/api/aulas', exigirProfessor, async (req, res) => {
       status: 'AGENDADA',
       tipo: alunosIds.length > 1 ? 'GRUPO' : 'REGULAR',
       tema: curso || null,
+      linkOnline: linkOnline?.trim() || null,
       professorId,
       alunoId,
     }));
@@ -4763,6 +4984,25 @@ app.post('/api/aulas', exigirProfessor, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao agendar aula.' });
+  }
+});
+
+// PUT /api/aulas/:id/link-online — professor cola (ou apaga, mandando "")
+// o link da aula online (Fase 5, S5.5). Não é geração automática via
+// Google Calendar API — o professor cria o link no Meet (ou qualquer
+// outro serviço) fora do app e só cola aqui; o app mostra o botão de
+// entrar quando o campo está preenchido.
+app.put('/api/aulas/:id/link-online', exigirProfessor, async (req, res) => {
+  try {
+    const { linkOnline } = req.body;
+    const { count } = await prisma.aula.updateMany({
+      where: { id: req.params.id, professorId: req.auth.id },
+      data: { linkOnline: linkOnline?.trim() || null },
+    });
+    if (!count) return res.status(404).json({ erro: 'Aula não encontrada.' });
+    res.json({ mensagem: linkOnline?.trim() ? 'Link salvo.' : 'Link removido.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao salvar link.');
   }
 });
 

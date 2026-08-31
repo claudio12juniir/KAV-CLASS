@@ -60,6 +60,20 @@ export default function EscolaScreen() {
   const [novoNomeSala, setNovoNomeSala] = useState('');
   const [criandoSala, setCriandoSala] = useState(false);
 
+  const [produtos, setProdutos] = useState<any[]>([]);
+  const [emprestimosAtivos, setEmprestimosAtivos] = useState<any[]>([]);
+  const [novoNomeProduto, setNovoNomeProduto] = useState('');
+  const [criandoProduto, setCriandoProduto] = useState(false);
+  const [movProdutoId, setMovProdutoId] = useState<string | null>(null);
+  const [movTipo, setMovTipo] = useState<'ENTRADA' | 'SAIDA' | 'EMPRESTIMO' | 'DEVOLUCAO'>('ENTRADA');
+  const [movQuantidade, setMovQuantidade] = useState('1');
+  const [movAlunoId, setMovAlunoId] = useState<string | null>(null);
+  const [salvandoMovimentacao, setSalvandoMovimentacao] = useState(false);
+
+  const [alunosVencendo, setAlunosVencendo] = useState<any[]>([]);
+  const [selecaoRenovacao, setSelecaoRenovacao] = useState<Record<string, string>>({});
+  const [renovando, setRenovando] = useState(false);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
@@ -72,7 +86,7 @@ export default function EscolaScreen() {
       trintaDiasAtras.setDate(hoje.getDate() - 30);
       const paraYYYYMMDD = (d: Date) => d.toISOString().slice(0, 10);
 
-      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao, resCalendario, resComunicados, resSalas] = await Promise.all([
+      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao, resCalendario, resComunicados, resSalas, resProdutos, resEmprestimos, resVencendo] = await Promise.all([
         fetchComRetry(`${API_URL}/api/professor/perfil?professorId=${professorId}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/alunos`, { headers }),
@@ -84,6 +98,9 @@ export default function EscolaScreen() {
         fetchComRetry(`${API_URL}/api/escola/calendario`, { headers }),
         fetchComRetry(`${API_URL}/api/comunicados`, { headers }),
         fetchComRetry(`${API_URL}/api/salas`, { headers }),
+        fetchComRetry(`${API_URL}/api/produtos`, { headers }),
+        fetchComRetry(`${API_URL}/api/estoque/emprestimos-ativos`, { headers }),
+        fetchComRetry(`${API_URL}/api/renovacoes/vencendo?dias=30`, { headers }),
       ]);
 
       if (resPerfil.ok) {
@@ -105,6 +122,9 @@ export default function EscolaScreen() {
       if (resCalendario.ok) setDiasNaoLetivos(await resCalendario.json());
       if (resComunicados.ok) setComunicados(await resComunicados.json());
       if (resSalas.ok) setSalas(await resSalas.json());
+      if (resProdutos.ok) setProdutos(await resProdutos.json());
+      if (resEmprestimos.ok) setEmprestimosAtivos(await resEmprestimos.json());
+      if (resVencendo.ok) setAlunosVencendo(await resVencendo.json());
     } catch (err) {
       console.error('Erro ao carregar Minha Escola:', err);
     } finally {
@@ -422,6 +442,132 @@ export default function EscolaScreen() {
 
   const abrirCartazSala = async (salaId: string) => {
     await WebBrowser.openBrowserAsync(`${API_URL}/api/salas/${salaId}/cartaz`);
+  };
+
+  const criarProduto = async () => {
+    if (!novoNomeProduto.trim()) {
+      Alert.alert('Atenção', 'Informe o nome do produto.');
+      return;
+    }
+    setCriandoProduto(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/produtos`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nome: novoNomeProduto.trim() }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        setNovoNomeProduto('');
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível criar o produto.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setCriandoProduto(false);
+    }
+  };
+
+  const abrirMovimentacao = (produtoId: string) => {
+    setMovProdutoId(produtoId);
+    setMovTipo('ENTRADA');
+    setMovQuantidade('1');
+    setMovAlunoId(null);
+  };
+
+  const registrarMovimentacao = async () => {
+    const quantidade = parseInt(movQuantidade, 10);
+    if (!movProdutoId || !Number.isInteger(quantidade) || quantidade <= 0) {
+      Alert.alert('Atenção', 'Informe uma quantidade válida.');
+      return;
+    }
+    if ((movTipo === 'EMPRESTIMO' || movTipo === 'DEVOLUCAO') && !movAlunoId) {
+      Alert.alert('Atenção', 'Selecione o aluno.');
+      return;
+    }
+    setSalvandoMovimentacao(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/produtos/${movProdutoId}/movimentacoes`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tipo: movTipo, quantidade, alunoId: movAlunoId }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        setMovProdutoId(null);
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível registrar.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setSalvandoMovimentacao(false);
+    }
+  };
+
+  const alternarSelecaoRenovacao = (aluno: any) => {
+    setSelecaoRenovacao((atual) => {
+      const novo = { ...atual };
+      if (novo[aluno.id] !== undefined) {
+        delete novo[aluno.id];
+      } else {
+        novo[aluno.id] = String(aluno.valorMensalidade || '');
+      }
+      return novo;
+    });
+  };
+
+  const confirmarRenovacaoLote = () => {
+    const ids = Object.keys(selecaoRenovacao);
+    if (!ids.length) {
+      Alert.alert('Atenção', 'Selecione ao menos um aluno.');
+      return;
+    }
+    Alert.alert(
+      'Renovar matrículas?',
+      `${ids.length} aluno(s) selecionado(s) — o contrato de cada um reinicia a partir de hoje com o valor informado.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Renovar', onPress: renovarLote },
+      ]
+    );
+  };
+
+  const renovarLote = async () => {
+    const renovacoes = Object.entries(selecaoRenovacao).map(([alunoId, valor]) => ({
+      alunoId,
+      novoValorMensalidade: parseFloat(valor.replace(',', '.')),
+    }));
+    if (renovacoes.some((r) => !r.novoValorMensalidade || r.novoValorMensalidade <= 0)) {
+      Alert.alert('Atenção', 'Todo aluno selecionado precisa de um valor válido.');
+      return;
+    }
+    setRenovando(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/renovacoes/lote`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ renovacoes }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        Alert.alert('Feito!', dados.mensagem);
+        setSelecaoRenovacao({});
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível renovar.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setRenovando(false);
+    }
   };
 
   if (carregando) {
@@ -797,6 +943,147 @@ export default function EscolaScreen() {
           ))
         )}
       </View>
+
+      <View style={styles.secaoLista}>
+        <Text style={styles.secaoTitulo}>Estoque</Text>
+
+        <View style={[styles.papelRow, { alignItems: 'center' }]}>
+          <TextInput
+            style={[styles.input, { flex: 1, marginBottom: 0 }]}
+            placeholder="Nome do produto"
+            placeholderTextColor="#aaa"
+            value={novoNomeProduto}
+            onChangeText={setNovoNomeProduto}
+          />
+          <TouchableOpacity
+            style={[styles.botaoFinalizar, criandoProduto && { opacity: 0.6 }]}
+            onPress={criarProduto}
+            disabled={criandoProduto}
+          >
+            {criandoProduto ? <SyncLoader color="#ffffff" /> : <Text style={styles.botaoFinalizarTexto}>Criar</Text>}
+          </TouchableOpacity>
+        </View>
+
+        {produtos.length === 0 ? (
+          <Text style={[styles.textoVazio, { marginTop: 12 }]}>Nenhum produto cadastrado.</Text>
+        ) : (
+          produtos.map((p) => (
+            <View key={p.id}>
+              <TouchableOpacity style={styles.linhaPessoa} onPress={() => abrirMovimentacao(p.id)}>
+                <View style={styles.avatarFallback}>
+                  <Ionicons name="cube-outline" size={18} color="#fff" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.nomePessoa}>{p.nome}</Text>
+                </View>
+                <View style={styles.badgePapel}>
+                  <Text style={styles.badgePapelTexto}>{p.quantidadeEstoque} em estoque</Text>
+                </View>
+              </TouchableOpacity>
+
+              {movProdutoId === p.id && (
+                <View style={styles.cardForm}>
+                  <View style={styles.papelRow}>
+                    {(['ENTRADA', 'SAIDA', 'EMPRESTIMO', 'DEVOLUCAO'] as const).map((t) => (
+                      <TouchableOpacity
+                        key={t}
+                        style={[styles.chipPapel, movTipo === t && styles.chipPapelAtivo]}
+                        onPress={() => setMovTipo(t)}
+                      >
+                        <Text style={[styles.textoChip, movTipo === t && { color: '#fff' }]}>
+                          {t === 'ENTRADA' ? 'Entrada' : t === 'SAIDA' ? 'Saída' : t === 'EMPRESTIMO' ? 'Empréstimo' : 'Devolução'}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Quantidade"
+                    placeholderTextColor="#aaa"
+                    keyboardType="numeric"
+                    value={movQuantidade}
+                    onChangeText={setMovQuantidade}
+                  />
+                  {(movTipo === 'EMPRESTIMO' || movTipo === 'DEVOLUCAO') && (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                      {alunos.map((a) => (
+                        <TouchableOpacity
+                          key={a.id}
+                          style={[styles.chipPapel, { marginRight: 8 }, movAlunoId === a.id && styles.chipPapelAtivo]}
+                          onPress={() => setMovAlunoId(a.id)}
+                        >
+                          <Text style={[styles.textoChip, movAlunoId === a.id && { color: '#fff' }]}>{a.nome}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  )}
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <TouchableOpacity style={[styles.botaoConvidar, { flex: 1, backgroundColor: '#888' }]} onPress={() => setMovProdutoId(null)}>
+                      <Text style={styles.botaoConvidarTexto}>Cancelar</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.botaoConvidar, { flex: 1 }, salvandoMovimentacao && { opacity: 0.6 }]}
+                      onPress={registrarMovimentacao}
+                      disabled={salvandoMovimentacao}
+                    >
+                      {salvandoMovimentacao ? <SyncLoader color="#ffffff" /> : <Text style={styles.botaoConvidarTexto}>Confirmar</Text>}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            </View>
+          ))
+        )}
+
+        {emprestimosAtivos.length > 0 && (
+          <View style={{ marginTop: 16 }}>
+            <Text style={styles.textoAjuda}>Empréstimos ativos</Text>
+            {emprestimosAtivos.map((e, i) => (
+              <Text key={i} style={styles.emailPessoa}>{e.alunoNome} está com {e.saldo}x {e.produtoNome}</Text>
+            ))}
+          </View>
+        )}
+      </View>
+
+      {(papel === 'DONO' || papel === 'GESTOR') && alunosVencendo.length > 0 && (
+        <View style={styles.secaoLista}>
+          <Text style={styles.secaoTitulo}>Renovação de matrícula ({alunosVencendo.length})</Text>
+          <Text style={styles.textoAjuda}>Contratos vencendo nos próximos 30 dias. Selecione, ajuste o valor e renove de uma vez.</Text>
+
+          {alunosVencendo.map((a) => {
+            const selecionado = selecaoRenovacao[a.id] !== undefined;
+            return (
+              <View key={a.id} style={styles.cardReposicao}>
+                <TouchableOpacity onPress={() => alternarSelecaoRenovacao(a)}>
+                  <Ionicons name={selecionado ? 'checkbox' : 'square-outline'} size={22} color={selecionado ? '#000' : '#999'} />
+                </TouchableOpacity>
+                <View style={{ flex: 1, marginLeft: 10 }}>
+                  <Text style={styles.nomePessoa}>{a.nome}</Text>
+                  <Text style={styles.emailPessoa}>
+                    {a.diasRestantes < 0 ? `Venceu há ${Math.abs(a.diasRestantes)} dia(s)` : `Vence em ${a.diasRestantes} dia(s)`}
+                  </Text>
+                </View>
+                {selecionado && (
+                  <TextInput
+                    style={[styles.input, { width: 90, marginBottom: 0, height: 40 }]}
+                    keyboardType="numeric"
+                    value={selecaoRenovacao[a.id]}
+                    onChangeText={(v) => setSelecaoRenovacao((atual) => ({ ...atual, [a.id]: v }))}
+                  />
+                )}
+              </View>
+            );
+          })}
+
+          <TouchableOpacity
+            style={[styles.botaoConvidar, { marginTop: 12 }, renovando && { opacity: 0.6 }]}
+            onPress={confirmarRenovacaoLote}
+            disabled={renovando}
+          >
+            {renovando ? <SyncLoader color="#ffffff" /> : <Text style={styles.botaoConvidarTexto}>Renovar selecionados ({Object.keys(selecaoRenovacao).length})</Text>}
+          </TouchableOpacity>
+        </View>
+      )}
 
       {tarefasPendentes.length > 0 && (
         <View style={styles.secaoLista}>

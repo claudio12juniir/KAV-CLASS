@@ -178,6 +178,8 @@ model Escola {
   aulasExperimentais AulaExperimental[]
   diasNaoLetivos   DiaNaoLetivo[]
   comunicados      Comunicado[]
+  produtos             Produto[]
+  movimentacoesEstoque MovimentacaoEstoque[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -283,6 +285,7 @@ model Aluno {
   avaliacoes     Avaliacao[]
   comprasCredito CompraCredito[]
   reservasSala   ReservaSala[]
+  movimentacoesEstoque MovimentacaoEstoque[]
 
   @@index([professorId, status])
   @@index([status])
@@ -338,6 +341,13 @@ model Aula {
   turma   Turma?  @relation(fields: [turmaId], references: [id], onDelete: SetNull)
   salaId  String?
   sala    Sala?   @relation(fields: [salaId], references: [id], onDelete: SetNull)
+
+  // Aula online (Fase 5, S5.5): link colado manualmente pelo professor (ex.:
+  // meet.google.com/xxx-xxxx-xxx, criado fora do app) — não é geração
+  // automática via Google Calendar API (exigiria OAuth adicional, decisão de
+  // negócio em aberto). Presença deste campo é o que decide se o botão de
+  // "Entrar na aula" aparece — sem precisar de um campo tipo/enum novo.
+  linkOnline String?
 
   avaliacoes Avaliacao[]
 
@@ -1211,4 +1221,63 @@ model EnvioComunicado {
   createdAt DateTime @default(now())
 
   @@index([comunicadoId])
+}
+
+// ─── ESTOQUE SIMPLES (Fase 5, S5.5) ────────────────────────
+//
+// "Simples" de propósito, registrado no roadmap: sem categoria, sem
+// fornecedor, sem custo/preço de venda — só quantidade em estoque e o
+// histórico de movimentações (entrada/saída/empréstimo/devolução) que
+// leva a esse número. quantidadeEstoque é o saldo atual, mantido em
+// sincronia a cada movimentação criada (não é recalculado on-the-fly a
+// cada consulta, pra não escanear o histórico inteiro toda vez).
+enum TipoMovimentacaoEstoque {
+  ENTRADA
+  SAIDA
+  EMPRESTIMO
+  DEVOLUCAO
+}
+
+model Produto {
+  id                String  @id @default(uuid())
+  nome              String
+  descricao         String?
+  quantidadeEstoque Int     @default(0)
+  ativo             Boolean @default(true)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  movimentacoes MovimentacaoEstoque[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId])
+}
+
+model MovimentacaoEstoque {
+  id         String                  @id @default(uuid())
+  tipo       TipoMovimentacaoEstoque
+  quantidade Int
+  observacao String?
+
+  produtoId String
+  produto   Produto @relation(fields: [produtoId], references: [id])
+
+  // Só preenchido em EMPRESTIMO/DEVOLUCAO — quem pegou/devolveu. "Simples"
+  // quer dizer: não existe um registro de "empréstimo aberto" formal, é
+  // derivado (soma de EMPRESTIMO menos soma de DEVOLUCAO por aluno+produto)
+  // — ver GET /api/estoque/emprestimos-ativos.
+  alunoId String?
+  aluno   Aluno?  @relation(fields: [alunoId], references: [id], onDelete: SetNull)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([produtoId])
+  @@index([escolaId])
+  @@index([alunoId])
 }
