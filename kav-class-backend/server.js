@@ -2126,6 +2126,59 @@ app.post('/api/aulas/:id/registrar-presenca', exigirProfessor, async (req, res) 
   }
 });
 
+// POST /api/presenca/qrcode — presença "sem toque manual" (Fase 5, S5.3):
+// professor OU aluno escaneiam o QR fixado na sala e a própria aula deles,
+// acontecendo agora naquela sala, é confirmada. Simplificação registrada
+// aqui, não assumida em silêncio: um único scan (de qualquer um dos dois
+// lados) já marca PRESENTE — isto não é uma reconciliação de duas pontas
+// (tipo "professor confirmou, aluno não"), é literalmente eliminar o
+// toque manual do professor numa lista, que é o critério de pronto do
+// roadmap. Quem quiser registrar ausência continua usando
+// POST /api/aulas/:id/registrar-presenca como sempre.
+app.post('/api/presenca/qrcode', autenticar, async (req, res) => {
+  try {
+    const { salaId } = req.body;
+    if (!salaId) return res.status(400).json({ erro: 'salaId é obrigatório.' });
+
+    const sala = await prisma.sala.findUnique({ where: { id: salaId } });
+    if (!sala) return res.status(404).json({ erro: 'QR Code inválido — sala não encontrada.' });
+
+    const agora = new Date();
+    const janelaMs = 2 * 60 * 60 * 1000; // ±2h — dá folga real pra atraso/adiantamento sem abrir demais.
+    const filtroPessoa = req.auth.papel === 'professor' ? { professorId: req.auth.id } : { alunoId: req.auth.id };
+
+    // status: AGENDADA (ainda por marcar) OU CONCLUIDA (já marcada por
+    // alguém — é o caso do segundo scan, professor ou aluno, que precisa
+    // achar a aula pra cair no "já registrada" abaixo, não sumir da busca).
+    // CANCELADA fica de fora de propósito — não dá pra marcar presença
+    // numa aula cancelada.
+    const candidatas = await prisma.aula.findMany({
+      where: {
+        salaId,
+        status: { in: ['AGENDADA', 'CONCLUIDA'] },
+        dataHora: { gte: new Date(agora.getTime() - janelaMs), lte: new Date(agora.getTime() + janelaMs) },
+        ...filtroPessoa,
+      },
+    });
+    if (!candidatas.length) {
+      return res.status(404).json({ erro: 'Nenhuma aula sua agendada agora nessa sala.' });
+    }
+    const aula = candidatas.reduce((maisProxima, atual) =>
+      Math.abs(atual.dataHora - agora) < Math.abs(maisProxima.dataHora - agora) ? atual : maisProxima
+    );
+
+    if (aula.presenca) {
+      return res.json({ mensagem: 'Presença já estava registrada pra essa aula.', jaRegistrada: true });
+    }
+
+    await prisma.aula.update({ where: { id: aula.id }, data: { presenca: 'PRESENTE', status: 'CONCLUIDA' } });
+    res.json({ mensagem: `Presença confirmada em ${sala.nome}!`, jaRegistrada: false });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao registrar presença.' });
+  }
+});
+
 app.post('/api/aulas/:id/material', exigirProfessor, async (req, res) => {
   try {
     const { titulo, tipo, conteudo, url } = req.body;
@@ -2339,6 +2392,53 @@ app.patch('/api/salas/:id', exigirProfessor, carregarEscolaDoProfessor, async (r
     res.json({ mensagem: 'Sala atualizada.' });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar sala.');
+  }
+});
+
+// GET /api/salas/:id/cartaz — página HTML pronta pra imprimir, com o QR
+// Code de presença da sala (Fase 5, S5.3). Mesmo padrão de página HTML
+// servida direto pelo backend já usado em S4.2 (sem build, sem deploy
+// novo). O QR só carrega o id da sala (payload "KAVCLASS_SALA:<id>") — a
+// tela de scanner do app resolve o resto (que aula, de quem) na hora.
+//
+// PÚBLICA de propósito, não um lapso: abre num navegador externo (o app
+// chama WebBrowser.openBrowserAsync), então não dá pra mandar o
+// Authorization: Bearer normal — e colocar um JWT de sessão (validade de
+// 7 dias) numa query string pra isso vazaria em histórico de navegador
+// sem necessidade nenhuma. O id da sala já é um UUID imprevisível (é o
+// mesmo valor impresso no próprio pôster/QR e usado sem segredo nenhum em
+// POST /api/presenca/qrcode) e o nome da sala não é dado sensível — não
+// existe segredo adicional sendo exposto ao tirar a autenticação daqui.
+app.get('/api/salas/:id/cartaz', limitarTaxaPublica(60, 10 * 60 * 1000), async (req, res) => {
+  try {
+    const sala = await prisma.sala.findUnique({ where: { id: req.params.id } });
+    if (!sala) return res.status(404).json({ erro: 'Sala não encontrada.' });
+
+    const qrcode = require('qrcode');
+    const payload = `KAVCLASS_SALA:${sala.id}`;
+    const dataUrl = await qrcode.toDataURL(payload, { width: 480, margin: 2 });
+
+    res.type('html').send(`<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cartaz de presença — ${escaparHtml(sala.nome)}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; padding: 48px 20px; color: #111; }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  p.sub { color: #666; margin-top: 0; font-size: 14px; }
+  img { width: 320px; height: 320px; margin: 28px 0; }
+  .instrucao { max-width: 380px; margin: 0 auto; color: #333; font-size: 15px; line-height: 1.6; }
+  @media print { body { padding: 0; } }
+</style></head>
+<body>
+  <h1>${escaparHtml(sala.nome)}</h1>
+  <p class="sub">Presença por QR Code — KAV Class</p>
+  <img src="${dataUrl}" alt="QR Code de presença" />
+  <p class="instrucao">Abra o app KAV Class, toque em <b>Escanear presença</b> e aponte a câmera pra este código pra confirmar presença nesta sala.</p>
+</body></html>`);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao gerar cartaz.' });
   }
 });
 

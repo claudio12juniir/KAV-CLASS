@@ -4,6 +4,7 @@ import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/
 import { StatusBar } from 'expo-status-bar';
 import * as Clipboard from 'expo-clipboard';
 import * as SecureStore from 'expo-secure-store';
+import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
@@ -55,6 +56,10 @@ export default function EscolaScreen() {
   const [salvandoComunicado, setSalvandoComunicado] = useState(false);
   const [enviandoComunicadoId, setEnviandoComunicadoId] = useState<string | null>(null);
 
+  const [salas, setSalas] = useState<any[]>([]);
+  const [novoNomeSala, setNovoNomeSala] = useState('');
+  const [criandoSala, setCriandoSala] = useState(false);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
@@ -67,7 +72,7 @@ export default function EscolaScreen() {
       trintaDiasAtras.setDate(hoje.getDate() - 30);
       const paraYYYYMMDD = (d: Date) => d.toISOString().slice(0, 10);
 
-      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao, resCalendario, resComunicados] = await Promise.all([
+      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao, resCalendario, resComunicados, resSalas] = await Promise.all([
         fetchComRetry(`${API_URL}/api/professor/perfil?professorId=${professorId}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/alunos`, { headers }),
@@ -78,6 +83,7 @@ export default function EscolaScreen() {
         fetchComRetry(`${API_URL}/api/relatorios/conversao-experimental?de=${paraYYYYMMDD(trintaDiasAtras)}&ate=${paraYYYYMMDD(hoje)}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/calendario`, { headers }),
         fetchComRetry(`${API_URL}/api/comunicados`, { headers }),
+        fetchComRetry(`${API_URL}/api/salas`, { headers }),
       ]);
 
       if (resPerfil.ok) {
@@ -98,6 +104,7 @@ export default function EscolaScreen() {
       if (resConversao.ok) setRelatorioConversao(await resConversao.json());
       if (resCalendario.ok) setDiasNaoLetivos(await resCalendario.json());
       if (resComunicados.ok) setComunicados(await resComunicados.json());
+      if (resSalas.ok) setSalas(await resSalas.json());
     } catch (err) {
       console.error('Erro ao carregar Minha Escola:', err);
     } finally {
@@ -384,6 +391,37 @@ export default function EscolaScreen() {
         { text: 'Enviar', style: 'destructive', onPress: () => enviarComunicadoConfirmado(id) },
       ]
     );
+  };
+
+  const criarSala = async () => {
+    if (!novoNomeSala.trim()) {
+      Alert.alert('Atenção', 'Informe o nome da sala.');
+      return;
+    }
+    setCriandoSala(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/salas`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nome: novoNomeSala.trim() }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        setNovoNomeSala('');
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível criar a sala.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setCriandoSala(false);
+    }
+  };
+
+  const abrirCartazSala = async (salaId: string) => {
+    await WebBrowser.openBrowserAsync(`${API_URL}/api/salas/${salaId}/cartaz`);
   };
 
   if (carregando) {
@@ -711,6 +749,49 @@ export default function EscolaScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={styles.botaoIcone} onPress={() => alternarLinkCaptacao(l.id, l.ativo)}>
                 <Ionicons name={l.ativo ? 'pause-circle-outline' : 'play-circle-outline'} size={20} color="#555" />
+              </TouchableOpacity>
+            </View>
+          ))
+        )}
+      </View>
+
+      <View style={styles.secaoLista}>
+        <Text style={styles.secaoTitulo}>Salas</Text>
+        <Text style={styles.textoAjuda}>
+          Cada sala pode ter um cartaz com QR Code — professor e aluno escaneiam pra confirmar presença sem toque manual.
+        </Text>
+
+        <View style={[styles.papelRow, { alignItems: 'center' }]}>
+          <TextInput
+            style={[styles.input, { flex: 1, marginBottom: 0 }]}
+            placeholder="Nome da sala"
+            placeholderTextColor="#aaa"
+            value={novoNomeSala}
+            onChangeText={setNovoNomeSala}
+          />
+          <TouchableOpacity
+            style={[styles.botaoFinalizar, criandoSala && { opacity: 0.6 }]}
+            onPress={criarSala}
+            disabled={criandoSala}
+          >
+            {criandoSala ? <SyncLoader color="#ffffff" /> : <Text style={styles.botaoFinalizarTexto}>Criar</Text>}
+          </TouchableOpacity>
+        </View>
+
+        {salas.length === 0 ? (
+          <Text style={[styles.textoVazio, { marginTop: 12 }]}>Nenhuma sala cadastrada.</Text>
+        ) : (
+          salas.map((s) => (
+            <View key={s.id} style={styles.linhaPessoa}>
+              <View style={styles.avatarFallback}>
+                <Ionicons name="business-outline" size={18} color="#fff" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.nomePessoa}>{s.nome}</Text>
+                {!s.ativa && <Text style={styles.emailPessoa}>Inativa</Text>}
+              </View>
+              <TouchableOpacity style={styles.botaoIcone} onPress={() => abrirCartazSala(s.id)}>
+                <Ionicons name="qr-code-outline" size={20} color="#32BCAD" />
               </TouchableOpacity>
             </View>
           ))

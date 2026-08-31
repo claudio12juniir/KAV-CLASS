@@ -26,6 +26,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.5",
     "prisma": "^6.19.3",
+    "qrcode": "^1.5.4",
     "stripe": "^22.1.0"
   }
 }
