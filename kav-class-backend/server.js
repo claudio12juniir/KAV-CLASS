@@ -4393,6 +4393,214 @@ app.put('/api/aulas/:id/cancelar', async (req, res) => {
 });
 
 // ============================================================================
+// 10l. COMUNICADOS EM ESCALA (Fase 5, S5.1)
+//
+// Broadcast por e-mail escopado pela Escola inteira — não existia nada
+// parecido antes desta sprint (Mensagem é 1:1 professor↔aluno; Notificacao
+// é push só pro professor). RASCUNHO edita/apaga livre; ENVIADO é
+// definitivo — sem rota de "desenviar" ou reabrir edição, de propósito
+// (é o critério de pronto do roadmap). Reenviar de verdade é sempre via
+// "duplicar" (cria um novo RASCUNHO), nunca reabrindo o original.
+// ============================================================================
+
+function escaparHtml(valor) {
+  return String(valor ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+async function enviarEmailComunicado(destinatario, titulo, corpo, escolaNome) {
+  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    throw new Error('Variáveis EMAIL_USER e EMAIL_PASS não configuradas no servidor.');
+  }
+  const nodemailer = require('nodemailer');
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 10000,
+  });
+  await transporter.sendMail({
+    from: `"${escolaNome}" <${process.env.EMAIL_USER}>`,
+    to: destinatario,
+    subject: titulo,
+    html: `<h2>${escaparHtml(titulo)}</h2><p>${escaparHtml(corpo).replace(/\n/g, '<br>')}</p><p style="color:#999;font-size:12px;margin-top:24px">Enviado por ${escaparHtml(escolaNome)} via KAV Class.</p>`,
+  });
+}
+
+// Calcula os destinatários a partir do público escolhido — não é uma
+// seleção manual (mantém o recurso simples: "manda pra Escola toda").
+// Pra ALUNOS, segue o mesmo critério já usado em Contrato (S3.2): manda
+// pro e-mail do responsável quando existe, senão pro do próprio aluno.
+async function coletarDestinatariosComunicado(escolaId, publico) {
+  const destinatarios = [];
+  if (publico === 'ALUNOS' || publico === 'TODOS') {
+    const alunos = await prisma.aluno.findMany({
+      where: { escolaId },
+      select: { nome: true, email: true, responsavel: { select: { nome: true, email: true } } },
+    });
+    for (const a of alunos) {
+      destinatarios.push({ nome: a.responsavel?.nome || a.nome, email: a.responsavel?.email || a.email, tipo: 'ALUNO' });
+    }
+  }
+  if (publico === 'PROFESSORES' || publico === 'TODOS') {
+    const professores = await prisma.professor.findMany({ where: { escolaId }, select: { nome: true, email: true } });
+    for (const p of professores) destinatarios.push({ nome: p.nome, email: p.email, tipo: 'PROFESSOR' });
+  }
+  return destinatarios;
+}
+
+app.get('/api/comunicados', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const comunicados = await prisma.comunicado.findMany({
+      where: { escolaId: professor.escolaId },
+      include: { autor: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(comunicados);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+app.post('/api/comunicados', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { titulo, corpo, publico } = req.body;
+    if (!titulo?.trim() || !corpo?.trim()) {
+      return res.status(400).json({ erro: 'titulo e corpo são obrigatórios.' });
+    }
+    if (!['ALUNOS', 'PROFESSORES', 'TODOS'].includes(publico)) {
+      return res.status(400).json({ erro: 'publico deve ser ALUNOS, PROFESSORES ou TODOS.' });
+    }
+    const comunicado = await prisma.comunicado.create({
+      data: { titulo: titulo.trim(), corpo: corpo.trim(), publico, escolaId: professor.escolaId, autorId: professor.id },
+    });
+    res.status(201).json(comunicado);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar comunicado.' });
+  }
+});
+
+app.put('/api/comunicados/:id', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { titulo, corpo, publico } = req.body;
+    const dados = {};
+    if (titulo?.trim()) dados.titulo = titulo.trim();
+    if (corpo?.trim()) dados.corpo = corpo.trim();
+    if (publico) {
+      if (!['ALUNOS', 'PROFESSORES', 'TODOS'].includes(publico)) return res.status(400).json({ erro: 'publico inválido.' });
+      dados.publico = publico;
+    }
+    const { count } = await prisma.comunicado.updateMany({
+      where: { id: req.params.id, escolaId: professor.escolaId, status: 'RASCUNHO' },
+      data: dados,
+    });
+    if (!count) return res.status(404).json({ erro: 'Comunicado não encontrado, ou já foi enviado (não dá mais pra editar).' });
+    res.json({ mensagem: 'Comunicado atualizado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar.');
+  }
+});
+
+app.delete('/api/comunicados/:id', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { count } = await prisma.comunicado.deleteMany({ where: { id: req.params.id, escolaId: professor.escolaId, status: 'RASCUNHO' } });
+    if (!count) return res.status(404).json({ erro: 'Comunicado não encontrado, ou já foi enviado (não dá mais pra apagar).' });
+    res.json({ mensagem: 'Rascunho apagado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao apagar.');
+  }
+});
+
+app.post('/api/comunicados/:id/duplicar', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const original = await prisma.comunicado.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!original) return res.status(404).json({ erro: 'Comunicado não encontrado.' });
+    const copia = await prisma.comunicado.create({
+      data: { titulo: original.titulo, corpo: original.corpo, publico: original.publico, escolaId: professor.escolaId, autorId: professor.id },
+    });
+    res.status(201).json(copia);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao duplicar.' });
+  }
+});
+
+// POST /api/comunicados/:id/enviar — irreversível: transição RASCUNHO →
+// ENVIADO só acontece se der pra tentar mandar de verdade (credencial de
+// e-mail configurada). Sucesso/falha por destinatário fica registrado em
+// EnvioComunicado mesmo assim — "enviado" aqui é sobre a tentativa ter
+// sido disparada, não sobre 100% de entrega (um e-mail inválido de um
+// aluno não deve travar o broadcast pros outros).
+app.post('/api/comunicados/:id/enviar', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const comunicado = await prisma.comunicado.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!comunicado) return res.status(404).json({ erro: 'Comunicado não encontrado.' });
+    if (comunicado.status === 'ENVIADO') {
+      return res.status(400).json({ erro: 'Esse comunicado já foi enviado. Use "duplicar" pra criar um novo rascunho.' });
+    }
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      return res.status(503).json({ erro: 'E-mail não está configurado no servidor.' });
+    }
+
+    const destinatarios = await coletarDestinatariosComunicado(professor.escolaId, comunicado.publico);
+    if (!destinatarios.length) {
+      return res.status(400).json({ erro: 'Nenhum destinatário encontrado pra esse público.' });
+    }
+
+    const envios = [];
+    for (const dest of destinatarios) {
+      try {
+        await enviarEmailComunicado(dest.email, comunicado.titulo, comunicado.corpo, professor.escola.nome);
+        envios.push({ destinatarioNome: dest.nome, destinatarioEmail: dest.email, destinatarioTipo: dest.tipo, sucesso: true, comunicadoId: comunicado.id });
+      } catch (err) {
+        envios.push({ destinatarioNome: dest.nome, destinatarioEmail: dest.email, destinatarioTipo: dest.tipo, sucesso: false, erro: err.message, comunicadoId: comunicado.id });
+      }
+    }
+
+    await prisma.$transaction([
+      prisma.envioComunicado.createMany({ data: envios }),
+      prisma.comunicado.update({ where: { id: comunicado.id }, data: { status: 'ENVIADO', enviadoEm: new Date() } }),
+    ]);
+
+    const sucesso = envios.filter((e) => e.sucesso).length;
+    res.json({ mensagem: `Comunicado enviado: ${sucesso}/${envios.length} e-mails entregues.`, totalDestinatarios: envios.length, sucesso });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao enviar comunicado.' });
+  }
+});
+
+app.get('/api/comunicados/:id/envios', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const comunicado = await prisma.comunicado.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!comunicado) return res.status(404).json({ erro: 'Comunicado não encontrado.' });
+    const envios = await prisma.envioComunicado.findMany({ where: { comunicadoId: comunicado.id }, orderBy: { createdAt: 'asc' } });
+    res.json(envios);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
 // 11. AGENDAMENTO AVULSO DE AULA
 // ============================================================================
 

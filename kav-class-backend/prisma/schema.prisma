@@ -177,6 +177,7 @@ model Escola {
   linksCaptacao    LinkCaptacao[]
   aulasExperimentais AulaExperimental[]
   diasNaoLetivos   DiaNaoLetivo[]
+  comunicados      Comunicado[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -221,6 +222,7 @@ model Professor {
   tarefasLead      TarefaLead[]
   linksCaptacao    LinkCaptacao[]
   aulasExperimentais AulaExperimental[]
+  comunicadosEnviados Comunicado[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1147,4 +1149,66 @@ model DiaNaoLetivo {
 
   @@unique([escolaId, data])
   @@index([escolaId])
+}
+
+// ─── COMUNICADOS EM ESCALA (Fase 5, S5.1) ────────────────────────
+//
+// Broadcast escopado pela Escola inteira (não por professor isolado —
+// nada parecido existia antes desta sprint). RASCUNHO edita/apaga livre;
+// ENVIADO é definitivo — sem rota de "desenviar" ou reabrir edição, de
+// propósito (é o critério de pronto do roadmap).
+enum StatusComunicado {
+  RASCUNHO
+  ENVIADO
+}
+
+// Quem recebe — um cálculo automático a partir do público escolhido, não
+// uma seleção manual de destinatário por destinatário (mantém o recurso
+// simples: "manda pra Escola toda", não um mailing list picker).
+enum PublicoComunicado {
+  ALUNOS
+  PROFESSORES
+  TODOS
+}
+
+model Comunicado {
+  id      String            @id @default(uuid())
+  titulo  String
+  corpo   String
+  publico PublicoComunicado
+  status  StatusComunicado  @default(RASCUNHO)
+
+  enviadoEm DateTime?
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  autorId String
+  autor   Professor @relation(fields: [autorId], references: [id])
+
+  envios EnvioComunicado[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId, status])
+}
+
+// Histórico completo por destinatário (não só um contador agregado) — é
+// literalmente a entrega "histórico completo de e-mails enviados" do
+// roadmap: dá pra auditar quem recebeu, quem não recebeu e por quê.
+model EnvioComunicado {
+  id                String  @id @default(uuid())
+  destinatarioNome  String
+  destinatarioEmail String
+  destinatarioTipo  String // "ALUNO" | "PROFESSOR"
+  sucesso           Boolean
+  erro              String?
+
+  comunicadoId String
+  comunicado   Comunicado @relation(fields: [comunicadoId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([comunicadoId])
 }

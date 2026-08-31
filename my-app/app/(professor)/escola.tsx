@@ -47,6 +47,14 @@ export default function EscolaScreen() {
   const [novoTipoFeriado, setNovoTipoFeriado] = useState<'FERIADO' | 'RECESSO'>('FERIADO');
   const [salvandoFeriado, setSalvandoFeriado] = useState(false);
 
+  const [comunicados, setComunicados] = useState<any[]>([]);
+  const [editandoComunicadoId, setEditandoComunicadoId] = useState<string | null>(null);
+  const [tituloComunicado, setTituloComunicado] = useState('');
+  const [corpoComunicado, setCorpoComunicado] = useState('');
+  const [publicoComunicado, setPublicoComunicado] = useState<'ALUNOS' | 'PROFESSORES' | 'TODOS'>('ALUNOS');
+  const [salvandoComunicado, setSalvandoComunicado] = useState(false);
+  const [enviandoComunicadoId, setEnviandoComunicadoId] = useState<string | null>(null);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
@@ -59,7 +67,7 @@ export default function EscolaScreen() {
       trintaDiasAtras.setDate(hoje.getDate() - 30);
       const paraYYYYMMDD = (d: Date) => d.toISOString().slice(0, 10);
 
-      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao, resCalendario] = await Promise.all([
+      const [resPerfil, resProfessores, resAlunos, resReposicoes, resFunil, resTarefas, resLinks, resConversao, resCalendario, resComunicados] = await Promise.all([
         fetchComRetry(`${API_URL}/api/professor/perfil?professorId=${professorId}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/alunos`, { headers }),
@@ -69,6 +77,7 @@ export default function EscolaScreen() {
         fetchComRetry(`${API_URL}/api/links-captacao`, { headers }),
         fetchComRetry(`${API_URL}/api/relatorios/conversao-experimental?de=${paraYYYYMMDD(trintaDiasAtras)}&ate=${paraYYYYMMDD(hoje)}`, { headers }),
         fetchComRetry(`${API_URL}/api/escola/calendario`, { headers }),
+        fetchComRetry(`${API_URL}/api/comunicados`, { headers }),
       ]);
 
       if (resPerfil.ok) {
@@ -88,6 +97,7 @@ export default function EscolaScreen() {
       if (resLinks.ok) setLinksCaptacao(await resLinks.json());
       if (resConversao.ok) setRelatorioConversao(await resConversao.json());
       if (resCalendario.ok) setDiasNaoLetivos(await resCalendario.json());
+      if (resComunicados.ok) setComunicados(await resComunicados.json());
     } catch (err) {
       console.error('Erro ao carregar Minha Escola:', err);
     } finally {
@@ -262,6 +272,118 @@ export default function EscolaScreen() {
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
     }
+  };
+
+  const limparFormComunicado = () => {
+    setEditandoComunicadoId(null);
+    setTituloComunicado('');
+    setCorpoComunicado('');
+    setPublicoComunicado('ALUNOS');
+  };
+
+  const editarComunicado = (c: any) => {
+    setEditandoComunicadoId(c.id);
+    setTituloComunicado(c.titulo);
+    setCorpoComunicado(c.corpo);
+    setPublicoComunicado(c.publico);
+  };
+
+  const salvarComunicado = async () => {
+    if (!tituloComunicado.trim() || !corpoComunicado.trim()) {
+      Alert.alert('Atenção', 'Preencha título e texto do comunicado.');
+      return;
+    }
+    setSalvandoComunicado(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const url = editandoComunicadoId ? `${API_URL}/api/comunicados/${editandoComunicadoId}` : `${API_URL}/api/comunicados`;
+      const res = await fetchComRetry(url, {
+        method: editandoComunicadoId ? 'PUT' : 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ titulo: tituloComunicado.trim(), corpo: corpoComunicado.trim(), publico: publicoComunicado }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        limparFormComunicado();
+        carregarDados();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível salvar.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setSalvandoComunicado(false);
+    }
+  };
+
+  const apagarComunicado = async (id: string) => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/comunicados/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        if (editandoComunicadoId === id) limparFormComunicado();
+        carregarDados();
+      } else {
+        const dados = await res.json();
+        Alert.alert('Erro', dados.erro || 'Não foi possível apagar.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    }
+  };
+
+  const duplicarComunicado = async (id: string) => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/comunicados/${id}/duplicar`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        carregarDados();
+      } else {
+        const dados = await res.json();
+        Alert.alert('Erro', dados.erro || 'Não foi possível duplicar.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    }
+  };
+
+  const enviarComunicadoConfirmado = async (id: string) => {
+    setEnviandoComunicadoId(id);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/comunicados/${id}/enviar`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        Alert.alert('Enviado!', dados.mensagem);
+        carregarDados();
+      } else {
+        Alert.alert('Não foi possível enviar', dados.erro || 'Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setEnviandoComunicadoId(null);
+    }
+  };
+
+  const confirmarEnvioComunicado = (id: string, publico: string) => {
+    Alert.alert(
+      'Enviar comunicado?',
+      `Isso envia o e-mail pra ${publico === 'TODOS' ? 'todos os alunos e professores' : publico === 'ALUNOS' ? 'todos os alunos' : 'todos os professores'} da escola. Depois de enviado, não dá pra desfazer.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Enviar', style: 'destructive', onPress: () => enviarComunicadoConfirmado(id) },
+      ]
+    );
   };
 
   if (carregando) {
@@ -449,6 +571,103 @@ export default function EscolaScreen() {
           ))
         )}
       </View>
+
+      {(papel === 'DONO' || papel === 'GESTOR') && (
+        <View style={styles.secaoLista}>
+          <Text style={styles.secaoTitulo}>Comunicados</Text>
+          <Text style={styles.textoAjuda}>
+            Broadcast por e-mail pra escola toda. Rascunho edita/apaga livre — depois de enviado, não dá pra desfazer.
+          </Text>
+
+          <View style={styles.cardForm}>
+            <TextInput
+              style={styles.input}
+              placeholder="Título"
+              placeholderTextColor="#aaa"
+              value={tituloComunicado}
+              onChangeText={setTituloComunicado}
+            />
+            <TextInput
+              style={[styles.input, { height: 90, paddingTop: 12, textAlignVertical: 'top' }]}
+              placeholder="Texto do comunicado"
+              placeholderTextColor="#aaa"
+              value={corpoComunicado}
+              onChangeText={setCorpoComunicado}
+              multiline
+            />
+            <View style={styles.papelRow}>
+              {(['ALUNOS', 'PROFESSORES', 'TODOS'] as const).map((p) => (
+                <TouchableOpacity
+                  key={p}
+                  style={[styles.chipPapel, publicoComunicado === p && styles.chipPapelAtivo]}
+                  onPress={() => setPublicoComunicado(p)}
+                >
+                  <Text style={[styles.textoChip, publicoComunicado === p && { color: '#fff' }]}>
+                    {p === 'ALUNOS' ? 'Alunos' : p === 'PROFESSORES' ? 'Professores' : 'Todos'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              {editandoComunicadoId && (
+                <TouchableOpacity style={[styles.botaoConvidar, { flex: 1, backgroundColor: '#888' }]} onPress={limparFormComunicado}>
+                  <Text style={styles.botaoConvidarTexto}>Cancelar</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.botaoConvidar, { flex: 1 }, salvandoComunicado && { opacity: 0.6 }]}
+                onPress={salvarComunicado}
+                disabled={salvandoComunicado}
+              >
+                {salvandoComunicado ? <SyncLoader color="#ffffff" /> : <Text style={styles.botaoConvidarTexto}>{editandoComunicadoId ? 'Salvar alterações' : 'Salvar rascunho'}</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {comunicados.length === 0 ? (
+            <Text style={styles.textoVazio}>Nenhum comunicado ainda.</Text>
+          ) : (
+            comunicados.map((c) => (
+              <View key={c.id} style={styles.cardComunicado}>
+                <View style={styles.linhaTituloFunil}>
+                  <Text style={styles.nomePessoa}>{c.titulo}</Text>
+                  <View style={[styles.badgeStatus, c.status === 'ENVIADO' && styles.badgeStatusEnviado]}>
+                    <Text style={styles.badgeStatusTexto}>{c.status === 'ENVIADO' ? 'Enviado' : 'Rascunho'}</Text>
+                  </View>
+                </View>
+                <Text style={styles.emailPessoa} numberOfLines={2}>{c.corpo}</Text>
+                <Text style={[styles.emailPessoa, { marginTop: 4 }]}>
+                  {c.publico === 'ALUNOS' ? 'Alunos' : c.publico === 'PROFESSORES' ? 'Professores' : 'Todos'} · {c.autor?.nome}
+                </Text>
+                <View style={styles.acoesComunicado}>
+                  {c.status === 'RASCUNHO' ? (
+                    <>
+                      <TouchableOpacity onPress={() => editarComunicado(c)}>
+                        <Text style={styles.linkAcao}>Editar</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => apagarComunicado(c.id)}>
+                        <Text style={[styles.linkAcao, { color: '#B00020' }]}>Apagar</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => confirmarEnvioComunicado(c.id, c.publico)}
+                        disabled={enviandoComunicadoId === c.id}
+                      >
+                        {enviandoComunicadoId === c.id
+                          ? <SyncLoader color="#000000" />
+                          : <Text style={[styles.linkAcao, { color: '#0D47A1', fontWeight: 'bold' }]}>Enviar</Text>}
+                      </TouchableOpacity>
+                    </>
+                  ) : (
+                    <TouchableOpacity onPress={() => duplicarComunicado(c.id)}>
+                      <Text style={styles.linkAcao}>Duplicar pra reenviar</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+      )}
 
       <View style={styles.secaoLista}>
         <Text style={styles.secaoTitulo}>Links de captação</Text>
@@ -670,4 +889,13 @@ const styles = StyleSheet.create({
   },
   botaoFinalizar: { backgroundColor: '#0D47A1', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 },
   botaoFinalizarTexto: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+
+  cardComunicado: {
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F0F0F0',
+  },
+  badgeStatus: { paddingHorizontal: 10, paddingVertical: 4, backgroundColor: '#F0F4F8', borderRadius: 12 },
+  badgeStatusEnviado: { backgroundColor: '#E8F8F6' },
+  badgeStatusTexto: { fontSize: 10, fontWeight: '700', color: '#555', letterSpacing: 0.5 },
+  acoesComunicado: { flexDirection: 'row', gap: 20, marginTop: 10 },
+  linkAcao: { fontSize: 13, fontWeight: '600', color: '#555' },
 });
