@@ -1,0 +1,22 @@
+diff --git a/node_modules/expo-secure-store/build/ExpoSecureStore.web.js b/node_modules/expo-secure-store/build/ExpoSecureStore.web.js
+index 1a318b9..1b20c12 100644
+--- a/node_modules/expo-secure-store/build/ExpoSecureStore.web.js
++++ b/node_modules/expo-secure-store/build/ExpoSecureStore.web.js
+@@ -1,2 +1,14 @@
+-export default {};
+-//# sourceMappingURL=ExpoSecureStore.web.js.map
+\ No newline at end of file
++export default {
++  async getValueWithKeyAsync(key) {
++    if (typeof localStorage === 'undefined') return null;
++    return localStorage.getItem(key) ?? null;
++  },
++  async setValueWithKeyAsync(value, key) {
++    if (typeof localStorage === 'undefined') return;
++    localStorage.setItem(key, value);
++  },
++  async deleteValueWithKeyAsync(key) {
++    if (typeof localStorage === 'undefined') return;
++    localStorage.removeItem(key);
++  },
++};
