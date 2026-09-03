@@ -161,6 +161,8 @@ export default function ChatGrupoProfessor() {
           value={novaMensagem}
           onChangeText={setNovaMensagem}
           multiline
+          autoCorrect
+          spellCheck
         />
         <TouchableOpacity
           style={[styles.botaoEnviar, enviando && { opacity: 0.6 }]}

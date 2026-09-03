@@ -990,6 +990,8 @@ export default function ProfessorDashboard() {
                     style={styles.input}
                     placeholder="Título"
                     placeholderTextColor={CORES.secundaria}
+                    autoCorrect
+                    spellCheck
                     value={textoTitulo}
                     onChangeText={setTextoTitulo}
                   />
@@ -998,6 +1000,8 @@ export default function ProfessorDashboard() {
                     placeholder="Conteúdo do texto..."
                     placeholderTextColor={CORES.secundaria}
                     multiline
+                    autoCorrect
+                    spellCheck
                     value={textoConteudo}
                     onChangeText={setTextoConteudo}
                   />
@@ -1014,6 +1018,8 @@ export default function ProfessorDashboard() {
                     style={styles.input}
                     placeholder="Título do link"
                     placeholderTextColor={CORES.secundaria}
+                    autoCorrect
+                    spellCheck
                     value={linkTitulo}
                     onChangeText={setLinkTitulo}
                   />

@@ -36,7 +36,7 @@
       "iosDisplayInForeground": true
     },
     "web": {
-      "output": "static",
+      "output": "single",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
@@ -89,9 +89,9 @@
         "projectId": "7f4a68d8-0fa8-4912-82fc-56ba4624e94c"
       },
       "googleClientIds": {
-        "web": "",
-        "ios": "",
-        "android": ""
+        "web": "708880235402-9s0s1gvc0sfs02didoqiq2ennorb0s1b.apps.googleusercontent.com",
+        "ios": "708880235402-mvhone83lnq5o89djsjdvejrs2rdmtuu.apps.googleusercontent.com",
+        "android": "708880235402-fsdhi800uqhgjelvasie7ao79jp82l6t.apps.googleusercontent.com"
       }
     },
     "owner": "teclas.jr566",

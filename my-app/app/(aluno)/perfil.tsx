@@ -302,6 +302,8 @@ export default function PerfilScreen() {
             onChangeText={setNome}
             placeholder="Seu nome"
             placeholderTextColor={CORES.secundaria}
+            autoCorrect
+            spellCheck
           />
           <Text style={styles.labelInput}>Telefone</Text>
           <TextInput

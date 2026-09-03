@@ -166,6 +166,8 @@ export default function ChatAlunoScreen() {
           value={input}
           onChangeText={setInput}
           multiline
+          autoCorrect
+          spellCheck
         />
         <TouchableOpacity 
           style={[styles.botaoEnviar, input.trim() === '' && { opacity: 0.5 }]} 

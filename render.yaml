@@ -21,3 +21,9 @@ services:
         sync: false        # Painel Stripe → Developers → API keys → Secret key
       - key: STRIPE_WEBHOOK_SECRET
         sync: false        # Painel Stripe → Developers → Webhooks → Signing secret
+      - key: GOOGLE_CLIENT_ID_WEB
+        sync: false        # Google Cloud Console → APIs & Services → Credentials → OAuth Client ID (Web)
+      - key: GOOGLE_CLIENT_ID_IOS
+        sync: false        # Google Cloud Console → OAuth Client ID (iOS)
+      - key: GOOGLE_CLIENT_ID_ANDROID
+        sync: false        # Google Cloud Console → OAuth Client ID (Android)

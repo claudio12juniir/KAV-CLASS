@@ -10,6 +10,17 @@ export default function Index() {
   const translateY = useRef(new Animated.Value(30)).current;
 
   useEffect(() => {
+    // Navega uma única vez, seja pelo fim "de verdade" da animação (nativo)
+    // ou pelo temporizador de segurança abaixo — no React Native Web, sem
+    // useNativeDriver, o callback de Animated.parallel().start() às vezes
+    // nunca dispara, e a splash travava para sempre nessa tela.
+    let navegou = false;
+    const navegar = () => {
+      if (navegou) return;
+      navegou = true;
+      router.replace('/login');
+    };
+
     // Entrance animation
     Animated.parallel([
       Animated.timing(opacity, {
@@ -46,11 +57,12 @@ export default function Index() {
             easing: Easing.in(Easing.cubic),
             useNativeDriver: true,
           }),
-        ]).start(() => {
-          router.replace('/login');
-        });
+        ]).start(navegar);
       }, 1200);
     });
+
+    const seguranca = setTimeout(navegar, 2600);
+    return () => clearTimeout(seguranca);
   }, []);
 
   return (

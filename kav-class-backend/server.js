@@ -119,17 +119,44 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
   try {
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
-      const professorId = session.client_reference_id;
-      const plano = session.metadata?.plano;
-      if (professorId) {
-        await prisma.professor.update({
-          where: { id: professorId },
-          data: {
-            ...(session.customer ? { stripeCustomerId: String(session.customer) } : {}),
-            stripeSessionId: session.id,
-            assinaturaStatus: plano === 'one-time' ? 'VITALICIO' : 'ATIVO',
-          },
-        });
+      if (session.mode === 'setup') {
+        // S3.1: cartão de cobrança automática (Aluno → Escola) salvo pelo
+        // aluno na Checkout Session hospedada. Caminho redundante com
+        // GET /api/matriculas/:id/cobranca-automatica/verificar/:sessionId
+        // (o app chama isso ao voltar do navegador) — o webhook é o
+        // fallback caso o app não volte a rodar antes de confirmar.
+        const matriculaId = session.metadata?.matriculaId;
+        if (matriculaId && session.setup_intent) {
+          try {
+            const setupIntent = await stripe.setupIntents.retrieve(session.setup_intent);
+            if (setupIntent.status === 'succeeded' && setupIntent.payment_method) {
+              const paymentMethodId = String(setupIntent.payment_method);
+              await stripe.customers.update(session.customer, {
+                invoice_settings: { default_payment_method: paymentMethodId },
+              });
+              await prisma.matricula.updateMany({
+                where: { id: matriculaId },
+                data: { cobrancaAutomaticaAtiva: true, stripePaymentMethodId: paymentMethodId, cobrancaUltimoErro: null },
+              });
+            }
+          } catch (err) {
+            console.error('[Webhook] Erro ao confirmar cartão de cobrança automática:', err.message);
+          }
+        }
+      } else {
+        // Assinatura Escola → Kav Class (fluxo já existente, sem mudança)
+        const professorId = session.client_reference_id;
+        const plano = session.metadata?.plano;
+        if (professorId) {
+          await prisma.professor.update({
+            where: { id: professorId },
+            data: {
+              ...(session.customer ? { stripeCustomerId: String(session.customer) } : {}),
+              stripeSessionId: session.id,
+              assinaturaStatus: plano === 'one-time' ? 'VITALICIO' : 'ATIVO',
+            },
+          });
+        }
       }
     } else if (event.type === 'customer.subscription.updated') {
       const sub = event.data.object;
@@ -149,6 +176,38 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
         where: { stripeCustomerId: sub.customer },
         data: { assinaturaStatus: 'CANCELADO' },
       });
+    } else if (event.type === 'account.updated') {
+      // S3.1: Stripe Connect Express da Escola — sincroniza o status de
+      // onboarding assim que charges_enabled/payouts_enabled mudam, sem
+      // depender só da checagem sob demanda em GET /stripe-connect/status.
+      const conta = event.data.object;
+      const completo = !!(conta.charges_enabled && conta.payouts_enabled);
+      await prisma.escola.updateMany({
+        where: { stripeConnectAccountId: conta.id },
+        data: { stripeConnectOnboardingCompleto: completo },
+      });
+    } else if (event.type === 'payment_intent.succeeded') {
+      // S3.1: confirmação assíncrona de cobrança automática — o cron já
+      // marca PAGO na resposta síncrona do PaymentIntent na maioria dos
+      // casos; isto cobre o caso do evento chegar depois de um retry/queda.
+      const pi = event.data.object;
+      if (pi.metadata?.pagamentoId) {
+        await prisma.pagamento.updateMany({
+          where: { id: pi.metadata.pagamentoId, status: { not: 'PAGO' } },
+          data: { status: 'PAGO', dataPagamento: new Date(), stripePaymentIntentId: pi.id, viaCobrancaAutomatica: true },
+        });
+      }
+    } else if (event.type === 'payment_intent.payment_failed') {
+      const pi = event.data.object;
+      if (pi.metadata?.matriculaId) {
+        await prisma.matricula.updateMany({
+          where: { id: pi.metadata.matriculaId },
+          data: {
+            cobrancaUltimoErro: pi.last_payment_error?.message || 'Pagamento recusado.',
+            cobrancaUltimaTentativa: new Date(),
+          },
+        });
+      }
     }
   } catch (err) {
     console.error('[Webhook] Erro ao processar evento:', err);
@@ -466,6 +525,137 @@ async function verificarAulasAmanha() {
   }
 }
 cron.schedule('0 8 * * *', verificarAulasAmanha);
+
+// ============================================================================
+// CRON: COBRANÇA AUTOMÁTICA ALUNO → ESCOLA (executa todo dia às 08h) — S3.1
+//
+// Critério de pronto do roadmap: "uma matrícula com cobrança automática
+// ativa gera e cobra a fatura do mês seguinte sem intervenção manual". Regra
+// adotada: no dia em que o mês bate o diaVencimento da Matrícula, se ainda
+// não existe fatura (Pagamento) pra esse ciclo, gera uma e tenta cobrar na
+// hora via PaymentIntent off_session. Falha de cartão não é reprocessada no
+// mesmo dia — fica registrada em cobrancaUltimoErro pro painel do GESTOR
+// (GET /api/escola/cobranca-automatica/resumo, seção 10e-2 abaixo), e a
+// fatura PENDENTE segue o fluxo normal (vira ATRASADO no cron de pagamentos
+// atrasados acima, como qualquer fatura manual).
+// ============================================================================
+
+async function cobrarFaturaAutomaticamente(matricula, pagamento) {
+  const escola = await prisma.escola.findUnique({
+    where: { id: matricula.escolaId },
+    select: { stripeConnectAccountId: true },
+  });
+  if (!escola?.stripeConnectAccountId) {
+    await prisma.matricula.update({
+      where: { id: matricula.id },
+      data: { cobrancaUltimoErro: 'Escola sem conta Stripe conectada.', cobrancaUltimaTentativa: new Date() },
+    });
+    return;
+  }
+  try {
+    // Destination charge: dinheiro roteado direto pra conta conectada da
+    // Escola (on_behalf_of + transfer_data.destination), sem
+    // application_fee_amount — decisão registrada de não cobrar taxa extra
+    // de plataforma por transação nesta sprint.
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(pagamento.valor * 100),
+      currency: 'brl',
+      customer: matricula.stripeCustomerId,
+      payment_method: matricula.stripePaymentMethodId,
+      off_session: true,
+      confirm: true,
+      on_behalf_of: escola.stripeConnectAccountId,
+      transfer_data: { destination: escola.stripeConnectAccountId },
+      metadata: { pagamentoId: pagamento.id, matriculaId: matricula.id },
+    });
+
+    if (paymentIntent.status === 'succeeded') {
+      await prisma.pagamento.update({
+        where: { id: pagamento.id },
+        data: {
+          status: 'PAGO',
+          dataPagamento: new Date(),
+          metodo: 'CARTAO',
+          stripePaymentIntentId: paymentIntent.id,
+          viaCobrancaAutomatica: true,
+        },
+      });
+      await prisma.matricula.update({
+        where: { id: matricula.id },
+        data: { cobrancaUltimoErro: null, cobrancaUltimaTentativa: new Date() },
+      });
+    } else {
+      // requires_action (ex: 3DS) não dá pra resolver sem o aluno na tela —
+      // fica registrado como pendência pro painel do GESTOR acompanhar.
+      await prisma.pagamento.update({ where: { id: pagamento.id }, data: { stripePaymentIntentId: paymentIntent.id } });
+      await prisma.matricula.update({
+        where: { id: matricula.id },
+        data: { cobrancaUltimoErro: `Cobrança pendente de confirmação (status: ${paymentIntent.status}).`, cobrancaUltimaTentativa: new Date() },
+      });
+    }
+  } catch (err) {
+    const mensagem = err?.raw?.message || err?.message || 'Falha ao cobrar cartão.';
+    console.error(`[CobrancaAutomatica] Falha ao cobrar matrícula ${matricula.id}:`, mensagem);
+    await prisma.matricula.update({
+      where: { id: matricula.id },
+      data: { cobrancaUltimoErro: mensagem, cobrancaUltimaTentativa: new Date() },
+    });
+  }
+}
+
+async function verificarCobrancasAutomaticas() {
+  if (!stripe) return;
+  try {
+    const hoje = new Date();
+    const diaHoje = hoje.getDate();
+
+    const matriculas = await prisma.matricula.findMany({
+      where: {
+        cobrancaAutomaticaAtiva: true,
+        status: 'ATIVO',
+        stripeCustomerId: { not: null },
+        stripePaymentMethodId: { not: null },
+      },
+    });
+
+    for (const matricula of matriculas) {
+      // Ancora no dia de vencimento configurado, com fallback pro último dia
+      // do mês em meses mais curtos (ex: diaVencimento 31 em fevereiro).
+      const ultimoDiaDoMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
+      const diaAlvo = Math.min(matricula.diaVencimento, ultimoDiaDoMes);
+      if (diaHoje !== diaAlvo) continue;
+
+      const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1, 0, 0, 0, 0);
+      const fimMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0, 23, 59, 59, 999);
+      const jaExiste = await prisma.pagamento.findFirst({
+        where: { matriculaId: matricula.id, vencimento: { gte: inicioMes, lte: fimMes } },
+      });
+      if (jaExiste) continue;
+
+      // Mesma trava de S3.2: contrato pendente bloqueia cobrança (ver
+      // POST /api/matriculas/:id/faturas, seção 10d, mesma regra).
+      const contrato = await prisma.contrato.findFirst({ where: { matriculaId: matricula.id } });
+      if (contrato && contrato.status !== 'ASSINADO') continue;
+
+      const vencimento = new Date(hoje.getFullYear(), hoje.getMonth(), diaAlvo, 12, 0, 0, 0);
+      const pagamento = await prisma.pagamento.create({
+        data: {
+          valor: matricula.valorMensalidade,
+          vencimento,
+          status: 'PENDENTE',
+          professorId: matricula.professorId,
+          alunoId: matricula.alunoId,
+          matriculaId: matricula.id,
+        },
+      });
+
+      await cobrarFaturaAutomaticamente(matricula, pagamento);
+    }
+  } catch (err) {
+    console.error('[Cron] Erro na cobrança automática:', err.message);
+  }
+}
+cron.schedule('0 8 * * *', verificarCobrancasAutomaticas);
 
 // ============================================================================
 // 1. ROTAS PÚBLICAS
@@ -3226,6 +3416,274 @@ app.get('/api/escola/reservas', exigirProfessor, carregarEscolaDoProfessor, asyn
 });
 
 // ============================================================================
+// 10e-2. COBRANÇA AUTOMÁTICA ALUNO → ESCOLA (Fase 3, S3.1)
+//
+// Não confundir com a assinatura Stripe já existente (Professor.stripeCustomerId
+// etc, seção CHECKOUT mais abaixo): aquela é a Escola pagando o Kav Class,
+// numa Subscription na conta da própria plataforma. Esta aqui é o Aluno
+// pagando a Escola, via Stripe Connect Express — cada Escola tem sua própria
+// conta conectada e recebe direto (destination charge, sem
+// application_fee_amount: cobrança automática é benefício incluso no Pacote
+// Escola nesta sprint, não uma nova linha de receita da plataforma).
+//
+// Decisão registrada em 2026-08-31: Connect Express, sem taxa extra, cartão
+// salvo via Checkout Session em mode:'setup' — mesmo padrão hospedado já
+// usado na assinatura do professor (WebBrowser abrindo a Checkout Session,
+// sem SDK nativo de pagamento dentro do app). Cobrança recorrente de
+// verdade via PaymentIntent off_session (função cron mais acima), não link
+// mensal reenviado na mão.
+// ============================================================================
+
+// GET /api/escola/stripe-connect/status — GESTOR/DONO. Sempre revalida
+// contra o Stripe (não só a coluna local), porque onboarding pode avançar
+// direto no painel do Stripe, fora do fluxo do app.
+app.get('/api/escola/stripe-connect/status', async (req, res) => {
+  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const escola = await prisma.escola.findUnique({
+      where: { id: professor.escolaId },
+      select: { stripeConnectAccountId: true, stripeConnectOnboardingCompleto: true },
+    });
+
+    if (!escola.stripeConnectAccountId) {
+      return res.json({ conectado: false, onboardingCompleto: false });
+    }
+
+    const conta = await stripe.accounts.retrieve(escola.stripeConnectAccountId);
+    const completo = !!(conta.charges_enabled && conta.payouts_enabled);
+    if (completo !== escola.stripeConnectOnboardingCompleto) {
+      await prisma.escola.update({ where: { id: professor.escolaId }, data: { stripeConnectOnboardingCompleto: completo } });
+    }
+    res.json({
+      conectado: true,
+      onboardingCompleto: completo,
+      chargesEnabled: !!conta.charges_enabled,
+      payoutsEnabled: !!conta.payouts_enabled,
+      detailsSubmitted: !!conta.details_submitted,
+    });
+  } catch (err) {
+    console.error('[StripeConnect] Erro ao consultar status:', err.message);
+    res.status(500).json({ erro: 'Erro ao consultar status da conta Stripe.' });
+  }
+});
+
+// POST /api/escola/stripe-connect/iniciar — cria (se não existir) a conta
+// conectada Express da Escola e devolve o link de onboarding hospedado pelo
+// próprio Stripe. Reexecutável: se a conta já existe mas o onboarding não
+// foi terminado, gera um novo Account Link pra continuar de onde parou.
+app.post('/api/escola/stripe-connect/iniciar', async (req, res) => {
+  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const escola = await prisma.escola.findUnique({ where: { id: professor.escolaId } });
+    let accountId = escola.stripeConnectAccountId;
+
+    if (!accountId) {
+      const conta = await stripe.accounts.create({
+        type: 'express',
+        country: 'BR',
+        business_type: 'individual',
+        capabilities: {
+          card_payments: { requested: true },
+          transfers: { requested: true },
+        },
+        metadata: { escolaId: professor.escolaId },
+      });
+      accountId = conta.id;
+      await prisma.escola.update({ where: { id: professor.escolaId }, data: { stripeConnectAccountId: accountId } });
+    }
+
+    const accountLink = await stripe.accountLinks.create({
+      account: accountId,
+      refresh_url: `https://kav-class-1.onrender.com/stripe-connect/atualizar?escolaId=${professor.escolaId}`,
+      return_url: 'https://kav-class-1.onrender.com/stripe-connect/retorno',
+      type: 'account_onboarding',
+    });
+
+    res.json({ url: accountLink.url });
+  } catch (err) {
+    const msg = err?.raw?.message || err?.message || 'Erro ao iniciar conexão com Stripe.';
+    console.error('[StripeConnect] Erro ao iniciar onboarding:', msg);
+    res.status(500).json({ erro: msg });
+  }
+});
+
+// GET /api/matriculas/:id/cobranca-automatica — status atual pra essa
+// matrícula específica (tela do aluno/professor na ficha da matrícula).
+app.get('/api/matriculas/:id/cobranca-automatica', autenticar, async (req, res) => {
+  try {
+    const matricula = await carregarMatriculaDoDono(req, res);
+    if (!matricula) return;
+    res.json({
+      ativa: matricula.cobrancaAutomaticaAtiva,
+      temCartao: !!matricula.stripePaymentMethodId,
+      ultimoErro: matricula.cobrancaUltimoErro,
+      ultimaTentativa: matricula.cobrancaUltimaTentativa,
+    });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao consultar cobrança automática.');
+  }
+});
+
+// POST /api/matriculas/:id/cobranca-automatica/iniciar — dono da matrícula
+// (professor ou o próprio aluno) começa (ou recomeça) o cadastro de cartão.
+// Devolve uma Checkout Session hospedada em mode:'setup' — nenhum dado de
+// cartão passa pelo nosso backend nem pelo app.
+app.post('/api/matriculas/:id/cobranca-automatica/iniciar', autenticar, async (req, res) => {
+  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
+  try {
+    const matricula = await carregarMatriculaDoDono(req, res);
+    if (!matricula) return;
+
+    const escola = await prisma.escola.findUnique({
+      where: { id: matricula.escolaId },
+      select: { stripeConnectAccountId: true, stripeConnectOnboardingCompleto: true },
+    });
+    if (!escola?.stripeConnectAccountId || !escola.stripeConnectOnboardingCompleto) {
+      return res.status(400).json({ erro: 'A Escola ainda não concluiu a configuração de recebimento no Stripe.' });
+    }
+
+    let customerId = matricula.stripeCustomerId;
+    if (!customerId) {
+      const aluno = await prisma.aluno.findUnique({ where: { id: matricula.alunoId }, select: { nome: true, email: true } });
+      const customer = await stripe.customers.create({
+        name: aluno.nome,
+        email: aluno.email,
+        metadata: { matriculaId: matricula.id, escolaId: matricula.escolaId },
+      });
+      customerId = customer.id;
+      await prisma.matricula.update({ where: { id: matricula.id }, data: { stripeCustomerId: customerId } });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'setup',
+      customer: customerId,
+      payment_method_types: ['card'],
+      success_url: 'https://kav-class-1.onrender.com/checkout/cobranca-sucesso?session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://kav-class-1.onrender.com/checkout/cobranca-cancelada',
+      metadata: { matriculaId: matricula.id },
+    });
+
+    res.json({ url: session.url, sessionId: session.id });
+  } catch (err) {
+    const msg = err?.raw?.message || err?.message || 'Erro ao iniciar cadastro de cartão.';
+    console.error('[CobrancaAutomatica] Erro ao iniciar:', msg);
+    res.status(500).json({ erro: msg });
+  }
+});
+
+// GET /api/matriculas/:id/cobranca-automatica/verificar/:sessionId —
+// chamado pelo app ao voltar do Checkout hospedado (deep link), espelha o
+// mesmo padrão de GET /checkout/verify/:sessionId da assinatura do professor.
+app.get('/api/matriculas/:id/cobranca-automatica/verificar/:sessionId', autenticar, async (req, res) => {
+  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
+  try {
+    const matricula = await carregarMatriculaDoDono(req, res);
+    if (!matricula) return;
+
+    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId, { expand: ['setup_intent'] });
+    if (session.metadata?.matriculaId !== matricula.id) {
+      return res.status(400).json({ erro: 'Sessão não corresponde a essa matrícula.' });
+    }
+    const setupIntent = session.setup_intent;
+    if (!setupIntent || setupIntent.status !== 'succeeded') {
+      return res.json({ ativo: false });
+    }
+
+    const paymentMethodId = String(setupIntent.payment_method);
+    await stripe.customers.update(session.customer, { invoice_settings: { default_payment_method: paymentMethodId } });
+
+    const atualizada = await prisma.matricula.update({
+      where: { id: matricula.id },
+      data: {
+        cobrancaAutomaticaAtiva: true,
+        stripePaymentMethodId: paymentMethodId,
+        cobrancaUltimoErro: null,
+      },
+    });
+    res.json({ ativo: true, matricula: atualizada });
+  } catch (err) {
+    console.error('[CobrancaAutomatica] Erro ao verificar sessão:', err.message);
+    res.status(500).json({ erro: 'Erro ao verificar cadastro do cartão.' });
+  }
+});
+
+// POST /api/matriculas/:id/cobranca-automatica/desativar — não apaga o
+// cartão salvo no Stripe, só para de cobrar sozinho (reativar depois não
+// precisa recadastrar cartão, a menos que o Customer/PaymentMethod tenha
+// sido removido direto no painel do Stripe).
+app.post('/api/matriculas/:id/cobranca-automatica/desativar', autenticar, async (req, res) => {
+  try {
+    const matricula = await carregarMatriculaDoDono(req, res);
+    if (!matricula) return;
+    const atualizada = await prisma.matricula.update({
+      where: { id: matricula.id },
+      data: { cobrancaAutomaticaAtiva: false },
+    });
+    res.json({ mensagem: 'Cobrança automática desativada.', matricula: atualizada });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao desativar cobrança automática.');
+  }
+});
+
+// GET /api/escola/cobranca-automatica/resumo — GESTOR/DONO: "Painel Resumo
+// da Cobrança Automática" do roadmap, separando quem precisa de ação
+// (cartão recusado/expirado na última tentativa) de quem está em dia.
+app.get('/api/escola/cobranca-automatica/resumo', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const matriculas = await prisma.matricula.findMany({
+      where: { escolaId: professor.escolaId, cobrancaAutomaticaAtiva: true },
+      include: { aluno: { select: { nome: true } } },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    const precisamDeAcao = matriculas.filter(m => !!m.cobrancaUltimoErro);
+    const emDia = matriculas.filter(m => !m.cobrancaUltimoErro);
+
+    res.json({
+      totalAtivas: matriculas.length,
+      precisamDeAcao: precisamDeAcao.map(m => ({
+        matriculaId: m.id, alunoNome: m.aluno.nome, valorMensalidade: m.valorMensalidade,
+        erro: m.cobrancaUltimoErro, ultimaTentativa: m.cobrancaUltimaTentativa,
+      })),
+      emDia: emDia.map(m => ({
+        matriculaId: m.id, alunoNome: m.aluno.nome, valorMensalidade: m.valorMensalidade, diaVencimento: m.diaVencimento,
+      })),
+    });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar resumo de cobrança automática.');
+  }
+});
+
+// GET /api/escola/cobranca-automatica/historico — Financeiro → Cobranças
+// por Recorrência do roadmap: faturas geradas e cobradas pelo cron, mais
+// recentes primeiro.
+app.get('/api/escola/cobranca-automatica/historico', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const pagamentos = await prisma.pagamento.findMany({
+      where: { viaCobrancaAutomatica: true, aluno: { escolaId: professor.escolaId } },
+      include: { aluno: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+    res.json(pagamentos);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar histórico de cobrança automática.');
+  }
+});
+
+// ============================================================================
 // 10f. CONTRATO DIGITAL (Fase 3, S3.2)
 //
 // IMPORTANTE: isto é confirmação por código enviado por e-mail, o mesmo
@@ -4318,6 +4776,112 @@ app.get('/api/relatorios/conversao-experimental', exigirProfessor, carregarEscol
   }
 });
 
+// GET /api/escola/metricas/faturamento?ano=YYYY (S5.2) — painel de métricas
+// do GESTOR: faturamento e inadimplência mês a mês, com o ano anterior junto
+// pra comparação de períodos direto no mesmo payload. Pagamento não tem
+// escolaId próprio (ver schema) — escopa pela Escola do Aluno, que é
+// denormalizada exatamente pra isso.
+app.get('/api/escola/metricas/faturamento', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const escolaId = professor.escolaId;
+
+    const anoBase = parseInt(req.query.ano, 10) || new Date().getFullYear();
+    const anoAnterior = anoBase - 1;
+
+    const inicio = new Date(anoAnterior, 0, 1, 0, 0, 0, 0);
+    const fim = new Date(anoBase, 11, 31, 23, 59, 59, 999);
+
+    const pagamentos = await prisma.pagamento.findMany({
+      where: {
+        aluno: { escolaId },
+        OR: [
+          { status: 'PAGO', dataPagamento: { gte: inicio, lte: fim } },
+          { status: 'ATRASADO', vencimento: { gte: inicio, lte: fim } },
+        ],
+      },
+      select: { valor: true, status: true, dataPagamento: true, vencimento: true },
+    });
+
+    const montarMeses = (ano) => {
+      const meses = [];
+      for (let mes = 0; mes < 12; mes++) {
+        const pagos = pagamentos.filter(p =>
+          p.status === 'PAGO' && p.dataPagamento &&
+          p.dataPagamento.getFullYear() === ano && p.dataPagamento.getMonth() === mes
+        );
+        const atrasados = pagamentos.filter(p =>
+          p.status === 'ATRASADO' &&
+          p.vencimento.getFullYear() === ano && p.vencimento.getMonth() === mes
+        );
+        meses.push({
+          mes: mes + 1,
+          faturamento: pagos.reduce((acc, p) => acc + Number(p.valor), 0),
+          quantidadePagamentos: pagos.length,
+          inadimplencia: atrasados.reduce((acc, p) => acc + Number(p.valor), 0),
+          quantidadeAtrasados: atrasados.length,
+        });
+      }
+      return meses;
+    };
+
+    res.json({
+      anoBase,
+      anoAnterior,
+      meses: montarMeses(anoBase),
+      mesesAnoAnterior: montarMeses(anoAnterior),
+    });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar métricas de faturamento.');
+  }
+});
+
+// GET /api/escola/metricas/faturamento/detalhe?ano=&mes=&tipo= (S5.2) —
+// drill-down: a lista de alunos por trás do número de um mês específico do
+// painel acima. tipo=faturamento (padrão) usa dataPagamento; tipo=inadimplencia
+// usa vencimento, espelhando exatamente o agrupamento feito no endpoint acima.
+app.get('/api/escola/metricas/faturamento/detalhe', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const escolaId = professor.escolaId;
+
+    const ano = parseInt(req.query.ano, 10);
+    const mes = parseInt(req.query.mes, 10);
+    const tipo = req.query.tipo === 'inadimplencia' ? 'inadimplencia' : 'faturamento';
+    if (!ano || !mes || mes < 1 || mes > 12) {
+      return res.status(400).json({ erro: 'Informe ano e mes (1-12) válidos.' });
+    }
+
+    const inicioMes = new Date(ano, mes - 1, 1, 0, 0, 0, 0);
+    const fimMes = new Date(ano, mes, 0, 23, 59, 59, 999);
+
+    const where = tipo === 'inadimplencia'
+      ? { aluno: { escolaId }, status: 'ATRASADO', vencimento: { gte: inicioMes, lte: fimMes } }
+      : { aluno: { escolaId }, status: 'PAGO', dataPagamento: { gte: inicioMes, lte: fimMes } };
+
+    const pagamentos = await prisma.pagamento.findMany({
+      where,
+      include: { aluno: { select: { nome: true } }, professor: { select: { nome: true } } },
+      orderBy: tipo === 'inadimplencia' ? { vencimento: 'asc' } : { dataPagamento: 'asc' },
+    });
+
+    res.json(pagamentos.map(p => ({
+      id: p.id,
+      alunoNome: p.aluno.nome,
+      professorNome: p.professor.nome,
+      valor: p.valor,
+      status: p.status,
+      metodo: p.metodo,
+      dataPagamento: p.dataPagamento,
+      vencimento: p.vencimento,
+    })));
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar detalhe do mês.');
+  }
+});
+
 // ============================================================================
 // 10k. AGENDA GERAL DA ESCOLA + CALENDÁRIO LETIVO (Fase 1, S1.4)
 //
@@ -5112,6 +5676,41 @@ app.get('/checkout/cancelado', (_req, res) => {
   res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="0;url=kavclass://pagamento-cancelado">
 </head><body><script>window.location="kavclass://pagamento-cancelado";</script>
+<p>Redirecionando para o aplicativo...</p></body></html>`);
+});
+
+// ─── REDIRECTS: COBRANÇA AUTOMÁTICA ALUNO → ESCOLA (S3.1) ───────────────────
+app.get('/checkout/cobranca-sucesso', (req, res) => {
+  const { session_id } = req.query;
+  const sessionIdSeguro = typeof session_id === 'string' && /^[A-Za-z0-9_]+$/.test(session_id) ? session_id : null;
+  const qs = sessionIdSeguro ? `?session_id=${sessionIdSeguro}` : '';
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=kavclass://cobranca-automatica-sucesso${qs}">
+</head><body><script>window.location="kavclass://cobranca-automatica-sucesso${qs}";</script>
+<p>Redirecionando para o aplicativo...</p></body></html>`);
+});
+
+app.get('/checkout/cobranca-cancelada', (_req, res) => {
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=kavclass://cobranca-automatica-cancelada">
+</head><body><script>window.location="kavclass://cobranca-automatica-cancelada";</script>
+<p>Redirecionando para o aplicativo...</p></body></html>`);
+});
+
+// ─── REDIRECTS: ONBOARDING STRIPE CONNECT DA ESCOLA (S3.1) ──────────────────
+// Mesmo destino nos dois casos: o app reconsulta o status ao ganhar foco,
+// não precisa diferenciar "voltou terminado" de "voltou pra continuar depois".
+app.get('/stripe-connect/retorno', (_req, res) => {
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=kavclass://stripe-connect-retorno">
+</head><body><script>window.location="kavclass://stripe-connect-retorno";</script>
+<p>Redirecionando para o aplicativo...</p></body></html>`);
+});
+
+app.get('/stripe-connect/atualizar', (_req, res) => {
+  res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=kavclass://stripe-connect-retorno">
+</head><body><script>window.location="kavclass://stripe-connect-retorno";</script>
 <p>Redirecionando para o aplicativo...</p></body></html>`);
 });
 

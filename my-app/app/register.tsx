@@ -376,6 +376,8 @@ export default function RegisterScreen() {
         style={[styles.input, erroNome ? styles.inputErro : null]}
         placeholder="Nome e sobrenome"
         placeholderTextColor="#aaa"
+        autoCorrect
+        spellCheck
         value={nome}
         onChangeText={setNome}
         onBlur={vNome}

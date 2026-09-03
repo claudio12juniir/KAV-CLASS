@@ -296,6 +296,8 @@ export default function ReposicoesScreen() {
           value={motivo}
           onChangeText={setMotivo}
           multiline
+          autoCorrect
+          spellCheck
         />
 
         <TouchableOpacity style={styles.botaoEnviar} onPress={enviarSolicitacao}>

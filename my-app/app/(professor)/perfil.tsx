@@ -309,6 +309,8 @@ export default function PerfilProfessorScreen() {
           onChangeText={setNome}
           placeholderTextColor={CORES.secundaria}
           selectionColor={CORES.acento}
+          autoCorrect
+          spellCheck
         />
 
         <Text style={styles.fieldLabel}>E-mail</Text>

@@ -154,6 +154,14 @@ model Escola {
   // experimental tinha um curso definido) da aula-teste.
   regraConversaoExperimental RegraConversaoExperimental @default(QUALQUER_MATRICULA)
 
+  // Cobrança automática aluno→Escola (S3.1) — Stripe Connect Express. Cada
+  // Escola recebe direto na própria conta conectada (não é a mesma conta
+  // usada na assinatura Professor→Kav Class, que fica na Professor acima).
+  // onboardingCompleto espelha charges_enabled+payouts_enabled do Stripe,
+  // sincronizado pelo webhook account.updated e por checagem sob demanda.
+  stripeConnectAccountId          String?
+  stripeConnectOnboardingCompleto Boolean @default(false)
+
   professores  Professor[]
   alunos       Aluno[]
   convites     ConviteProfessor[]
@@ -374,6 +382,14 @@ model Pagamento {
   // Evita reenviar o push de "pagamento atrasado" todo dia pro mesmo boleto vencido
   notificadoAtrasado Boolean @default(false)
 
+  // Cobrança automática (S3.1): marca faturas geradas e cobradas sozinhas
+  // pelo cron, distinguindo de fatura manual (professor gera, aluno paga
+  // por fora). stripePaymentIntentId é o que o webhook usa pra encontrar
+  // esta fatura quando o evento chega antes/depois da resposta síncrona
+  // do PaymentIntent.
+  viaCobrancaAutomatica Boolean @default(false)
+  stripePaymentIntentId String?
+
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])
   alunoId     String
@@ -393,6 +409,7 @@ model Pagamento {
   @@index([professorId, vencimento])
   @@index([alunoId, vencimento])
   @@index([matriculaId])
+  @@index([stripePaymentIntentId])
 }
 
 // ─── 5. MATERIAIS DIDÁTICOS ──────────────────────────────────────
@@ -740,6 +757,18 @@ model Matricula {
   leadId String? @unique
   lead   Lead?   @relation(fields: [leadId], references: [id], onDelete: SetNull)
 
+  // Cobrança automática (S3.1) — cartão salvo por matrícula, não por Aluno:
+  // um Aluno com 2 matrículas pode ter cobrança automática ativa numa e
+  // manual na outra, igual às faturas de S2.2 já são separadas por matrícula.
+  // stripeCustomerId aponta pra um Customer da conta PLATAFORMA (não da
+  // conectada) — a cobrança em si é que é roteada pra Escola via
+  // on_behalf_of/transfer_data no PaymentIntent (destination charge).
+  cobrancaAutomaticaAtiva Boolean   @default(false)
+  stripeCustomerId        String?
+  stripePaymentMethodId   String?
+  cobrancaUltimoErro      String?
+  cobrancaUltimaTentativa DateTime?
+
   pagamentos Pagamento[]
   contratos  Contrato[]
 
@@ -750,6 +779,7 @@ model Matricula {
   @@index([professorId])
   @@index([escolaId])
   @@index([turmaId])
+  @@index([stripeCustomerId])
 }
 
 // ─── 20. AVALIAÇÃO ────────────────────────────────────────────────

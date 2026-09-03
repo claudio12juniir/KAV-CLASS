@@ -2,14 +2,18 @@ import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
 import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -58,6 +62,21 @@ export default function FinanceiroProfessorScreen() {
   const [linkCartao, setLinkCartao] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [notificando, setNotificando] = useState<string | null>(null);
+  const [modalImagemComprovante, setModalImagemComprovante] = useState<string | null>(null);
+
+  const abrirComprovantePdf = async (dataUrl: string) => {
+    try {
+      const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
+      if (!matches) return;
+      const fileUri = `${FileSystem.cacheDirectory}comprovante_${Date.now()}.pdf`;
+      await FileSystem.writeAsStringAsync(fileUri, matches[2], { encoding: FileSystem.EncodingType.Base64 });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, { mimeType: matches[1], dialogTitle: 'Comprovante' });
+      }
+    } catch {
+      Alert.alert('Erro', 'Não foi possível abrir o comprovante.');
+    }
+  };
 
   const hoje = new Date();
   const mesAtual = hoje.getMonth();
@@ -210,12 +229,24 @@ export default function FinanceiroProfessorScreen() {
         </View>
 
         {displayStatus === 'EM_ANALISE' && item.comprovanteUrl && (
-          <View style={styles.comprovanteBox}>
-            <Ionicons name="document-attach-outline" size={16} color="#7B1FA2" />
-            <Text style={styles.comprovanteTexto} numberOfLines={3}>
-              {item.comprovanteUrl}
-            </Text>
-          </View>
+          item.comprovanteUrl.startsWith('data:image') ? (
+            <TouchableOpacity style={styles.comprovanteBox} onPress={() => setModalImagemComprovante(item.comprovanteUrl)}>
+              <Image source={{ uri: item.comprovanteUrl }} style={styles.comprovanteThumb} resizeMode="cover" />
+              <Text style={styles.comprovanteTexto}>Toque para ampliar</Text>
+            </TouchableOpacity>
+          ) : item.comprovanteUrl.startsWith('data:application/pdf') ? (
+            <TouchableOpacity style={styles.comprovanteBox} onPress={() => abrirComprovantePdf(item.comprovanteUrl)}>
+              <Ionicons name="document-text" size={16} color="#7B1FA2" />
+              <Text style={styles.comprovanteTexto}>Toque para abrir o PDF do comprovante</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.comprovanteBox}>
+              <Ionicons name="document-attach-outline" size={16} color="#7B1FA2" />
+              <Text style={styles.comprovanteTexto} numberOfLines={3}>
+                {item.comprovanteUrl}
+              </Text>
+            </View>
+          )
         )}
 
         {temAcao && (
@@ -357,6 +388,14 @@ export default function FinanceiroProfessorScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <Modal visible={!!modalImagemComprovante} transparent animationType="fade" onRequestClose={() => setModalImagemComprovante(null)}>
+        <Pressable style={styles.overlayImagem} onPress={() => setModalImagemComprovante(null)}>
+          {modalImagemComprovante && (
+            <Image source={{ uri: modalImagemComprovante }} style={styles.imagemComprovanteCompleta} resizeMode="contain" />
+          )}
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -401,10 +440,15 @@ const styles = StyleSheet.create({
   textoBadge: { fontSize: 11, fontWeight: 'bold' },
 
   comprovanteBox: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: '#EDE7F6', borderRadius: 8, padding: 10, marginBottom: 10,
   },
   comprovanteTexto: { color: '#4A148C', fontSize: 13, flex: 1, lineHeight: 18 },
+  comprovanteThumb: { width: 40, height: 40, borderRadius: 6 },
+  overlayImagem: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center', padding: 20,
+  },
+  imagemComprovanteCompleta: { width: '100%', height: '80%' },
 
   acoesRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10 },
   botaoNotificar: {

@@ -4,6 +4,7 @@ import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useState } from 'react';
 import { CORES } from '../../constants/theme';
@@ -159,6 +160,7 @@ export default function AlunosProfessorScreen() {
     setAbaAtiva('historico');
     setDiaSemana(aluno.diaSemanaNumero ?? 1);
     setHorario(aluno.horarioAula ?? '08:00');
+    setRecorrencia(aluno.recorrenciaAula ?? 'SEMANAL');
     // Trata PENDENTE e qualquer outro valor como ATIVO para a UI do toggle
     setStatusAluno(aluno.status === 'INATIVO' ? 'INATIVO' : 'ATIVO');
     setNovoValorMensalidade(aluno.valorMensalidade != null ? String(aluno.valorMensalidade) : '');
@@ -226,7 +228,7 @@ export default function AlunosProfessorScreen() {
           diaSemana,
           valorMensalidade: alunoSelecionado.valorMensalidade ?? 0,
           diaCobranca: alunoSelecionado.diaVencimento ?? 10,
-          recorrencia: alunoSelecionado.recorrenciaAula ?? 'SEMANAL',
+          recorrencia,
           tempoContrato: alunoSelecionado.tempoContrato ?? 6,
         }),
       });
@@ -235,15 +237,15 @@ export default function AlunosProfessorScreen() {
         // Atualiza o array local para que na próxima abertura o horário correto apareça
         setAlunos(prev => prev.map(a =>
           a.id === alunoSelecionado.id
-            ? { ...a, diaSemanaNumero: diaSemana, horarioAula: horario }
+            ? { ...a, diaSemanaNumero: diaSemana, horarioAula: horario, recorrenciaAula: recorrencia }
             : a
         ));
         setAlunosInativos(prev => prev.map(a =>
           a.id === alunoSelecionado.id
-            ? { ...a, diaSemanaNumero: diaSemana, horarioAula: horario }
+            ? { ...a, diaSemanaNumero: diaSemana, horarioAula: horario, recorrenciaAula: recorrencia }
             : a
         ));
-        setAlunoSelecionado((prev: any) => ({ ...prev, diaSemanaNumero: diaSemana, horarioAula: horario }));
+        setAlunoSelecionado((prev: any) => ({ ...prev, diaSemanaNumero: diaSemana, horarioAula: horario, recorrenciaAula: recorrencia }));
         Alert.alert("Salvo!", `Horário de ${alunoSelecionado.nome} atualizado.`);
         setModalPerfilVisivel(false);
       } else {
@@ -422,7 +424,13 @@ export default function AlunosProfessorScreen() {
     await FileSystem.writeAsStringAsync(fileUri, base64Data, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    await Linking.openURL(fileUri);
+    // Linking.openURL com file:// falha no Android (bloqueado desde o Android 7+);
+    // Sharing usa FileProvider (content://) por baixo dos panos e funciona nas duas plataformas.
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(fileUri, { mimeType, dialogTitle: material.titulo });
+    } else {
+      await Linking.openURL(fileUri);
+    }
   };
 
   const abrirMaterial = async (material: any) => {
@@ -921,6 +929,21 @@ export default function AlunosProfessorScreen() {
                           onPress={() => setHorario(h)}
                         >
                           <Text style={[styles.textoChip, horario === h && styles.textoChipAtivo]}>{h}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+
+                    <Text style={styles.labelCampo}>Recorrência</Text>
+                    <View style={styles.recorrenciaRow}>
+                      {(['SEMANAL', 'QUINZENAL', 'MENSAL'] as Recorrencia[]).map(r => (
+                        <TouchableOpacity
+                          key={r}
+                          style={[styles.chipRecorrencia, recorrencia === r && styles.chipAtivo]}
+                          onPress={() => setRecorrencia(r)}
+                        >
+                          <Text style={[styles.textoChip, recorrencia === r && styles.textoChipAtivo]}>
+                            {r === 'SEMANAL' ? 'Semanal' : r === 'QUINZENAL' ? 'Quinzenal' : 'Mensal'}
+                          </Text>
                         </TouchableOpacity>
                       ))}
                     </View>

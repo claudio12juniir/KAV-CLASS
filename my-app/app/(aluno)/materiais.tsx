@@ -11,6 +11,7 @@ import { Alert, Image, Linking,
 } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import { CORES } from '../../constants/theme';
 
@@ -115,7 +116,13 @@ export default function MateriaisScreen() {
     await FileSystem.writeAsStringAsync(fileUri, base64Data, {
       encoding: FileSystem.EncodingType.Base64,
     });
-    await Linking.openURL(fileUri);
+    // Linking.openURL com file:// falha no Android (bloqueado desde o Android 7+);
+    // Sharing usa FileProvider (content://) por baixo dos panos e funciona nas duas plataformas.
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(fileUri, { mimeType, dialogTitle: anexo.titulo });
+    } else {
+      await Linking.openURL(fileUri);
+    }
   };
 
   const abrirMaterial = async (anexo: Anexo) => {
