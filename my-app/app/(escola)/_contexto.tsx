@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import { BASE_URL, fetchComRetry } from '../../api';
+import { BASE_URL, fetchComRetry } from '../api';
 
 type Papel = 'DONO' | 'GESTOR' | 'PROFESSOR';
 type Pacote = 'PACOTE_PROFESSOR' | 'PACOTE_ESCOLA';
@@ -10,8 +10,10 @@ type EscolaContextoValor = {
   papel: Papel | null;
   pacote: Pacote | null;
   nomeEscola: string;
+  nomeAdmin: string;
+  fotoAdmin: string | null;
   professorId: string;
-  podeGerenciar: boolean; // DONO ou GESTOR
+  ehDono: boolean;
   recarregarPerfil: () => Promise<void>;
 };
 
@@ -22,6 +24,8 @@ export function EscolaProvider({ children }: { children: React.ReactNode }) {
   const [papel, setPapel] = useState<Papel | null>(null);
   const [pacote, setPacote] = useState<Pacote | null>(null);
   const [nomeEscola, setNomeEscola] = useState('');
+  const [nomeAdmin, setNomeAdmin] = useState('');
+  const [fotoAdmin, setFotoAdmin] = useState<string | null>(null);
   const [professorId, setProfessorId] = useState('');
 
   const recarregarPerfil = useCallback(async () => {
@@ -38,6 +42,8 @@ export function EscolaProvider({ children }: { children: React.ReactNode }) {
         setPapel(perfil.papel || null);
         setPacote(perfil.escola?.pacote || 'PACOTE_PROFESSOR');
         setNomeEscola(perfil.escola?.nome || '');
+        setNomeAdmin(perfil.nome || '');
+        setFotoAdmin(perfil.fotoUrl || null);
       }
     } catch (err) {
       console.error('Erro ao carregar perfil da Escola:', err);
@@ -49,12 +55,8 @@ export function EscolaProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { recarregarPerfil(); }, [recarregarPerfil]);
 
   const valor: EscolaContextoValor = {
-    carregando,
-    papel,
-    pacote,
-    nomeEscola,
-    professorId,
-    podeGerenciar: papel === 'DONO' || papel === 'GESTOR',
+    carregando, papel, pacote, nomeEscola, nomeAdmin, fotoAdmin, professorId,
+    ehDono: papel === 'DONO',
     recarregarPerfil,
   };
 

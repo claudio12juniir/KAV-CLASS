@@ -1564,7 +1564,7 @@ app.get('/api/professor/perfil', exigirProfessor, async (req, res) => {
         id: true, nome: true, email: true, telefone: true,
         cursos: true, codigoConvite: true, chavePix: true,
         linkPagamentoCartao: true, fotoUrl: true, createdAt: true,
-        papel: true, escola: { select: { pacote: true } },
+        papel: true, escola: { select: { pacote: true, nome: true } },
       },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
@@ -6109,6 +6109,99 @@ app.get('/api/escola/alunos', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao listar alunos.' });
+  }
+});
+
+// POST /api/escola/professores/criar — DONO/GESTOR cria a conta do
+// professor na hora, com senha definida ali mesmo (fluxo institucional,
+// sem depender do professor abrir e-mail e aceitar convite — ver
+// /api/escola/convites pro fluxo por e-mail que continua existindo).
+app.post('/api/escola/professores/criar', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    if (professor.escola.pacote !== 'PACOTE_ESCOLA') {
+      return res.status(403).json({ erro: 'Criar professores é um recurso do Pacote Escola.' });
+    }
+
+    const { nome, email, senha, papel } = req.body;
+    if (!nome?.trim() || !email?.trim() || !senha) {
+      return res.status(400).json({ erro: 'nome, email e senha são obrigatórios.' });
+    }
+    if (senha.length < 6) return res.status(400).json({ erro: 'senha: mínimo 6 caracteres.' });
+
+    const emailNorm = email.toLowerCase().trim();
+    if (await prisma.professor.findUnique({ where: { email: emailNorm } })) {
+      return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
+    }
+
+    const papelNovo = papel === 'GESTOR' ? 'GESTOR' : 'PROFESSOR'; // nunca cria DONO por aqui
+    const senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
+
+    const novoProfessor = await prisma.professor.create({
+      data: {
+        nome: nome.trim(),
+        email: emailNorm,
+        senha: senhaHash,
+        codigoConvite: gerarCodigoConvite(),
+        assinaturaStatus: 'ATIVO', // parte de uma Escola já paga
+        escolaId: professor.escolaId,
+        papel: papelNovo,
+      },
+      select: { id: true, nome: true, email: true, papel: true, createdAt: true },
+    });
+
+    res.status(201).json({ mensagem: 'Professor criado!', professor: novoProfessor });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar professor.' });
+  }
+});
+
+// POST /api/escola/alunos/criar — DONO/GESTOR cadastra o aluno direto,
+// vinculado a um professor já existente da própria Escola (equivalente
+// institucional do fluxo de "código de convite" que o aluno usaria sozinho
+// em /api/alunos/cadastro).
+app.post('/api/escola/alunos/criar', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const { nome, email, senha, professorId, telefone } = req.body;
+    if (!nome?.trim() || !email?.trim() || !senha || !professorId) {
+      return res.status(400).json({ erro: 'nome, email, senha e professorId são obrigatórios.' });
+    }
+    if (senha.length < 6) return res.status(400).json({ erro: 'senha: mínimo 6 caracteres.' });
+
+    const professorDaTurma = await prisma.professor.findFirst({
+      where: { id: professorId, escolaId: professorLogado.escolaId },
+    });
+    if (!professorDaTurma) return res.status(404).json({ erro: 'Professor não encontrado nesta Escola.' });
+
+    const emailNorm = email.toLowerCase().trim();
+    if (await prisma.aluno.findUnique({ where: { email: emailNorm } })) {
+      return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
+    }
+
+    const senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
+    const novoAluno = await prisma.aluno.create({
+      data: {
+        nome: nome.trim(),
+        email: emailNorm,
+        senha: senhaHash,
+        telefone: telefone?.trim() || null,
+        professorId: professorDaTurma.id,
+        escolaId: professorLogado.escolaId,
+        status: 'PENDENTE',
+      },
+      select: { id: true, nome: true, email: true, status: true, createdAt: true },
+    });
+
+    res.status(201).json({ mensagem: 'Aluno criado!', aluno: novoAluno });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao criar aluno.' });
   }
 });
 

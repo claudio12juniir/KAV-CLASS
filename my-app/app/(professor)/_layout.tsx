@@ -1,12 +1,14 @@
 import { Ionicons } from '@expo/vector-icons';
 import { DrawerContentScrollView, DrawerItemList } from '@react-navigation/drawer';
 import { Drawer } from 'expo-router/drawer';
-import { useRouter } from 'expo-router';
+import { router, useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useEffect, useState } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import SyncLoader from '../../components/SyncLoader';
 import { usePushToken } from '../../hooks/usePushToken';
+import { BASE_URL, fetchComRetry } from '../api';
 
 function doisPrimeirosNomes(nomeCompleto: string): string {
   const partes = nomeCompleto.trim().split(/\s+/);
@@ -59,18 +61,61 @@ function CustomDrawerContent(props: any) {
   );
 }
 
-export default function ProfessorLayout() {
-  usePushToken();
-  // "Minha Escola" só aparece pra quem é DONO ou GESTOR de uma Escola no
-  // Pacote Escola — pra quem está no Pacote Professor (a imensa maioria hoje),
-  // o menu fica exatamente como sempre foi. Ver docs/roadmap-escola.md, Fase 0.
-  const [mostrarEscola, setMostrarEscola] = useState(false);
+// DONO/GESTOR de uma Escola no Pacote Escola não usam mais o app mobile do
+// professor autônomo — a experiência inteira deles é o painel institucional
+// em app/(escola)/. Esse gate decide isso uma vez, com dado fresco (não
+// cache), antes de montar o Drawer, pra ninguém ver o shell errado nem por
+// um instante. Ver docs/roadmap-escola.md.
+function RedirecionadorEscola({ children }: { children: React.ReactNode }) {
+  const [decidido, setDecidido] = useState(false);
+  const [vaiRedirecionar, setVaiRedirecionar] = useState(false);
+
   useEffect(() => {
-    SecureStore.getItemAsync('kav_cache_prof_papel').then(papel => {
-      setMostrarEscola(papel === 'DONO' || papel === 'GESTOR');
-    });
+    (async () => {
+      try {
+        const token = await SecureStore.getItemAsync('kav_token');
+        const professorId = (await SecureStore.getItemAsync('kav_professor_id')) || '';
+        const res = await fetchComRetry(`${BASE_URL}/api/professor/perfil?professorId=${professorId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const perfil = await res.json();
+          const ehAdminDeEscola = (perfil.papel === 'DONO' || perfil.papel === 'GESTOR') && perfil.escola?.pacote === 'PACOTE_ESCOLA';
+          if (ehAdminDeEscola) {
+            setVaiRedirecionar(true);
+            router.replace('/(escola)');
+            return;
+          }
+        }
+      } catch {
+        // Sem conexão: segue pro app mobile normal, que já tem seu próprio tratamento de erro por tela.
+      }
+      setDecidido(true);
+    })();
   }, []);
 
+  if (!decidido || vaiRedirecionar) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#ffffff' }}>
+        <SyncLoader size="large" color="#000000" />
+      </View>
+    );
+  }
+
+  return <>{children}</>;
+}
+
+export default function ProfessorLayout() {
+  usePushToken();
+
+  return (
+    <RedirecionadorEscola>
+      <ProfessorDrawer />
+    </RedirecionadorEscola>
+  );
+}
+
+function ProfessorDrawer() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <Drawer
@@ -93,14 +138,6 @@ export default function ProfessorLayout() {
         <Drawer.Screen name="relatorios"  options={{ drawerLabel: 'Relatórios',     drawerIcon: ({ color }) => <Ionicons name="bar-chart-outline"  size={22} color={color} /> }} />
         <Drawer.Screen name="chat"        options={{ drawerLabel: 'Mural da Turma', drawerIcon: ({ color }) => <Ionicons name="chatbubbles-outline" size={22} color={color} /> }} />
         <Drawer.Screen name="escanear-presenca" options={{ drawerLabel: 'Escanear Presença', drawerIcon: ({ color }) => <Ionicons name="qr-code-outline" size={22} color={color} /> }} />
-        <Drawer.Screen
-          name="escola"
-          options={{
-            drawerLabel: 'Minha Escola',
-            drawerIcon: ({ color }) => <Ionicons name="business-outline" size={22} color={color} />,
-            drawerItemStyle: mostrarEscola ? undefined : { display: 'none' },
-          }}
-        />
         <Drawer.Screen name="perfil"      options={{ drawerItemStyle: { display: 'none' } }} />
       </Drawer>
     </GestureHandlerRootView>
