@@ -23,6 +23,11 @@ Cruzamento entre o código real do Kav Class hoje (schema Prisma, ~55 rotas de A
 9. [Fase 5 — Avançado & diferenciação](#fase-5--avançado--diferenciação)
 10. [Linha do tempo completa](#10-linha-do-tempo-completa)
 11. [Riscos e decisões em aberto](#11-riscos-e-decisões-em-aberto)
+12. [Reauditoria e novos requisitos (05/09/2026)](#12-reauditoria-e-novos-requisitos-05092026)
+13. [Fase 6 — Identidade e acesso da Escola](#fase-6--identidade-e-acesso-da-escola)
+14. [Fase 7 — Arquitetura enterprise](#fase-7--arquitetura-enterprise)
+15. [Fase 8 — Operação avançada e diferenciação](#fase-8--operação-avançada-e-diferenciação)
+16. [Linha do tempo — Fases 6 a 8](#16-linha-do-tempo--fases-6-a-8)
 
 ---
 
@@ -474,4 +479,257 @@ Emissão varia por município/prefeitura — por isso fica na Fase 5, depois que
 
 ---
 
-*Base: leitura direta de `kav-class-backend/server.js`, `prisma/schema.prisma` e `my-app/app/**` em 29/08/2026, cruzada com o levantamento funcional da Emusys (fontes públicas, sem acesso ao sistema real). Decisão de arquitetura (Escola aditiva, dois pacotes comerciais, sem remover o modo professor autônomo) confirmada com o time antes de detalhar as sprints.*
+## 12. Reauditoria e novos requisitos (05/09/2026)
+
+Releitura direta do código antes de planejar as fases novas — as seções 1 e 2 acima ficaram desatualizadas. **Fases 0 a 4 deste roadmap já estão implementadas na modelagem e nas rotas**, não são mais trabalho futuro:
+
+| Sprint original | Evidência no código hoje |
+|---|---|
+| S0.1/S0.2 — Escola, papéis, convite | `model Escola`, `enum PapelUsuario (DONO/GESTOR/PROFESSOR)`, `model ConviteProfessor`, rota `/api/escola/convites/aceitar`, criação direta de professor por DONO/GESTOR, tela mobile `aceitar-convite-professor.tsx`, grupo `(escola)` no expo-router com 9 telas (`alunos`, `calendario`, `captacao`, `comunicados`, `equipe`, `financeiro`, `index`, `perfil`, `recursos`) |
+| S1.1–S1.4 — Matrícula, turma/sala, tabela de valores, agenda | `model Matricula`, `Turma`, `Sala`, `Curso`, `Modalidade`, `TabelaValores`/`VersaoTabelaValores`/`ValorPlano`, `ResponsavelFinanceiro` |
+| S2.1–S2.3 — Reposição, faturas, avaliação, crédito | `model Reposicao` (com status), `Avaliacao`, `PacoteCredito`/`CompraCredito`, `ReservaSala` |
+| S3.1–S3.3 — Cobrança automática, contrato, caixa | Stripe Connect Express por Escola (commit "S3.1"), `model Contrato`, `LancamentoCaixa`, `FechamentoCaixa`, `ContaPagar` |
+| S4.1–S4.3 — CRM | `model Lead`, `EstagioFunil`, `TarefaLead`, `LinkCaptacao`, `AulaExperimental` com regra de conversão configurável por Escola |
+| S5.1/S5.5 — Comunicados, estoque | `model Comunicado`/`EnvioComunicado`, `Produto`/`MovimentacaoEstoque` (empréstimo simples, commit "S5.5") |
+
+O que **não achei vestígio nenhum** no código, cruzando com a nova lista de requisitos que você trouxe — isso é o que vira sprint nova nas Fases 6–8 abaixo:
+
+| Requisito pedido | Status |
+|---|---|
+| Código da Escola pra aluno se autocadastrar (hoje só existe código por Professor) | 🔴 ausente |
+| Trava/rótulo explícito "professor autônomo" no cadastro mobile | 🔴 ausente (UI) |
+| Aba "Escola" no cadastro mobile | 🔴 ausente |
+| Paridade mobile total do painel de gestão | 🟡 parcial — mesma base Expo (web+mobile), mas nunca auditada tela a tela |
+| Quadro de aulas visual (sala/equipamento/professor, choque de horário) | 🔴 ausente — não há `Equipamento` nem validação de conflito de sala/professor |
+| Motor de reposição self-service com limite mensal | 🟡 parcial — `Reposicao` existe, sem regra de limite nem escolha por vagas ociosas de turma |
+| Folha de pagamento de professor (hora-aula/comissão/valor fixo) | 🔴 ausente |
+| Trilhas de evolução (graduação de faixa / repertório) | 🔴 ausente |
+| PIX e boleto recorrente (hoje só cartão via Stripe Connect) | 🔴 ausente — Stripe não cobre bem Pix/boleto BR, precisa 2º gateway ou parceiro local |
+| Régua de cobrança (WhatsApp/SMS) + bloqueio automático de acesso do aluno inadimplente | 🔴 ausente — só e-mail/push hoje, sem integração WhatsApp/SMS, sem bloqueio de portal por atraso |
+| NF-e/NFS-e | 🔴 ausente (já estava mapeado pra Fase 5 original, mantido) |
+| DRE e conciliação bancária (a tabela hoje é lançamento cru, sem relatório) | 🔴 ausente |
+| Vitrine de venda pro aluno (hoje `Produto` é só empréstimo interno, sem preço/compra) | 🔴 ausente |
+| Multi-unidades (redes/franquias, múltiplos CNPJ) | 🔴 ausente — `Escola` hoje é uma unidade só, sem entidade "Rede" acima |
+| RBAC granular por cargo (ex.: secretaria sem ver DRE) | 🔴 ausente — só existem DONO/GESTOR/PROFESSOR, sem papel SECRETARIA nem matriz de permissão por tela |
+
+---
+
+## Fase 6 — Identidade e acesso da Escola
+
+**Duração:** 6 semanas · 3 sprints
+**Objetivo da fase:** fechar o pedido direto de login/cadastro — código próprio da Escola pra aluno, professor de escola nunca se autocadastra livre, nova aba de cadastro pra Escola no mobile, e paridade mobile do painel de gestão.
+
+### S6.1 — Código de Escola para autoingresso de aluno
+**Prioridade:** 🔴 Crítica
+
+Hoje o aluno só entra digitando o código pessoal de um Professor específico (`Professor.codigoConvite`). Sob o Pacote Escola isso não escala — o aluno muitas vezes não sabe ainda quem vai ser o professor.
+
+**Entregas:**
+- `Escola` ganha `codigoConvite` próprio (mesmo padrão de 4–6 caracteres já usado em Professor)
+- `Aluno.professorId` passa a aceitar nulo no momento do cadastro por código de Escola (migração: continua obrigatório pra quem se cadastra pelo código de um professor, como hoje)
+- Novo fluxo: aluno digita o código da Escola → cadastro cai como `PENDENTE` numa fila da Escola (não de um professor) → GESTOR/secretaria atribui professor/turma e aprova
+- Tela `(escola)` nova ou seção em `alunos.tsx`: "Matrículas pendentes de atribuição"
+
+**Critério de pronto:** um aluno se cadastra sabendo só o nome da escola e o código dela, sem escolher professor, e aparece pro GESTOR aprovar e atribuir.
+**Depende de:** nada (Escola e status PENDENTE já existem)
+
+### S6.2 — Trava e auditoria: professor de Escola nunca se autocadastra
+**Prioridade:** 🟡 Alta
+
+O backend já impede isso na prática (professor só entra numa Escola de terceiros via `ConviteProfessor` com token, ou criado direto por DONO/GESTOR) — o que falta é *garantir formalmente* que não existe brecha, e comunicar isso na UI.
+
+**Entregas:**
+- Teste automatizado cobrindo: cadastro público em `/api/professores/cadastro` sempre cria Escola própria nova (nunca `escolaId` de terceiro), independente do payload enviado
+- Revisão de todas as rotas de criação de Professor pra confirmar que a única forma de entrar numa Escola existente é convite/criação por DONO ou GESTOR
+- Tela de convite mobile (`aceitar-convite-professor.tsx`) reforça a mensagem "você foi convidado pela [Escola X]" pra ficar claro que não é autocadastro
+
+**Critério de pronto:** não existe payload possível que faça um desconhecido entrar como professor de uma Escola sem convite válido daquela Escola — coberto por teste, não só por revisão manual.
+**Depende de:** nada
+
+### S6.3 — Nova aba "Escola" no cadastro mobile + rótulo de "Professor Autônomo"
+**Prioridade:** 🔴 Crítica
+
+**Entregas:**
+- `register.tsx` ganha terceira opção de papel: **Aluno / Professor Autônomo / Escola** (hoje só tem Aluno/Professor)
+- Botão e textos da opção "Professor" renomeados para "Professor Autônomo", com subtexto explícito: *"pra quem dá aula por conta própria, sem equipe — sem gestor, sem turma compartilhada"*
+- Nova opção "Escola": formulário cria `Escola` com `pacote: PACOTE_ESCOLA` + `Professor` DONO num só fluxo (reaproveita o `escola: { create: ... } ` que já existe no cadastro de professor, só troca o pacote e o checkout de destino pro tier de Escola em vez do tier de professor autônomo)
+- Tela de sucesso do cadastro de Escola mostra, lado a lado: o código de convite da Escola (pra alunos, de S6.1) e o caminho pra convidar o primeiro professor (link/código já existente)
+
+**Critério de pronto:** alguém cria uma Escola do zero só pelo celular — sem precisar do painel web — e sai da tela de cadastro já com o código de aluno em mãos.
+**Depende de:** S6.1
+
+### S6.4 — Auditoria e paridade mobile do painel de gestão
+**Prioridade:** 🟡 Alta
+
+O grupo `(escola)` já roda na mesma base Expo que serve tanto mobile quanto o build web (painel institucional/ERP) — não são dois códigos separados. O que nunca foi feito é confirmar que cada tela funciona bem em tela pequena.
+
+**Entregas:**
+- Auditoria tela a tela do grupo `(escola)` (`alunos`, `calendario`, `captacao`, `comunicados`, `equipe`, `financeiro`, `index`, `perfil`, `recursos`) rodando em viewport mobile real, listando o que quebra ou fica ilegível (tabelas largas, gráficos, ações que só existem em hover/mouse)
+- Corrigir tela a tela: tabelas densas viram cards com drill-down, ações de hover viram toque longo/menu, gráficos ganham versão compacta
+- Qualquer tela nova que a Fase 7/8 criar já nasce mobile-first (sem esperar auditoria futura)
+
+**Critério de pronto:** um DONO/GESTOR faz o fluxo completo de aprovar matrícula → lançar caixa → ver DRE só pelo celular, sem precisar abrir o painel web nenhuma vez.
+**Depende de:** nenhuma (pode rodar em paralelo com S6.1–S6.3)
+
+---
+
+## Fase 7 — Arquitetura enterprise
+
+**Duração:** 8 semanas · 4 sprints
+**Objetivo da fase:** as duas mudanças de fundação que, se vierem depois, obrigam a reabrir todo o resto — igual a Fase 0 fez pra multi-tenant. Multi-unidade e RBAC granular tocam o mesmo tipo de superfície (toda rota que hoje só sabe filtrar por `escolaId`).
+
+### S7.1 — RBAC granular por cargo
+**Prioridade:** 🔴 Crítica
+
+Hoje `PapelUsuario` só tem DONO/GESTOR/PROFESSOR. O pedido explícito é secretaria sem ver DRE, professor sem ver mensalidade de aluno — granularidade por *tela/ação*, não só por papel amplo.
+
+**Entregas:**
+- Novo papel `SECRETARIA` em `PapelUsuario`
+- Matriz de permissão por recurso (ex.: `financeiro:ler`, `financeiro:dre`, `alunos:mensalidade:ler`, `crm:ler`) associada a cada papel, consultável em uma rota central (não espalhada em `if (papel === ...)` por todo `server.js`)
+- Toda rota sensível (financeiro, DRE, folha de pagamento quando existir) passa a checar a matriz, não só o papel bruto
+- Tela de permissões pro DONO customizar por Escola quais telas cada cargo vê (nível básico: liga/desliga por módulo, sem granularidade de campo individual na v1)
+
+**Critério de pronto:** um usuário criado como SECRETARIA loga, vê agenda e matrícula, e recebe 403 ao tentar abrir DRE ou folha de pagamento — sem precisar de código novo pra cada tela nova que checar permissão.
+**Depende de:** nada
+
+### S7.2 — Multi-unidades: modelagem de Rede
+**Prioridade:** 🟡 Alta
+
+Suportar redes/franquias com múltiplos CNPJs/filiais sob o mesmo dono, sem misturar dados financeiros entre unidades.
+
+**Entregas:**
+- Nova entidade `Rede` (nome, dono) acima de `Escola` — cada `Escola` ganha `redeId` opcional (nulo = unidade independente, como hoje)
+- Cada `Escola` continua sendo o limite de isolamento de dados (CNPJ, Stripe Connect account, tabela de valores) — `Rede` é só camada de consolidação de visão, não de dados compartilhados
+- Papel novo ou extensão de DONO: "dono de rede" enxerga lista de unidades e métricas agregadas, mas entra em cada Escola isoladamente pra operar
+- Relatório consolidado básico: matrícula total, faturamento total, inadimplência por unidade, lado a lado
+
+**Critério de pronto:** um dono de 3 unidades vê um painel comparando as 3 lado a lado, mas os dados financeiros de uma unidade nunca aparecem pra quem só tem acesso a outra.
+**Depende de:** S7.1 (a visão de rede sem RBAC granular vazaria dado financeiro entre unidades)
+
+### S7.3 — LGPD e trilha de auditoria
+**Prioridade:** 🟡 Alta
+
+Menos "feature nova visível", mais pré-requisito de compliance pra vender pra escola de porte médio/grande.
+
+**Entregas:**
+- Log de auditoria mínimo: quem acessou/alterou dado financeiro e dado pessoal sensível (CPF, dados bancários), com timestamp e ator
+- Rota de exportação e de exclusão de dados pessoais a pedido do titular (aluno/responsável), por Escola
+- Checklist de backup: confirmar rotina diária no Render/banco gerenciado, documentar plano de restauração testado
+
+**Critério de pronto:** dado um pedido de exclusão de um aluno, existe uma rota que anonimiza/remove os dados pessoais dele mantendo o histórico financeiro exigido por lei fiscal, com registro de quem executou.
+**Depende de:** nada
+
+### S7.4 — Infraestrutura de alta disponibilidade
+**Prioridade:** ⚪ Média
+
+**Entregas:**
+- Revisão do plano do banco gerenciado (Render/Postgres) pra confirmar réplica/backup automático, não só cron manual
+- Alertas de indisponibilidade (uptime monitor simples) avisando antes do cliente perceber
+
+**Critério de pronto:** uma queda de banco de dados gera alerta pra equipe antes de qualquer escola reportar o problema.
+**Depende de:** nada
+
+---
+
+## Fase 8 — Operação avançada e diferenciação
+
+**Duração:** 12 semanas · 6 sprints
+**Objetivo da fase:** os itens de produto que fecham o gap com o levantamento funcional completo — todos dependem de Escola/RBAC (Fases 0 e 7) já estarem prontos, mas não dependem entre si na maioria dos casos.
+
+### S8.1 — Quadro de aulas visual com choque de horário
+**Prioridade:** 🔴 Crítica
+
+**Entregas:**
+- Model `Equipamento` (nome, sala, ativo) — reserva opcional em `Aula`/`ReservaSala`
+- Validação de conflito ao agendar: mesma sala, mesmo professor ou mesmo equipamento no mesmo horário bloqueia com mensagem clara (não silenciosamente sobrescreve)
+- Grade visual (view tipo calendário semanal) cruzando professor × sala × turma, escopo GESTOR
+
+**Critério de pronto:** tentar agendar 2 aulas na mesma sala no mesmo horário é bloqueado antes de salvar, com sugestão de horário/sala livre.
+**Depende de:** S1.2 (já existe), Fase 7 pra RBAC de quem pode remanejar
+
+### S8.2 — Motor de reposição self-service
+**Prioridade:** 🟡 Alta
+
+**Entregas:**
+- Regra configurável por Escola: limite de reposições por aluno por mês (ex.: 2)
+- Aluno vê vagas ociosas de turmas compatíveis com seu curso/nível e agenda sozinho, dentro do limite
+- Acima do limite, pedido cai pra aprovação manual em vez de bloquear
+
+**Critério de pronto:** um aluno que já usou as 2 reposições do mês tenta uma 3ª e o app explica o limite, oferecendo pedir aprovação manual em vez de agendar direto.
+**Depende de:** S2.1 (já existe), S8.1 (pra saber vaga ociosa real)
+
+### S8.3 — Folha de pagamento de professor
+**Prioridade:** 🔴 Crítica
+
+**Entregas:**
+- Model `RegraPagamentoProfessor` por Escola: HORA_AULA, COMISSAO_PERCENTUAL, VALOR_FIXO_POR_ALUNO — configurável por professor, não só global
+- Apuração automática mensal cruzando presença registrada no diário (já existe em `Aula`/`PresencaAula`) com a regra vigente
+- Tela de fechamento de folha pro GESTOR: valor calculado por professor, com possibilidade de ajuste manual antes de confirmar
+
+**Critério de pronto:** fechar a folha do mês gera o valor de cada professor batendo com a presença lançada, sem planilha paralela.
+**Depende de:** Fase 7 (RBAC — professor não pode ver a folha dos colegas)
+
+### S8.4 — Trilhas de evolução (graduação / repertório)
+**Prioridade:** ⚪ Média
+
+**Entregas:**
+- Model `Trilha` configurável por Escola (ex.: faixas de luta ou níveis de repertório musical), com etapas ordenadas
+- Diário de classe ganha registro de avanço de etapa por aluno, com data e professor responsável
+- Histórico de evolução visível pro aluno/responsável no app
+
+**Critério de pronto:** uma escola de luta cadastra as faixas do seu sistema e registra exame de faixa como evento no histórico do aluno, sem precisar de planilha externa.
+**Depende de:** nada
+
+### S8.5 — Régua de cobrança inteligente + bloqueio automático
+**Prioridade:** 🟡 Alta
+
+**Entregas:**
+- Integração com WhatsApp Business API (ou parceiro tipo Twilio/Z-API) e SMS pra lembretes automáticos antes e depois do vencimento
+- Regra configurável de bloqueio automático: X dias de atraso bloqueia acesso do aluno ao portal/app (não catraca física — sem hardware de controle de acesso no escopo, fica registrado como fora do escopo mobile)
+- Painel de régua mostrando o que foi disparado e quando, por aluno
+
+**Critério de pronto:** um aluno 5 dias em atraso recebe WhatsApp automático e, configurado o limite, perde acesso ao portal sem intervenção manual — reativado automaticamente ao pagar.
+**Depende de:** S3.1 (já existe, é a origem do dado de inadimplência)
+**Decisão em aberto:** escolher provedor de WhatsApp Business API — afeta custo por mensagem e tempo de homologação
+
+### S8.6 — Pix/boleto recorrente + DRE + vitrine do aluno
+**Prioridade:** 🟡 Alta
+
+Três itens agrupados por dependerem todos de decisão de gateway/parceiro externo, não por afinidade de produto.
+
+**Entregas:**
+- Pix e boleto recorrente via parceiro BR (Asaas/Pagar.me/Iugu — mesma decisão em aberto já registrada na Fase 3 original) complementando o cartão via Stripe Connect
+- DRE simplificado (receita − despesa por categoria) e conciliação bancária básica, lendo de `LancamentoCaixa`/`ContaPagar` já existentes
+- `Produto` ganha preço de venda opcional e fluxo de compra pelo aluno (hoje é só empréstimo interno) — "vitrine" simples, sem carrinho multi-item na v1
+
+**Critério de pronto:** GESTOR gera um boleto/Pix de uma fatura em atraso, vê o DRE do mês bater com os lançamentos de caixa, e um aluno compra uma apostila pelo app com baixa automática no estoque.
+**Depende de:** S3.1, S3.3 (já existem)
+
+---
+
+## 16. Linha do tempo — Fases 6 a 8
+
+13 sprints novas de 2 semanas · ~26 semanas, podendo rodar em paralelo com o que a Fase 5 original ainda não entregou.
+
+| Sprint | Entrega | Prioridade | Depende de |
+|---|---|---|---|
+| S6.1 | Código de Escola pra aluno | 🔴 Crítica | — |
+| S6.2 | Trava/auditoria professor autônomo vs. escola | 🟡 Alta | — |
+| S6.3 | Aba Escola no cadastro mobile | 🔴 Crítica | S6.1 |
+| S6.4 | Paridade mobile do painel de gestão | 🟡 Alta | — |
+| S7.1 | RBAC granular por cargo | 🔴 Crítica | — |
+| S7.2 | Multi-unidades (Rede) | 🟡 Alta | S7.1 |
+| S7.3 | LGPD e auditoria | 🟡 Alta | — |
+| S7.4 | Alta disponibilidade | ⚪ Média | — |
+| S8.1 | Quadro de aulas visual | 🔴 Crítica | Fase 7 |
+| S8.2 | Reposição self-service | 🟡 Alta | S8.1 |
+| S8.3 | Folha de pagamento | 🔴 Crítica | Fase 7 |
+| S8.4 | Trilhas de evolução | ⚪ Média | — |
+| S8.5 | Régua de cobrança + bloqueio | 🟡 Alta | — |
+| S8.6 | Pix/boleto + DRE + vitrine | 🟡 Alta | — |
+
+**Ordem recomendada de execução:** S6.1 → S6.3 (fecha o pedido de login/cadastro rápido) em paralelo com S6.2 e S6.4 (auditoria, sem risco de dado). Depois S7.1 antes de qualquer coisa que exponha financeiro/folha pra papel novo. S7.2 só depois de ter RBAC pronto. Fase 8 pode ser fatiada e vendida em qualquer ordem — nenhum item depende de outro dentro dela, exceto S8.2 de S8.1.
+
+---
+
+*Base: leitura direta de `kav-class-backend/server.js`, `prisma/schema.prisma` e `my-app/app/**` em 29/08/2026, cruzada com o levantamento funcional da Emusys (fontes públicas, sem acesso ao sistema real). Decisão de arquitetura (Escola aditiva, dois pacotes comerciais, sem remover o modo professor autônomo) confirmada com o time antes de detalhar as sprints. Reauditoria de 05/09/2026 confirmou que Fases 0–4 já estão implementadas no código e acrescentou as Fases 6–8 a partir do novo levantamento de requisitos (gestão pedagógica avançada, engenharia financeira, CRM/portal do aluno, arquitetura enterprise) e do pedido explícito de identidade de login por código de Escola.*
