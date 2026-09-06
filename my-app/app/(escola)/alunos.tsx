@@ -1,3 +1,4 @@
+import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useState } from 'react';
@@ -11,6 +12,7 @@ export default function AlunosEscola() {
   const [carregando, setCarregando] = useState(true);
   const [alunos, setAlunos] = useState<any[]>([]);
   const [professores, setProfessores] = useState<any[]>([]);
+  const [codigoEscola, setCodigoEscola] = useState<string | null>(null);
 
   const [modalAberto, setModalAberto] = useState(false);
   const [nome, setNome] = useState('');
@@ -20,17 +22,26 @@ export default function AlunosEscola() {
   const [professorId, setProfessorId] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
 
+  // Atribuição de professor pra aluno que entrou pelo código da Escola (S6.1)
+  // e ainda não tem ninguém responsável por ele.
+  const [modalAtribuirAberto, setModalAtribuirAberto] = useState(false);
+  const [alunoParaAtribuir, setAlunoParaAtribuir] = useState<any | null>(null);
+  const [professorEscolhido, setProfessorEscolhido] = useState<string | null>(null);
+  const [atribuindo, setAtribuindo] = useState(false);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const headers = { Authorization: `Bearer ${token}` };
-      const [resAlunos, resProfessores] = await Promise.all([
+      const [resAlunos, resProfessores, resPerfil] = await Promise.all([
         fetchComRetry(`${BASE_URL}/api/escola/alunos`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/professores`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/perfil`, { headers }),
       ]);
       if (resAlunos.ok) setAlunos(await resAlunos.json());
       if (resProfessores.ok) setProfessores(await resProfessores.json());
+      if (resPerfil.ok) setCodigoEscola((await resPerfil.json()).codigoConvite);
     } catch (err) {
       console.error('Erro ao carregar Alunos:', err);
     } finally {
@@ -44,6 +55,37 @@ export default function AlunosEscola() {
     setNome(''); setEmail(''); setSenha(''); setTelefone('');
     setProfessorId(professores[0]?.id || null);
     setModalAberto(true);
+  };
+
+  const abrirModalAtribuir = (aluno: any) => {
+    setAlunoParaAtribuir(aluno);
+    setProfessorEscolhido(professores[0]?.id || null);
+    setModalAtribuirAberto(true);
+  };
+
+  const confirmarAtribuicao = async () => {
+    if (!alunoParaAtribuir || !professorEscolhido) return;
+    setAtribuindo(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/alunos/${alunoParaAtribuir.id}/atribuir-professor`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ professorId: professorEscolhido }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        setModalAtribuirAberto(false);
+        carregarDados();
+        Alert.alert('Professor atribuído', dados.mensagem);
+      } else {
+        Alert.alert('Não foi possível atribuir', dados.erro || 'Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setAtribuindo(false);
+    }
   };
 
   const criarAluno = async () => {
@@ -74,6 +116,14 @@ export default function AlunosEscola() {
     }
   };
 
+  const copiarCodigoEscola = async () => {
+    if (!codigoEscola) return;
+    await Clipboard.setStringAsync(codigoEscola);
+    Alert.alert('Copiado!', 'Código da escola copiado — envie pro aluno se cadastrar sozinho.');
+  };
+
+  const alunosSemProfessor = alunos.filter((a) => !a.professor);
+
   return (
     <ErpShell titulo="Alunos" acao={<Botao texto="Novo aluno" icone="add" onPress={abrirModal} disabled={professores.length === 0} />}>
       <View style={{ marginBottom: 20 }}>
@@ -82,6 +132,40 @@ export default function AlunosEscola() {
           {alunos.length} {alunos.length === 1 ? 'aluno matriculado' : 'alunos matriculados'}, de todos os professores
         </Text>
       </View>
+
+      <SectionCard>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+          <View style={{ flex: 1, minWidth: 220 }}>
+            <Text style={{ fontSize: 13, fontWeight: '700', color: ERP.texto }}>Código de autoingresso da escola</Text>
+            <Text style={{ fontSize: 12, color: ERP.textoSecundario, marginTop: 3 }}>
+              Aluno que digitar este código no cadastro entra sem escolher professor — você atribui aqui embaixo.
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={copiarCodigoEscola}
+            disabled={!codigoEscola}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: ERP.fundo, borderWidth: 1, borderColor: ERP.borda, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 }}
+          >
+            <Text style={{ fontSize: 15, fontWeight: '800', color: ERP.texto, letterSpacing: 1 }}>{codigoEscola || '...'}</Text>
+          </TouchableOpacity>
+        </View>
+      </SectionCard>
+
+      {alunosSemProfessor.length > 0 && (
+        <SectionCard>
+          <Text style={{ fontSize: 13, fontWeight: '700', color: ERP.texto, marginBottom: 10 }}>
+            {alunosSemProfessor.length} {alunosSemProfessor.length === 1 ? 'aluno aguardando' : 'alunos aguardando'} atribuição de professor
+          </Text>
+          {alunosSemProfessor.map((a) => (
+            <View key={a.id} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderTopWidth: 1, borderTopColor: ERP.borda }}>
+              <Text style={{ fontSize: 13, color: ERP.texto, fontWeight: '600' }}>{a.nome}</Text>
+              <TouchableOpacity onPress={() => abrirModalAtribuir(a)} disabled={professores.length === 0}>
+                <Text style={{ fontSize: 12.5, fontWeight: '700', color: ERP.acento }}>Atribuir professor</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </SectionCard>
+      )}
 
       <SectionCard>
         {carregando ? (
@@ -102,7 +186,9 @@ export default function AlunosEscola() {
               )},
               { chave: 'email', titulo: 'E-mail', flex: 3 },
               { chave: 'professor', titulo: 'Professor', flex: 2, render: (a: any) => (
-                <Text style={{ fontSize: 12.5, color: ERP.textoSecundario }}>{a.professor?.nome || '—'}</Text>
+                a.professor
+                  ? <Text style={{ fontSize: 12.5, color: ERP.textoSecundario }}>{a.professor.nome}</Text>
+                  : <Badge texto="Sem professor" tom="aviso" />
               )},
               { chave: 'status', titulo: 'Status', flex: 2, render: (a: any) => (
                 <Badge
@@ -141,6 +227,32 @@ export default function AlunosEscola() {
         )}
 
         <Botao texto="Criar aluno" onPress={criarAluno} carregando={salvando} disabled={professores.length === 0} />
+      </Modal>
+
+      <Modal
+        visivel={modalAtribuirAberto}
+        titulo={`Atribuir professor a ${alunoParaAtribuir?.nome || ''}`}
+        onFechar={() => setModalAtribuirAberto(false)}
+      >
+        <Text style={estilos.label}>Professor responsável</Text>
+        {professores.length === 0 ? (
+          <Text style={{ fontSize: 12.5, color: ERP.textoMuted, marginBottom: 16 }}>Cadastre um professor antes de atribuir alunos.</Text>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 18 }}>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {professores.map((p) => (
+                <TouchableOpacity
+                  key={p.id}
+                  style={[estilos.chip, professorEscolhido === p.id && estilos.chipAtivo]}
+                  onPress={() => setProfessorEscolhido(p.id)}
+                >
+                  <Text style={[estilos.chipTexto, professorEscolhido === p.id && { color: '#fff' }]}>{p.nome}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </ScrollView>
+        )}
+        <Botao texto="Confirmar atribuição" onPress={confirmarAtribuicao} carregando={atribuindo} disabled={professores.length === 0} />
       </Modal>
     </ErpShell>
   );

@@ -6,10 +6,11 @@ import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
 import { useEscolaContexto } from './_contexto';
-import { Botao, ErpShell, EstadoVazio, Kpi, SectionCard, Tabela } from './_ui';
+import { Botao, ErpShell, EstadoVazio, Kpi, SectionCard, Tabela, useEhDesktop } from './_ui';
 
 export default function PainelEscola() {
   const { nomeEscola, pacote } = useEscolaContexto();
+  const ehDesktop = useEhDesktop();
   const [carregando, setCarregando] = useState(true);
 
   const [totalProfessores, setTotalProfessores] = useState(0);
@@ -109,7 +110,7 @@ export default function PainelEscola() {
       </View>
 
       <View style={estilos.duasColunas}>
-        <SectionCard style={{ flex: 1, minWidth: 340 }}>
+        <SectionCard style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
           <Text style={estilos.cardTitulo}>Follow-ups pendentes</Text>
           {tarefasPendentes.length === 0 ? (
             <EstadoVazio icone="checkmark-circle-outline" texto="Nenhum follow-up pendente." />
@@ -132,7 +133,7 @@ export default function PainelEscola() {
           )}
         </SectionCard>
 
-        <SectionCard style={{ flex: 1, minWidth: 340 }}>
+        <SectionCard style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
           <Text style={estilos.cardTitulo}>Reposições pra finalizar</Text>
           {reposicoesParaFinalizar.length === 0 ? (
             <EstadoVazio icone="checkmark-circle-outline" texto="Nenhuma reposição pendente." />

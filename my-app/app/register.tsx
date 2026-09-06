@@ -85,8 +85,10 @@ function calcularIdade(dataBR: string): number | null {
 export default function RegisterScreen() {
   const router = useRouter();
 
-  const [papel, setPapel] = useState<'aluno' | 'professor'>('aluno');
+  const [papel, setPapel] = useState<'aluno' | 'professor' | 'escola'>('aluno');
   const [nome, setNome] = useState('');
+  const [nomeEscola, setNomeEscola] = useState('');
+  const [erroNomeEscola, setErroNomeEscola] = useState('');
   const [dataNascimento, setDataNascimento] = useState('');
   const [telefone, setTelefone] = useState('');
   const [email, setEmail] = useState('');
@@ -95,6 +97,7 @@ export default function RegisterScreen() {
   const [senhaVisivel, setSenhaVisivel] = useState(false);
   const [confirmSenhaVisivel, setConfirmSenhaVisivel] = useState(false);
   const [cadastroEnviado, setCadastroEnviado] = useState(false);
+  const [codigosEscolaCriada, setCodigosEscolaCriada] = useState<{ escola: string; professor: string } | null>(null);
   const [codigoConvite, setCodigoConvite] = useState('');
   const [cursosSelecionados, setCursosSelecionados] = useState<string[]>([]);
   const [dropdownAberto, setDropdownAberto] = useState(false);
@@ -108,7 +111,8 @@ export default function RegisterScreen() {
 
   const [fotoUrl, setFotoUrl] = useState<string | null>(null);
 
-  const { disponivel: googleDisponivel, carregando: carregandoGoogle, entrarComGoogle } = useGoogleAuth(papel);
+  // Cadastro de Escola (S6.3) não tem login social ainda — só e-mail/senha.
+  const { disponivel: googleDisponivel, carregando: carregandoGoogle, entrarComGoogle } = useGoogleAuth(papel === 'escola' ? undefined : papel);
 
   const [erroNome, setErroNome] = useState('');
   const [erroData, setErroData] = useState('');
@@ -217,13 +221,21 @@ export default function RegisterScreen() {
     else if (!nomeEhCompleto(nome)) { setErroNome('Informe nome e sobrenome.'); ok = false; }
     else setErroNome('');
 
-    if (!dataNascimento) { setErroData('Campo obrigatório.'); ok = false; }
+    if (papel === 'escola') {
+      setErroData('');
+    } else if (!dataNascimento) { setErroData('Campo obrigatório.'); ok = false; }
     else {
       const idade = calcularIdade(dataNascimento);
       if (idade === null) { setErroData('Data inválida.'); ok = false; }
       else if (idade === -1) { setErroData('A data não pode ser no futuro.'); ok = false; }
       else if (idade > 90) { setErroData('Idade máxima: 90 anos.'); ok = false; }
       else setErroData('');
+    }
+
+    if (papel === 'escola' && !nomeEscola.trim()) {
+      setErroNomeEscola('Campo obrigatório.'); ok = false;
+    } else {
+      setErroNomeEscola('');
     }
 
     if (telefone && telefone.length < 14) { setErroTelefone('Informe o número completo com DDD.'); ok = false; }
@@ -255,6 +267,35 @@ export default function RegisterScreen() {
     }
 
     if (!ok) return;
+
+    if (papel === 'escola') {
+      try {
+        const resposta = await fetchComRetry(`${BASE_URL}/api/escola/cadastro`, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            nomeEscola: nomeEscola.trim(),
+            nome: nome.trim(),
+            email: email.toLowerCase().trim(),
+            senha,
+            telefone,
+            fotoUrl: fotoUrl || undefined,
+          }),
+        });
+        let dados: any;
+        try { dados = JSON.parse(await resposta.text()); }
+        catch { Alert.alert('Erro no Servidor', 'Resposta inesperada. Tente novamente.'); return; }
+        if (!resposta.ok) { Alert.alert('Atenção', dados.erro || 'Não foi possível criar a conta.'); return; }
+
+        await SecureStore.setItemAsync('kav_token', dados.token);
+        await SecureStore.setItemAsync('kav_papel', 'professor');
+        await SecureStore.setItemAsync('kav_professor_id', String(dados.usuario.id));
+        setCodigosEscolaCriada({ escola: dados.codigoConviteEscola, professor: dados.codigoConviteProfessor });
+      } catch {
+        Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.\nVerifique sua internet e tente novamente.');
+      }
+      return;
+    }
 
     if (papel === 'professor') {
       try {
@@ -326,8 +367,34 @@ export default function RegisterScreen() {
     );
   }
 
+  if (codigosEscolaCriada) {
+    return (
+      <View style={styles.successContainer}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <Ionicons name="business" size={72} color="#32BCAD" style={{ marginBottom: 20 }} />
+        <Text style={styles.successTitle}>Escola criada!</Text>
+        <Text style={styles.successSubtitle}>15 dias grátis ativados. Guarde os dois códigos abaixo — você também os encontra no painel a qualquer momento.</Text>
+
+        <View style={{ width: '100%', marginTop: 16, marginBottom: 8 }}>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: '#888', marginBottom: 4 }}>CÓDIGO PARA ALUNOS ENTRAREM</Text>
+          <Text style={{ fontSize: 22, fontWeight: '800', letterSpacing: 2, color: '#000' }}>{codigosEscolaCriada.escola}</Text>
+        </View>
+        <View style={{ width: '100%', marginTop: 12, marginBottom: 8 }}>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: '#888', marginBottom: 4 }}>SEU CÓDIGO PESSOAL DE PROFESSOR</Text>
+          <Text style={{ fontSize: 22, fontWeight: '800', letterSpacing: 2, color: '#000' }}>{codigosEscolaCriada.professor}</Text>
+        </View>
+
+        <TouchableOpacity style={styles.button} onPress={() => router.replace('/(escola)')}>
+          <Text style={styles.buttonText}>Ir para o painel da escola</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   const nomeLabel = papel === 'professor'
     ? 'Como podemos te chamar, caro professor?'
+    : papel === 'escola'
+    ? 'Nome de quem está cadastrando (responsável pela escola)'
     : 'Como podemos te chamar, caro aluno?';
 
   return (
@@ -362,9 +429,26 @@ export default function RegisterScreen() {
           onPress={() => setPapel('professor')}
         >
           <Ionicons name="person-outline" size={16} color={papel === 'professor' ? '#fff' : '#888'} />
-          <Text style={[styles.roleText, papel === 'professor' && styles.roleTextActive]}>  Professor</Text>
+          <Text style={[styles.roleText, papel === 'professor' && styles.roleTextActive]} numberOfLines={1}>  Prof. Autônomo</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.roleButton, papel === 'escola' && styles.roleButtonActive]}
+          onPress={() => setPapel('escola')}
+        >
+          <Ionicons name="business-outline" size={16} color={papel === 'escola' ? '#fff' : '#888'} />
+          <Text style={[styles.roleText, papel === 'escola' && styles.roleTextActive]} numberOfLines={1}>  Escola</Text>
         </TouchableOpacity>
       </View>
+      {papel === 'professor' && (
+        <Text style={[styles.ajudaTexto, { marginTop: -12, marginBottom: 16 }]}>
+          Este cadastro é para quem dá aula por conta própria, sem equipe — você é dono do seu próprio espaço no Kav Class. Professor que trabalha numa escola já cadastrada deve entrar pelo convite que a escola enviar, não por aqui.
+        </Text>
+      )}
+      {papel === 'escola' && (
+        <Text style={[styles.ajudaTexto, { marginTop: -12, marginBottom: 16 }]}>
+          Cadastre sua escola direto pelo celular: ganha 15 dias grátis com painel de gestão, código próprio para os alunos entrarem e convite para sua equipe de professores.
+        </Text>
+      )}
 
       {googleDisponivel && (
         <GoogleButton onPress={entrarComGoogle} carregando={carregandoGoogle} texto="Cadastrar com Google" />
@@ -385,6 +469,25 @@ export default function RegisterScreen() {
       />
       {erroNome ? <Text style={styles.erroTexto}>{erroNome}</Text> : null}
 
+      {/* Nome da escola (só papel escola) */}
+      {papel === 'escola' && (
+        <>
+          <Text style={styles.label}>Nome da escola</Text>
+          <TextInput
+            style={[styles.input, erroNomeEscola ? styles.inputErro : null]}
+            placeholder="Ex: Escola de Música Harmonia"
+            placeholderTextColor="#aaa"
+            autoCorrect
+            spellCheck
+            value={nomeEscola}
+            onChangeText={setNomeEscola}
+            onBlur={() => setErroNomeEscola(nomeEscola.trim() ? '' : 'Campo obrigatório.')}
+            autoCapitalize="words"
+          />
+          {erroNomeEscola ? <Text style={styles.erroTexto}>{erroNomeEscola}</Text> : null}
+        </>
+      )}
+
       {/* Foto de Perfil (opcional) */}
       <Text style={styles.label}>Foto de Perfil <Text style={{ color: '#aaa', fontWeight: '400' }}>(opcional)</Text></Text>
       <TouchableOpacity style={styles.fotoContainer} onPress={selecionarFoto} activeOpacity={0.8}>
@@ -398,22 +501,26 @@ export default function RegisterScreen() {
         )}
       </TouchableOpacity>
 
-      {/* Data de Nascimento */}
-      <Text style={styles.label}>Data de Nascimento</Text>
-      <TextInput
-        style={[styles.input, erroData ? styles.inputErro : null]}
-        placeholder="DD/MM/AAAA"
-        placeholderTextColor="#aaa"
-        keyboardType="numeric"
-        maxLength={10}
-        value={dataNascimento}
-        onChangeText={t => setDataNascimento(mascaraData(t))}
-        onBlur={vData}
-      />
-      {erroData
-        ? <Text style={styles.erroTexto}>{erroData}</Text>
-        : <Text style={styles.ajudaTexto}>Permitido para pessoas de até 90 anos.</Text>
-      }
+      {/* Data de Nascimento (não se aplica ao cadastro de Escola) */}
+      {papel !== 'escola' && (
+        <>
+          <Text style={styles.label}>Data de Nascimento</Text>
+          <TextInput
+            style={[styles.input, erroData ? styles.inputErro : null]}
+            placeholder="DD/MM/AAAA"
+            placeholderTextColor="#aaa"
+            keyboardType="numeric"
+            maxLength={10}
+            value={dataNascimento}
+            onChangeText={t => setDataNascimento(mascaraData(t))}
+            onBlur={vData}
+          />
+          {erroData
+            ? <Text style={styles.erroTexto}>{erroData}</Text>
+            : <Text style={styles.ajudaTexto}>Permitido para pessoas de até 90 anos.</Text>
+          }
+        </>
+      )}
 
       {/* Telefone */}
       <Text style={styles.label}>Telefone</Text>
@@ -435,7 +542,7 @@ export default function RegisterScreen() {
       {/* Código de convite (aluno) */}
       {papel === 'aluno' && (
         <>
-          <Text style={styles.label}>Código de Convite do Professor</Text>
+          <Text style={styles.label}>Código de Convite (Professor ou Escola)</Text>
           <TextInput
             style={styles.input}
             placeholder="Ex: KAV-7X9P"
@@ -444,6 +551,9 @@ export default function RegisterScreen() {
             value={codigoConvite}
             onChangeText={setCodigoConvite}
           />
+          <Text style={styles.ajudaTexto}>
+            Peça o código a quem vai te dar aula: pode ser o código pessoal do professor ou o código da escola — nesse caso, a escola escolhe o professor por você.
+          </Text>
         </>
       )}
 

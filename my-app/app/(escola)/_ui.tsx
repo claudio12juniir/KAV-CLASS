@@ -270,7 +270,34 @@ export type Coluna<T> = { chave: string; titulo: string; flex?: number; render?:
 export function Tabela<T extends { id: string }>({ colunas, dados, onLinhaPress, vazioTexto, vazioIcone = 'file-tray-outline' }: {
   colunas: Coluna<T>[]; dados: T[]; onLinhaPress?: (item: T) => void; vazioTexto: string; vazioIcone?: keyof typeof Ionicons.glyphMap;
 }) {
+  const ehDesktop = useEhDesktop();
   if (dados.length === 0) return <EstadoVazio icone={vazioIcone} texto={vazioTexto} />;
+
+  // Abaixo do breakpoint desktop, uma linha de tabela com 3+ colunas em
+  // flex-row espreme cada coluna a poucas dezenas de pixels — nome corta,
+  // botão de ação vira alvo de toque minúsculo. Em vez disso, cada item vira
+  // um card com as colunas empilhadas (rótulo em cima, conteúdo embaixo).
+  // Coluna sem título (tipicamente a de ação) não repete rótulo nenhum.
+  if (!ehDesktop) {
+    return (
+      <View>
+        {dados.map((item) => {
+          const Wrapper: any = onLinhaPress ? TouchableOpacity : View;
+          return (
+            <Wrapper key={item.id} style={estilos.tabelaCardMobile} onPress={onLinhaPress ? () => onLinhaPress(item) : undefined}>
+              {colunas.map((c) => (
+                <View key={c.chave} style={[estilos.tabelaCardCampo, c.alinhar === 'right' && { alignItems: 'flex-end' }]}>
+                  {c.titulo ? <Text style={estilos.tabelaCardLabel}>{c.titulo}</Text> : null}
+                  {c.render ? c.render(item) : <Text style={estilos.tabelaCelula}>{String((item as any)[c.chave] ?? '—')}</Text>}
+                </View>
+              ))}
+            </Wrapper>
+          );
+        })}
+      </View>
+    );
+  }
+
   return (
     <View>
       <View style={estilos.tabelaHeader}>
@@ -380,4 +407,8 @@ const estilos = StyleSheet.create({
   tabelaHeaderTexto: { fontSize: 11, fontWeight: '700', color: ERP.textoMuted, letterSpacing: 0.4, textTransform: 'uppercase' },
   tabelaLinha: { flexDirection: 'row', alignItems: 'center', paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#F1F3F6' },
   tabelaCelula: { fontSize: 13.5, color: ERP.texto },
+
+  tabelaCardMobile: { borderWidth: 1, borderColor: ERP.borda, borderRadius: ERP.raio.md, padding: 14, marginBottom: 10, gap: 10, backgroundColor: ERP.superficie },
+  tabelaCardCampo: { gap: 3 },
+  tabelaCardLabel: { fontSize: 10.5, fontWeight: '700', color: ERP.textoMuted, letterSpacing: 0.4, textTransform: 'uppercase' },
 });
