@@ -145,6 +145,13 @@ model Escola {
   nome   String
   pacote PacoteAssinatura @default(PACOTE_PROFESSOR)
 
+  // Código de autoingresso pra aluno (S6.1) — equivalente ao codigoConvite
+  // do Professor, mas em nível de Escola: quem digita este código não
+  // escolhe professor nenhum, cai PENDENTE numa fila de "sem professor
+  // atribuído" até um DONO/GESTOR atribuir e aprovar. Gerado sob demanda
+  // (mesmo padrão preguiçoso do codigoConvite de Professor em /api/dashboard).
+  codigoConvite String? @unique
+
   // Regra de conversão experimental → matrícula (S4.3), configurável por
   // Escola. QUALQUER_MATRICULA (default): conta como conversão qualquer
   // matrícula do lead depois da experimental, sem checar curso/professor —
@@ -267,8 +274,12 @@ model Aluno {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  professorId String
-  professor   Professor @relation(fields: [professorId], references: [id])
+  // Opcional de propósito (S6.1): aluno cadastrado com o código da Escola
+  // (em vez do código de um Professor específico) entra sem professor
+  // atribuído, PENDENTE numa fila da Escola até um DONO/GESTOR atribuir um
+  // professor — só depois disso passa pelo fluxo normal de configuração.
+  professorId String?
+  professor   Professor? @relation(fields: [professorId], references: [id])
 
   // Cópia denormalizada do escolaId do professor no momento do cadastro.
   // Existe pra permitir consultas futuras escopadas por Escola (ex: GESTOR
