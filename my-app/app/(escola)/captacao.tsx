@@ -7,7 +7,7 @@ import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, EstadoVazio, Kpi, Modal, SectionCard, SubAbasSimples, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, Kpi, Modal, PageHeader, SectionCard, SubAbasSimples, Tabela } from './_ui';
 
 type Sub = 'funil' | 'leads' | 'experimentais';
 
@@ -126,8 +126,7 @@ export default function CaptacaoEscola() {
 
   return (
     <ErpShell titulo="Captação">
-      <Text style={estilos.titulo}>Captação e CRM</Text>
-      <Text style={estilos.subtitulo}>Funil de leads, follow-up e aulas experimentais até a matrícula</Text>
+      <PageHeader titulo="Captação e CRM" subtitulo="Funil de leads, follow-up e aulas experimentais até a matrícula" />
 
       <SubAbasSimples
         opcoes={[
@@ -156,18 +155,16 @@ export default function CaptacaoEscola() {
             <Botao texto="Criar estágio" onPress={criarEstagio} carregando={criandoEstagio} />
           </Modal>
 
-          <SectionCard style={{ marginTop: 22 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-              <View>
-                <Text style={estilos.cardTitulo}>Links de captação</Text>
-                <Text style={estilos.cardSubtitulo}>Compartilhe em redes sociais ou embuta no site — sem precisar do app</Text>
-              </View>
+          <SectionCard
+            titulo="Links de captação"
+            subtitulo="Compartilhe em redes sociais ou embuta no site — sem precisar do app"
+            acao={(
               <View style={{ flexDirection: 'row', gap: 8 }}>
                 <Botao texto="Formulário" variante="secundario" icone="add" carregando={criandoLink} onPress={() => criarLinkCaptacao('CADASTRO')} />
                 <Botao texto="Aula experimental" variante="secundario" icone="add" carregando={criandoLink} onPress={() => criarLinkCaptacao('AGENDAMENTO_EXPERIMENTAL')} />
               </View>
-            </View>
-
+            )}
+          >
             {linksCaptacao.length === 0 ? (
               <EstadoVazio icone="link-outline" texto="Nenhum link criado ainda." />
             ) : (
@@ -323,11 +320,7 @@ function AbaLeads({ leads, estagios, professores, cursos, recarregar }: { leads:
   };
 
   return (
-    <SectionCard>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-        <Text style={estilos.cardTitulo}>Leads ativos</Text>
-        <Botao texto="Novo lead" icone="add" onPress={abrirNovo} disabled={estagios.length === 0} />
-      </View>
+    <SectionCard titulo="Leads ativos" acao={<Botao texto="Novo lead" icone="add" onPress={abrirNovo} disabled={estagios.length === 0} />}>
       {estagios.length === 0 && (
         <Text style={{ fontSize: 12.5, color: ERP.textoMuted, marginBottom: 12 }}>
           Cadastre pelo menos um estágio de funil (aba Funil, botão "Novo estágio") antes de criar leads.
@@ -428,8 +421,7 @@ function AbaExperimentais({ experimentais, recarregar }: { experimentais: any[];
   };
 
   return (
-    <SectionCard>
-      <Text style={[estilos.cardTitulo, { marginBottom: 16 }]}>Aulas experimentais</Text>
+    <SectionCard titulo="Aulas experimentais">
       <Tabela
         vazioTexto="Nenhuma aula experimental agendada. Agende uma pela aba Leads."
         vazioIcone="calendar-outline"
@@ -469,11 +461,7 @@ function AbaExperimentais({ experimentais, recarregar }: { experimentais: any[];
 }
 
 const estilos = StyleSheet.create({
-  titulo: { fontSize: 20, fontWeight: '800', color: ERP.texto },
-  subtitulo: { fontSize: 13, color: ERP.textoSecundario, marginTop: 3, marginBottom: 20 },
-  kpiGrade: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
-  cardTitulo: { fontSize: 14.5, fontWeight: '800', color: ERP.texto },
-  cardSubtitulo: { fontSize: 12, color: ERP.textoSecundario, marginTop: 3 },
+  kpiGrade: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginBottom: 16 },
   linhaTitulo: { fontSize: 13.5, fontWeight: '600', color: ERP.texto },
   linhaSub: { fontSize: 12, color: ERP.textoSecundario, marginTop: 2 },
   label: { fontSize: 12.5, fontWeight: '700', color: ERP.textoSecundario, marginBottom: 8, marginTop: 4 },

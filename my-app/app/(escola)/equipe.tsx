@@ -7,7 +7,7 @@ import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
 import { useEscolaContexto } from './_contexto';
-import { Badge, Botao, Campo, ErpShell, Modal, SectionCard, SubAbasSimples, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, Modal, PageHeader, SectionCard, SubAbasSimples, Tabela } from './_ui';
 
 export default function EquipeEscola() {
   const { pacote } = useEscolaContexto();
@@ -106,17 +106,13 @@ export default function EquipeEscola() {
       titulo="Equipe"
       acao={pacote === 'PACOTE_ESCOLA' ? <Botao texto="Novo professor" icone="add" onPress={abrirModal} /> : undefined}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <View>
-          <Text style={{ fontSize: 20, fontWeight: '800', color: ERP.texto }}>Professores</Text>
-          <Text style={{ fontSize: 13, color: ERP.textoSecundario, marginTop: 3 }}>
-            {professores.length} {professores.length === 1 ? 'professor cadastrado' : 'professores cadastrados'} nesta escola
-          </Text>
-        </View>
-      </View>
+      <PageHeader
+        titulo="Professores"
+        subtitulo={`${professores.length} ${professores.length === 1 ? 'professor cadastrado' : 'professores cadastrados'} nesta escola`}
+      />
 
       {pacote !== 'PACOTE_ESCOLA' && (
-        <SectionCard style={{ backgroundColor: ERP.avisoSoft, borderColor: '#F5D9A8', marginBottom: 20 }}>
+        <SectionCard style={{ backgroundColor: ERP.avisoSoft, borderColor: '#F5D9A8' }}>
           <Text style={{ color: '#8A5A00', fontSize: 13.5 }}>Adicionar professores é um recurso do Pacote Escola.</Text>
         </SectionCard>
       )}

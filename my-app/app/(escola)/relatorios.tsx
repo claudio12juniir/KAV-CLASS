@@ -6,7 +6,7 @@ import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-nati
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { EstadoVazio, ErpShell, Kpi, Modal, SectionCard, SubAbasSimples } from './_ui';
+import { EstadoVazio, ErpShell, Kpi, Modal, PageHeader, SectionCard, SubAbasSimples } from './_ui';
 
 const MESES_PT = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 const MESES_EXTENSO = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
@@ -85,12 +85,10 @@ export default function RelatoriosEscola() {
 
   return (
     <ErpShell titulo="Relatórios">
-      <View style={{ marginBottom: 20 }}>
-        <Text style={{ fontSize: 20, fontWeight: '800', color: ERP.texto }}>Painel de métricas</Text>
-        <Text style={{ fontSize: 13, color: ERP.textoSecundario, marginTop: 3 }}>
-          Compare faturamento e inadimplência ano a ano — toque num mês pra ver os alunos por trás do número.
-        </Text>
-      </View>
+      <PageHeader
+        titulo="Painel de métricas"
+        subtitulo="Compare faturamento e inadimplência ano a ano — toque num mês pra ver os alunos por trás do número."
+      />
 
       <SubAbasSimples
         opcoes={[{ chave: 'faturamento', rotulo: 'Faturamento' }, { chave: 'inadimplencia', rotulo: 'Inadimplência' }]}

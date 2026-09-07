@@ -7,7 +7,7 @@ import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, SectionCard, SubAbasSimples, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, PageHeader, SectionCard, SubAbasSimples, Tabela } from './_ui';
 
 type Sub = 'salas' | 'estoque';
 
@@ -134,8 +134,7 @@ export default function RecursosEscola() {
       titulo="Recursos"
       acao={<Botao texto={sub === 'salas' ? 'Nova sala' : 'Novo produto'} icone="add" onPress={() => sub === 'salas' ? setModalSalaAberto(true) : setModalProdutoAberto(true)} />}
     >
-      <Text style={estilos.titulo}>Salas e estoque</Text>
-      <Text style={estilos.subtitulo}>Espaços físicos e materiais compartilhados pela escola</Text>
+      <PageHeader titulo="Salas e estoque" subtitulo="Espaços físicos e materiais compartilhados pela escola" />
 
       <SubAbasSimples opcoes={[{ chave: 'salas', rotulo: 'Salas' }, { chave: 'estoque', rotulo: 'Estoque' }]} ativa={sub} onMudar={setSub} />
 
@@ -234,8 +233,6 @@ export default function RecursosEscola() {
 }
 
 const estilos = StyleSheet.create({
-  titulo: { fontSize: 20, fontWeight: '800', color: ERP.texto },
-  subtitulo: { fontSize: 13, color: ERP.textoSecundario, marginTop: 3, marginBottom: 16 },
   linhaTitulo: { fontSize: 13.5, fontWeight: '600', color: ERP.texto },
   campoLabel: { fontSize: 12.5, fontWeight: '700', color: ERP.textoSecundario, marginBottom: 8 },
 });

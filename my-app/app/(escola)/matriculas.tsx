@@ -5,7 +5,7 @@ import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, Modal, SectionCard, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, Modal, PageHeader, SectionCard, Tabela } from './_ui';
 
 const STATUS_CONTRATO: Record<string, { texto: string; tom: 'default' | 'sucesso' | 'alerta' | 'aviso' | 'info' }> = {
   ENVIADO: { texto: 'Enviado', tom: 'info' },
@@ -142,12 +142,10 @@ export default function MatriculasEscola() {
 
   return (
     <ErpShell titulo="Matrículas" acao={<Botao texto="Nova matrícula" icone="add" onPress={abrirModalNova} disabled={alunos.length === 0} />}>
-      <View style={{ marginBottom: 20 }}>
-        <Text style={{ fontSize: 20, fontWeight: '800', color: ERP.texto }}>Matrículas da escola</Text>
-        <Text style={{ fontSize: 13, color: ERP.textoSecundario, marginTop: 3 }}>
-          {matriculas.length} {matriculas.length === 1 ? 'matrícula' : 'matrículas'} — contrato digital e status de assinatura de cada uma.
-        </Text>
-      </View>
+      <PageHeader
+        titulo="Matrículas da escola"
+        subtitulo={`${matriculas.length} ${matriculas.length === 1 ? 'matrícula' : 'matrículas'} — contrato digital e status de assinatura de cada uma.`}
+      />
 
       <SectionCard>
         {carregando ? (

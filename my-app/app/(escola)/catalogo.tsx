@@ -5,7 +5,7 @@ import { Alert, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacit
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, Modal, SectionCard, SubAbasSimples, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, Modal, PageHeader, SectionCard, SubAbasSimples, Tabela } from './_ui';
 
 type Aba = 'cursos' | 'turmas' | 'modalidades' | 'valores';
 
@@ -56,12 +56,7 @@ export default function CatalogoEscola() {
 
   return (
     <ErpShell titulo="Catálogo">
-      <View style={{ marginBottom: 20 }}>
-        <Text style={{ fontSize: 20, fontWeight: '800', color: ERP.texto }}>Catálogo da escola</Text>
-        <Text style={{ fontSize: 13, color: ERP.textoSecundario, marginTop: 3 }}>
-          Cursos, turmas, modalidades e tabela de valores — a base de tudo que vira matrícula.
-        </Text>
-      </View>
+      <PageHeader titulo="Catálogo da escola" subtitulo="Cursos, turmas, modalidades e tabela de valores — a base de tudo que vira matrícula." />
 
       <SubAbasSimples
         opcoes={[
@@ -121,11 +116,10 @@ function AbaCursos({ cursos, tabelas, recarregar }: { cursos: any[]; tabelas: an
   };
 
   return (
-    <SectionCard>
-      <View style={estilos.cabecalhoLista}>
-        <Text style={estilos.contagem}>{cursos.length} {cursos.length === 1 ? 'curso' : 'cursos'}</Text>
-        <Botao texto="Novo curso" icone="add" onPress={abrirNovo} />
-      </View>
+    <SectionCard
+      titulo={`${cursos.length} ${cursos.length === 1 ? 'curso' : 'cursos'}`}
+      acao={<Botao texto="Novo curso" icone="add" onPress={abrirNovo} />}
+    >
       <Tabela
         vazioTexto="Nenhum curso cadastrado ainda."
         vazioIcone="book-outline"
@@ -208,11 +202,10 @@ function AbaTurmas({ turmas, cursos, salas, professores, recarregar }: { turmas:
   };
 
   return (
-    <SectionCard>
-      <View style={estilos.cabecalhoLista}>
-        <Text style={estilos.contagem}>{turmas.length} {turmas.length === 1 ? 'turma' : 'turmas'}</Text>
-        <Botao texto="Nova turma" icone="add" onPress={abrirNovo} disabled={cursos.length === 0} />
-      </View>
+    <SectionCard
+      titulo={`${turmas.length} ${turmas.length === 1 ? 'turma' : 'turmas'}`}
+      acao={<Botao texto="Nova turma" icone="add" onPress={abrirNovo} disabled={cursos.length === 0} />}
+    >
       {cursos.length === 0 && (
         <Text style={{ fontSize: 12.5, color: ERP.textoMuted, marginBottom: 12 }}>Cadastre um curso antes de criar turmas.</Text>
       )}
@@ -315,11 +308,10 @@ function AbaModalidades({ modalidades, recarregar }: { modalidades: any[]; recar
   };
 
   return (
-    <SectionCard>
-      <View style={estilos.cabecalhoLista}>
-        <Text style={estilos.contagem}>{modalidades.length} {modalidades.length === 1 ? 'modalidade' : 'modalidades'}</Text>
-        <Botao texto="Nova modalidade" icone="add" onPress={abrirNovo} />
-      </View>
+    <SectionCard
+      titulo={`${modalidades.length} ${modalidades.length === 1 ? 'modalidade' : 'modalidades'}`}
+      acao={<Botao texto="Nova modalidade" icone="add" onPress={abrirNovo} />}
+    >
       <Tabela
         vazioTexto="Nenhuma modalidade cadastrada ainda."
         vazioIcone="repeat-outline"
@@ -462,11 +454,10 @@ function AbaValores({ tabelas, planos, recarregar }: { tabelas: any[]; planos: a
 
   return (
     <>
-      <SectionCard>
-        <View style={estilos.cabecalhoLista}>
-          <Text style={estilos.contagem}>Planos de pagamento ({planos.length})</Text>
-          <Botao texto="Novo plano" variante="secundario" icone="add" onPress={() => setModalNovoPlano(true)} />
-        </View>
+      <SectionCard
+        titulo={`Planos de pagamento (${planos.length})`}
+        acao={<Botao texto="Novo plano" variante="secundario" icone="add" onPress={() => setModalNovoPlano(true)} />}
+      >
         {planos.length === 0 ? (
           <Text style={{ fontSize: 12.5, color: ERP.textoMuted }}>
             Cadastre planos de pagamento (ex: Mensal, Semestral) antes de montar uma tabela de valores.
@@ -482,11 +473,10 @@ function AbaValores({ tabelas, planos, recarregar }: { tabelas: any[]; planos: a
         )}
       </SectionCard>
 
-      <SectionCard>
-        <View style={estilos.cabecalhoLista}>
-          <Text style={estilos.contagem}>{tabelas.length} {tabelas.length === 1 ? 'tabela' : 'tabelas'} de valores</Text>
-          <Botao texto="Nova tabela" icone="add" onPress={() => setModalNovaTabela(true)} />
-        </View>
+      <SectionCard
+        titulo={`${tabelas.length} ${tabelas.length === 1 ? 'tabela' : 'tabelas'} de valores`}
+        acao={<Botao texto="Nova tabela" icone="add" onPress={() => setModalNovaTabela(true)} />}
+      >
         <Tabela
           vazioTexto="Nenhuma tabela de valores cadastrada ainda."
           vazioIcone="pricetags-outline"
@@ -592,8 +582,6 @@ function Chip({ label, ativo, onPress }: { label: string; ativo: boolean; onPres
 }
 
 const estilos = StyleSheet.create({
-  cabecalhoLista: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  contagem: { fontSize: 13, fontWeight: '700', color: ERP.texto },
   linhaTitulo: { fontSize: 13.5, fontWeight: '600', color: ERP.texto },
   linhaSub: { fontSize: 12.5, color: ERP.textoSecundario, marginTop: 2 },
   label: { fontSize: 12.5, fontWeight: '700', color: ERP.textoSecundario, marginBottom: 8, marginTop: 4 },

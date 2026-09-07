@@ -1,10 +1,9 @@
 import * as SecureStore from 'expo-secure-store';
 import React, { useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
-import { ERP } from '../../constants/erpTheme';
+import { Alert } from 'react-native';
 import { BASE_URL, fetchComRetry } from '../api';
 import { useEscolaContexto } from './_contexto';
-import { Botao, Campo, ErpShell, SectionCard } from './_ui';
+import { Botao, Campo, ErpShell, PageHeader, SectionCard } from './_ui';
 
 export default function PerfilEscola() {
   const { nomeAdmin, nomeEscola, papel, recarregarPerfil } = useEscolaContexto();
@@ -54,17 +53,14 @@ export default function PerfilEscola() {
 
   return (
     <ErpShell titulo="Meu perfil">
-      <Text style={estilos.titulo}>Meu perfil</Text>
-      <Text style={estilos.subtitulo}>{nomeEscola} · {papel === 'DONO' ? 'Dono da escola' : 'Gestor'}</Text>
+      <PageHeader titulo="Meu perfil" subtitulo={`${nomeEscola} · ${papel === 'DONO' ? 'Dono da escola' : 'Gestor'}`} />
 
-      <SectionCard style={{ maxWidth: 480, marginTop: 20 }}>
-        <Text style={estilos.cardTitulo}>Dados pessoais</Text>
+      <SectionCard titulo="Dados pessoais" style={{ maxWidth: 480 }}>
         <Campo label="Nome" value={nome} onChangeText={setNome} placeholder="Seu nome" />
         <Botao texto="Salvar nome" onPress={salvarNome} carregando={salvandoNome} />
       </SectionCard>
 
-      <SectionCard style={{ maxWidth: 480, marginTop: 16 }}>
-        <Text style={estilos.cardTitulo}>Trocar senha</Text>
+      <SectionCard titulo="Trocar senha" style={{ maxWidth: 480 }}>
         <Campo label="Senha atual" value={senhaAtual} onChangeText={setSenhaAtual} secureTextEntry />
         <Campo label="Nova senha" value={novaSenha} onChangeText={setNovaSenha} secureTextEntry placeholder="Mínimo 6 caracteres" />
         <Botao texto="Atualizar senha" onPress={salvarSenha} carregando={salvandoSenha} />
@@ -73,8 +69,3 @@ export default function PerfilEscola() {
   );
 }
 
-const estilos = StyleSheet.create({
-  titulo: { fontSize: 20, fontWeight: '800', color: ERP.texto },
-  subtitulo: { fontSize: 13, color: ERP.textoSecundario, marginTop: 3 },
-  cardTitulo: { fontSize: 14.5, fontWeight: '800', color: ERP.texto, marginBottom: 16 },
-});

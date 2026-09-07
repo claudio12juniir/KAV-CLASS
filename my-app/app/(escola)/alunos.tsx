@@ -6,7 +6,7 @@ import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, Modal, SectionCard, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, Modal, PageHeader, SectionCard, Tabela } from './_ui';
 
 export default function AlunosEscola() {
   const [carregando, setCarregando] = useState(true);
@@ -126,36 +126,23 @@ export default function AlunosEscola() {
 
   return (
     <ErpShell titulo="Alunos" acao={<Botao texto="Novo aluno" icone="add" onPress={abrirModal} disabled={professores.length === 0} />}>
-      <View style={{ marginBottom: 20 }}>
-        <Text style={{ fontSize: 20, fontWeight: '800', color: ERP.texto }}>Alunos da escola</Text>
-        <Text style={{ fontSize: 13, color: ERP.textoSecundario, marginTop: 3 }}>
-          {alunos.length} {alunos.length === 1 ? 'aluno matriculado' : 'alunos matriculados'}, de todos os professores
-        </Text>
-      </View>
+      <PageHeader
+        titulo="Alunos da escola"
+        subtitulo={`${alunos.length} ${alunos.length === 1 ? 'aluno matriculado' : 'alunos matriculados'}, de todos os professores`}
+      />
 
-      <SectionCard>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-          <View style={{ flex: 1, minWidth: 220 }}>
-            <Text style={{ fontSize: 13, fontWeight: '700', color: ERP.texto }}>Código de autoingresso da escola</Text>
-            <Text style={{ fontSize: 12, color: ERP.textoSecundario, marginTop: 3 }}>
-              Aluno que digitar este código no cadastro entra sem escolher professor — você atribui aqui embaixo.
-            </Text>
-          </View>
-          <TouchableOpacity
-            onPress={copiarCodigoEscola}
-            disabled={!codigoEscola}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: ERP.fundo, borderWidth: 1, borderColor: ERP.borda, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 }}
-          >
-            <Text style={{ fontSize: 15, fontWeight: '800', color: ERP.texto, letterSpacing: 1 }}>{codigoEscola || '...'}</Text>
-          </TouchableOpacity>
-        </View>
+      <SectionCard titulo="Código de autoingresso da escola" subtitulo="Aluno que digitar este código no cadastro entra sem escolher professor — você atribui aqui embaixo.">
+        <TouchableOpacity
+          onPress={copiarCodigoEscola}
+          disabled={!codigoEscola}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: ERP.fundo, borderWidth: 1, borderColor: ERP.borda, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, alignSelf: 'flex-start' }}
+        >
+          <Text style={{ fontSize: 15, fontWeight: '800', color: ERP.texto, letterSpacing: 1 }}>{codigoEscola || '...'}</Text>
+        </TouchableOpacity>
       </SectionCard>
 
       {alunosSemProfessor.length > 0 && (
-        <SectionCard>
-          <Text style={{ fontSize: 13, fontWeight: '700', color: ERP.texto, marginBottom: 10 }}>
-            {alunosSemProfessor.length} {alunosSemProfessor.length === 1 ? 'aluno aguardando' : 'alunos aguardando'} atribuição de professor
-          </Text>
+        <SectionCard titulo={`${alunosSemProfessor.length} ${alunosSemProfessor.length === 1 ? 'aluno aguardando' : 'alunos aguardando'} atribuição de professor`}>
           {alunosSemProfessor.map((a) => (
             <View key={a.id} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8, borderTopWidth: 1, borderTopColor: ERP.borda }}>
               <Text style={{ fontSize: 13, color: ERP.texto, fontWeight: '600' }}>{a.nome}</Text>

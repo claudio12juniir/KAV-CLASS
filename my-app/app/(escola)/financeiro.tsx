@@ -7,7 +7,7 @@ import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'reac
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, EstadoVazio, Kpi, Modal, SectionCard, SubAbasSimples, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, Kpi, Modal, PageHeader, SectionCard, SubAbasSimples, Tabela } from './_ui';
 
 type Sub = 'cobranca' | 'renovacao' | 'caixa' | 'dre';
 
@@ -216,8 +216,7 @@ export default function FinanceiroEscola() {
 
   return (
     <ErpShell titulo="Financeiro">
-      <Text style={estilos.titulo}>Financeiro</Text>
-      <Text style={estilos.subtitulo}>Cobrança automática via Stripe Connect e renovação de matrículas</Text>
+      <PageHeader titulo="Financeiro" subtitulo="Cobrança automática via Stripe Connect e renovação de matrículas" />
 
       <SubAbasSimples
         opcoes={[
@@ -259,8 +258,7 @@ export default function FinanceiroEscola() {
               </View>
 
               {resumoCobranca?.precisamDeAcao?.length > 0 && (
-                <SectionCard>
-                  <Text style={estilos.cardTitulo}>Precisam de ação</Text>
+                <SectionCard titulo="Precisam de ação">
                   <Tabela
                     vazioTexto=""
                     dados={resumoCobranca.precisamDeAcao.map((m: any) => ({ ...m, id: m.matriculaId }))}
@@ -273,8 +271,7 @@ export default function FinanceiroEscola() {
               )}
 
               {resumoCobranca?.emDia?.length > 0 && (
-                <SectionCard>
-                  <Text style={estilos.cardTitulo}>Em dia</Text>
+                <SectionCard titulo="Em dia">
                   <Tabela
                     vazioTexto=""
                     dados={resumoCobranca.emDia.map((m: any) => ({ ...m, id: m.matriculaId }))}
@@ -368,8 +365,7 @@ export default function FinanceiroEscola() {
             )}
           </SectionCard>
 
-          <SectionCard>
-            <Text style={estilos.cardTitulo}>Lançamentos do dia</Text>
+          <SectionCard titulo="Lançamentos do dia">
             <Tabela
               vazioTexto="Nenhum lançamento neste dia."
               vazioIcone="cash-outline"
@@ -386,11 +382,7 @@ export default function FinanceiroEscola() {
             />
           </SectionCard>
 
-          <SectionCard>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-              <Text style={estilos.cardTitulo}>Contas a pagar</Text>
-              <Botao texto="Nova conta" variante="secundario" icone="add" onPress={() => setModalContaPagar(true)} />
-            </View>
+          <SectionCard titulo="Contas a pagar" acao={<Botao texto="Nova conta" variante="secundario" icone="add" onPress={() => setModalContaPagar(true)} />}>
             <Tabela
               vazioTexto="Nenhuma conta cadastrada."
               vazioIcone="document-text-outline"
@@ -411,15 +403,12 @@ export default function FinanceiroEscola() {
       )}
 
       {sub === 'dre' && (
-        <SectionCard>
+        <SectionCard titulo={!dre ? undefined : new Date(dre.periodo.ano, dre.periodo.mes - 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}>
           {!dre ? (
             <EstadoVazio icone="stats-chart-outline" texto="Sem dados pro mês atual ainda." />
           ) : (
             <>
-              <Text style={estilos.cardTitulo}>
-                {new Date(dre.periodo.ano, dre.periodo.mes - 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
-              </Text>
-              <View style={[estilos.kpiGrade, { marginTop: 12 }]}>
+              <View style={estilos.kpiGrade}>
                 <Kpi label="Receita mensalidades" valor={`R$ ${dre.receita.mensalidades.toFixed(2).replace('.', ',')}`} tom="sucesso" />
                 <Kpi label="Receita avulsa" valor={`R$ ${dre.receita.avulsa.toFixed(2).replace('.', ',')}`} tom="sucesso" />
                 <Kpi label="Despesas" valor={`R$ ${dre.despesas.total.toFixed(2).replace('.', ',')}`} tom={dre.despesas.total > 0 ? 'alerta' : 'default'} />
@@ -486,10 +475,7 @@ export default function FinanceiroEscola() {
 }
 
 const estilos = StyleSheet.create({
-  titulo: { fontSize: 20, fontWeight: '800', color: ERP.texto },
-  subtitulo: { fontSize: 13, color: ERP.textoSecundario, marginTop: 3, marginBottom: 16 },
   kpiGrade: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
-  cardTitulo: { fontSize: 13.5, fontWeight: '800', color: ERP.texto, marginBottom: 12 },
   linhaRenovacao: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F3F6' },
   inputValor: { width: 96, height: 38, borderWidth: 1, borderColor: ERP.bordaForte, borderRadius: 8, paddingHorizontal: 10, fontSize: 13.5, color: ERP.texto },
   inputData: { width: 130, height: 36, borderWidth: 1, borderColor: ERP.bordaForte, borderRadius: 8, paddingHorizontal: 10, fontSize: 13, color: ERP.texto },

@@ -6,7 +6,7 @@ import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, SectionCard, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, PageHeader, SectionCard, Tabela } from './_ui';
 
 export default function CalendarioEscola() {
   const [carregando, setCarregando] = useState(true);
@@ -69,8 +69,10 @@ export default function CalendarioEscola() {
 
   return (
     <ErpShell titulo="Calendário" acao={<Botao texto="Novo dia" icone="add" onPress={() => setModalAberto(true)} />}>
-      <Text style={estilos.titulo}>Calendário letivo</Text>
-      <Text style={estilos.subtitulo}>Feriados e recessos bloqueiam automaticamente o agendamento de aula avulsa nesse dia</Text>
+      <PageHeader
+        titulo="Calendário letivo"
+        subtitulo="Feriados e recessos bloqueiam automaticamente o agendamento de aula avulsa nesse dia"
+      />
 
       <SectionCard>
         {diasNaoLetivos.length === 0 ? (
@@ -108,7 +110,5 @@ export default function CalendarioEscola() {
 }
 
 const estilos = StyleSheet.create({
-  titulo: { fontSize: 20, fontWeight: '800', color: ERP.texto },
-  subtitulo: { fontSize: 13, color: ERP.textoSecundario, marginTop: 3, marginBottom: 20 },
   linhaTitulo: { fontSize: 13.5, fontWeight: '600', color: ERP.texto },
 });

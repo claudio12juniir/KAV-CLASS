@@ -6,7 +6,7 @@ import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
 import { useEscolaContexto } from './_contexto';
-import { Botao, ErpShell, EstadoVazio, Kpi, SectionCard, Tabela, useEhDesktop } from './_ui';
+import { Botao, ErpShell, EstadoVazio, Kpi, PageHeader, SectionCard, Tabela, useEhDesktop } from './_ui';
 
 export default function PainelEscola() {
   const { nomeEscola, pacote } = useEscolaContexto();
@@ -89,11 +89,10 @@ export default function PainelEscola() {
 
   return (
     <ErpShell titulo="Painel">
-      <Text style={estilos.saudacao}>{nomeEscola || 'Sua escola'}</Text>
-      <Text style={estilos.subtitulo}>Visão consolidada do dia a dia da instituição</Text>
+      <PageHeader titulo={nomeEscola || 'Sua escola'} subtitulo="Visão consolidada do dia a dia da instituição" />
 
       {pacote !== 'PACOTE_ESCOLA' && (
-        <SectionCard style={{ backgroundColor: ERP.avisoSoft, borderColor: '#F5D9A8', marginTop: 20 }}>
+        <SectionCard style={{ backgroundColor: ERP.avisoSoft, borderColor: '#F5D9A8' }}>
           <Text style={{ color: '#8A5A00', fontSize: 13.5, lineHeight: 19 }}>
             Sua conta ainda está no Pacote Professor — algumas funções institucionais ficam liberadas só no Pacote Escola.
           </Text>
@@ -101,17 +100,16 @@ export default function PainelEscola() {
       )}
 
       <View style={estilos.kpiGrade}>
-        <Kpi label="Professores" valor={totalProfessores} onPress={() => router.push('/(escola)/equipe')} />
-        <Kpi label="Alunos matriculados" valor={totalAlunos} onPress={() => router.push('/(escola)/alunos')} />
-        <Kpi label="Leads no funil" valor={totalLeads} onPress={() => router.push('/(escola)/captacao')} />
-        <Kpi label="Conversão (30d)" valor={`${conversao?.taxaConversao ?? 0}%`} onPress={() => router.push('/(escola)/captacao')} />
-        <Kpi label="Cobranças com erro" valor={precisamDeAcao} tom={precisamDeAcao > 0 ? 'alerta' : 'default'} onPress={() => router.push('/(escola)/financeiro')} />
-        <Kpi label="Matrículas vencendo" valor={vencendo} onPress={() => router.push('/(escola)/financeiro')} />
+        <Kpi label="Professores" valor={totalProfessores} icone="people-outline" onPress={() => router.push('/(escola)/equipe')} />
+        <Kpi label="Alunos matriculados" valor={totalAlunos} icone="school-outline" onPress={() => router.push('/(escola)/alunos')} />
+        <Kpi label="Leads no funil" valor={totalLeads} icone="megaphone-outline" onPress={() => router.push('/(escola)/captacao')} />
+        <Kpi label="Conversão (30d)" valor={`${conversao?.taxaConversao ?? 0}%`} icone="trending-up-outline" onPress={() => router.push('/(escola)/captacao')} />
+        <Kpi label="Cobranças com erro" valor={precisamDeAcao} icone="alert-circle-outline" tom={precisamDeAcao > 0 ? 'alerta' : 'default'} onPress={() => router.push('/(escola)/financeiro')} />
+        <Kpi label="Matrículas vencendo" valor={vencendo} icone="time-outline" onPress={() => router.push('/(escola)/financeiro')} />
       </View>
 
       <View style={estilos.duasColunas}>
-        <SectionCard style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
-          <Text style={estilos.cardTitulo}>Follow-ups pendentes</Text>
+        <SectionCard titulo="Follow-ups pendentes" style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
           {tarefasPendentes.length === 0 ? (
             <EstadoVazio icone="checkmark-circle-outline" texto="Nenhum follow-up pendente." />
           ) : (
@@ -133,8 +131,7 @@ export default function PainelEscola() {
           )}
         </SectionCard>
 
-        <SectionCard style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
-          <Text style={estilos.cardTitulo}>Reposições pra finalizar</Text>
+        <SectionCard titulo="Reposições pra finalizar" style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
           {reposicoesParaFinalizar.length === 0 ? (
             <EstadoVazio icone="checkmark-circle-outline" texto="Nenhuma reposição pendente." />
           ) : (
@@ -161,11 +158,8 @@ export default function PainelEscola() {
 }
 
 const estilos = StyleSheet.create({
-  saudacao: { fontSize: 22, fontWeight: '800', color: ERP.texto },
-  subtitulo: { fontSize: 13.5, color: ERP.textoSecundario, marginTop: 4 },
-  kpiGrade: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 22 },
-  duasColunas: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginTop: 22 },
-  cardTitulo: { fontSize: 14.5, fontWeight: '800', color: ERP.texto, marginBottom: 14 },
+  kpiGrade: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginBottom: 16 },
+  duasColunas: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
   linhaTitulo: { fontSize: 13.5, fontWeight: '700', color: ERP.texto },
   linhaSub: { fontSize: 12, color: ERP.textoSecundario, marginTop: 2 },
 });

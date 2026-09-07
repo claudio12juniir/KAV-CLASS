@@ -4,6 +4,8 @@ import * as SecureStore from 'expo-secure-store';
 import React, { useState } from 'react';
 import {
   Modal as RNModal,
+  Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,7 +15,7 @@ import {
   View,
 } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
-import { ERP, ERP_BREAKPOINT_DESKTOP } from '../../constants/erpTheme';
+import { ERP, ERP_BREAKPOINT_DESKTOP, transicaoWeb } from '../../constants/erpTheme';
 import { useEscolaContexto } from './_contexto';
 
 export function useEhDesktop() {
@@ -79,22 +81,28 @@ function SidebarConteudo({ onNavegar }: { onNavegar?: () => void }) {
               const ativo = normalizar(pathname) === normalizar(item.rota) ||
                 (item.chave !== 'painel' && normalizar(pathname).startsWith(normalizar(item.rota)));
               return (
-                <TouchableOpacity
+                <Pressable
                   key={item.chave}
-                  style={[estilos.itemNav, ativo && estilos.itemNavAtivo]}
+                  style={({ hovered, pressed }: any) => [
+                    estilos.itemNav,
+                    ativo && estilos.itemNavAtivo,
+                    !ativo && hovered && estilos.itemNavHover,
+                    pressed && { opacity: 0.85 },
+                  ]}
                   onPress={() => { router.push(item.rota as any); onNavegar?.(); }}
                 >
+                  {ativo && <View style={estilos.itemNavBarraAtiva} />}
                   <Ionicons name={item.icone} size={18} color={ativo ? ERP.sidebarTextoAtivo : ERP.sidebarTexto} />
                   <Text style={[estilos.itemNavTexto, ativo && estilos.itemNavTextoAtivo]}>{item.rotulo}</Text>
-                </TouchableOpacity>
+                </Pressable>
               );
             })}
           </View>
         ))}
       </ScrollView>
 
-      <TouchableOpacity
-        style={estilos.perfilRodape}
+      <Pressable
+        style={({ hovered }: any) => [estilos.perfilRodape, hovered && estilos.itemNavHover]}
         onPress={() => { router.push('/(escola)/perfil' as any); onNavegar?.(); }}
       >
         {fotoAdmin ? (
@@ -108,11 +116,11 @@ function SidebarConteudo({ onNavegar }: { onNavegar?: () => void }) {
           <Text style={estilos.perfilNome} numberOfLines={1}>{nomeAdmin || '—'}</Text>
           <Text style={estilos.perfilPapel}>{papel === 'DONO' ? 'Dono da escola' : 'Gestor'}</Text>
         </View>
-      </TouchableOpacity>
-      <TouchableOpacity style={estilos.sairBtn} onPress={sair}>
+      </Pressable>
+      <Pressable style={({ hovered }: any) => [estilos.sairBtn, hovered && estilos.itemNavHover]} onPress={sair}>
         <Ionicons name="log-out-outline" size={16} color={ERP.sidebarTextoMuted} />
         <Text style={estilos.sairTexto}>Sair</Text>
-      </TouchableOpacity>
+      </Pressable>
     </View>
   );
 }
@@ -157,19 +165,65 @@ export function ErpShell({ titulo, acao, children }: { titulo: string; acao?: Re
 
 // ─── Blocos de UI reutilizáveis ─────────────────────────────────────────
 
-export function SectionCard({ children, style }: { children: React.ReactNode; style?: any }) {
-  return <View style={[estilos.card, style]}>{children}</View>;
+// Cabeçalho de página — título grande + descrição + ação opcional à direita.
+// Substitui o par de <Text> duplicado em toda tela do painel.
+export function PageHeader({ titulo, subtitulo, acao }: { titulo: string; subtitulo?: string; acao?: React.ReactNode }) {
+  return (
+    <View style={estilos.pageHeader}>
+      <View style={{ flex: 1, minWidth: 220 }}>
+        <Text style={estilos.pageHeaderTitulo}>{titulo}</Text>
+        {subtitulo ? <Text style={estilos.pageHeaderSubtitulo}>{subtitulo}</Text> : null}
+      </View>
+      {acao ? <View style={estilos.pageHeaderAcao}>{acao}</View> : null}
+    </View>
+  );
 }
 
-export function Kpi({ label, valor, tom = 'default', onPress }: {
-  label: string; valor: string | number; tom?: 'default' | 'alerta' | 'sucesso'; onPress?: () => void;
+export function SectionCard({ children, style, titulo, subtitulo, acao }: {
+  children: React.ReactNode; style?: any; titulo?: string; subtitulo?: string; acao?: React.ReactNode;
 }) {
-  const Wrapper: any = onPress ? TouchableOpacity : View;
   return (
-    <Wrapper style={[estilos.kpi, tom === 'alerta' && estilos.kpiAlerta, tom === 'sucesso' && estilos.kpiSucesso]} onPress={onPress}>
-      <Text style={[estilos.kpiValor, tom === 'alerta' && { color: ERP.perigo }]}>{valor}</Text>
-      <Text style={estilos.kpiLabel}>{label}</Text>
-    </Wrapper>
+    <View style={[estilos.card, style]}>
+      {titulo ? (
+        <View style={estilos.cardHeader}>
+          <View style={{ flex: 1 }}>
+            <Text style={estilos.cardHeaderTitulo}>{titulo}</Text>
+            {subtitulo ? <Text style={estilos.cardHeaderSubtitulo}>{subtitulo}</Text> : null}
+          </View>
+          {acao}
+        </View>
+      ) : null}
+      {children}
+    </View>
+  );
+}
+
+export function Kpi({ label, valor, tom = 'default', onPress, icone }: {
+  label: string; valor: string | number; tom?: 'default' | 'alerta' | 'sucesso'; onPress?: () => void;
+  icone?: keyof typeof Ionicons.glyphMap;
+}) {
+  return (
+    <Pressable
+      disabled={!onPress}
+      onPress={onPress}
+      style={({ hovered, pressed }: any) => [
+        estilos.kpi,
+        tom === 'alerta' && estilos.kpiAlerta,
+        tom === 'sucesso' && estilos.kpiSucesso,
+        !!onPress && hovered && estilos.kpiHover,
+        pressed && { opacity: 0.9 },
+      ]}
+    >
+      <View style={estilos.kpiTopo}>
+        <Text style={estilos.kpiLabel}>{label}</Text>
+        {icone && (
+          <View style={estilos.kpiIconeBox}>
+            <Ionicons name={icone} size={13} color={ERP.textoMuted} />
+          </View>
+        )}
+      </View>
+      <Text style={[estilos.kpiValor, tom === 'alerta' && { color: ERP.perigo }, tom === 'sucesso' && { color: ERP.acentoForte }]}>{valor}</Text>
+    </Pressable>
   );
 }
 
@@ -184,6 +238,7 @@ export function Badge({ texto, tom = 'default' }: { texto: string; tom?: 'defaul
   const [bg, cor] = cores[tom];
   return (
     <View style={[estilos.badge, { backgroundColor: bg }]}>
+      <View style={[estilos.badgePonto, { backgroundColor: cor }]} />
       <Text style={[estilos.badgeTexto, { color: cor }]}>{texto}</Text>
     </View>
   );
@@ -194,12 +249,14 @@ export function Botao({ texto, onPress, variante = 'primario', carregando, icone
   carregando?: boolean; icone?: keyof typeof Ionicons.glyphMap; disabled?: boolean;
 }) {
   return (
-    <TouchableOpacity
-      style={[
+    <Pressable
+      style={({ hovered, pressed }: any) => [
         estilos.botao,
         variante === 'secundario' && estilos.botaoSecundario,
         variante === 'perigo' && estilos.botaoPerigo,
-        disabled && { opacity: 0.5 },
+        hovered && !disabled && !carregando && (variante === 'secundario' ? estilos.botaoSecundarioHover : estilos.botaoHover),
+        pressed && !disabled && { opacity: 0.85 },
+        (disabled || carregando) && { opacity: 0.5 },
       ]}
       onPress={onPress}
       disabled={disabled || carregando}
@@ -212,15 +269,22 @@ export function Botao({ texto, onPress, variante = 'primario', carregando, icone
           <Text style={[estilos.botaoTexto, variante === 'secundario' && { color: ERP.texto }]}>{texto}</Text>
         </>
       )}
-    </TouchableOpacity>
+    </Pressable>
   );
 }
 
 export function Campo({ label, ...props }: { label: string } & React.ComponentProps<typeof TextInput>) {
+  const [focado, setFocado] = useState(false);
   return (
     <View style={{ marginBottom: 14 }}>
       <Text style={estilos.campoLabel}>{label}</Text>
-      <TextInput placeholderTextColor={ERP.textoMuted} style={estilos.campoInput} {...props} />
+      <TextInput
+        placeholderTextColor={ERP.textoMuted}
+        style={[estilos.campoInput, focado && estilos.campoInputFocado]}
+        onFocus={(e) => { setFocado(true); props.onFocus?.(e); }}
+        onBlur={(e) => { setFocado(false); props.onBlur?.(e); }}
+        {...props}
+      />
     </View>
   );
 }
@@ -234,7 +298,12 @@ export function Modal({ visivel, titulo, onFechar, children, largura = 460 }: {
         <View style={[estilos.modalCard, { maxWidth: largura, width: '100%' }]}>
           <View style={estilos.modalHeader}>
             <Text style={estilos.modalTitulo}>{titulo}</Text>
-            <TouchableOpacity onPress={onFechar}><Ionicons name="close" size={22} color={ERP.textoSecundario} /></TouchableOpacity>
+            <Pressable
+              style={({ hovered }: any) => [estilos.modalFechar, hovered && { backgroundColor: ERP.fundo }]}
+              onPress={onFechar}
+            >
+              <Ionicons name="close" size={20} color={ERP.textoSecundario} />
+            </Pressable>
           </View>
           <ScrollView style={{ maxHeight: 520 }}>{children}</ScrollView>
         </View>
@@ -249,9 +318,13 @@ export function SubAbasSimples<T extends string>({ opcoes, ativa, onMudar }: {
   return (
     <View style={estilos.subAbas}>
       {opcoes.map((op) => (
-        <TouchableOpacity key={op.chave} style={[estilos.subAba, ativa === op.chave && estilos.subAbaAtiva]} onPress={() => onMudar(op.chave)}>
+        <Pressable
+          key={op.chave}
+          style={({ hovered }: any) => [estilos.subAba, ativa === op.chave && estilos.subAbaAtiva, hovered && ativa !== op.chave && { backgroundColor: 'rgba(16,24,40,0.03)' }]}
+          onPress={() => onMudar(op.chave)}
+        >
           <Text style={[estilos.subAbaTexto, ativa === op.chave && estilos.subAbaTextoAtiva]}>{op.rotulo}</Text>
-        </TouchableOpacity>
+        </Pressable>
       ))}
     </View>
   );
@@ -260,7 +333,9 @@ export function SubAbasSimples<T extends string>({ opcoes, ativa, onMudar }: {
 export function EstadoVazio({ icone, texto }: { icone: keyof typeof Ionicons.glyphMap; texto: string }) {
   return (
     <View style={estilos.vazio}>
-      <Ionicons name={icone} size={28} color={ERP.textoMuted} />
+      <View style={estilos.vazioIconeBox}>
+        <Ionicons name={icone} size={22} color={ERP.textoMuted} />
+      </View>
       <Text style={estilos.vazioTexto}>{texto}</Text>
     </View>
   );
@@ -308,16 +383,24 @@ export function Tabela<T extends { id: string }>({ colunas, dados, onLinhaPress,
           <Text key={c.chave} style={[estilos.tabelaHeaderTexto, { flex: c.flex ?? 1, textAlign: c.alinhar || 'left' }]}>{c.titulo}</Text>
         ))}
       </View>
-      {dados.map((item) => {
-        const Wrapper: any = onLinhaPress ? TouchableOpacity : View;
+      {dados.map((item, idx) => {
+        const ultima = idx === dados.length - 1;
         return (
-          <Wrapper key={item.id} style={estilos.tabelaLinha} onPress={onLinhaPress ? () => onLinhaPress(item) : undefined}>
+          <Pressable
+            key={item.id}
+            style={({ hovered }: any) => [
+              estilos.tabelaLinha,
+              ultima && { borderBottomWidth: 0 },
+              !!onLinhaPress && hovered && estilos.tabelaLinhaHover,
+            ]}
+            onPress={onLinhaPress ? () => onLinhaPress(item) : undefined}
+          >
             {colunas.map((c) => (
               <View key={c.chave} style={{ flex: c.flex ?? 1 }}>
                 {c.render ? c.render(item) : <Text style={[estilos.tabelaCelula, { textAlign: c.alinhar || 'left' }]}>{String((item as any)[c.chave] ?? '—')}</Text>}
               </View>
             ))}
-          </Wrapper>
+          </Pressable>
         );
       })}
     </View>
@@ -336,8 +419,13 @@ const estilos = StyleSheet.create({
 
   grupoNav: { marginBottom: 18, paddingHorizontal: 12 },
   grupoTitulo: { color: ERP.sidebarTextoMuted, fontSize: 10.5, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 6, marginLeft: 8 },
-  itemNav: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 8, paddingVertical: 9, borderRadius: ERP.raio.sm },
+  itemNav: {
+    flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 8, paddingVertical: 9, borderRadius: ERP.raio.sm,
+    marginBottom: 1, position: 'relative', ...transicaoWeb('background-color'),
+  },
+  itemNavHover: { backgroundColor: ERP.sidebarBgHover },
   itemNavAtivo: { backgroundColor: ERP.sidebarBgAtivo },
+  itemNavBarraAtiva: { position: 'absolute', left: -12, top: 6, bottom: 6, width: 3, borderRadius: 2, backgroundColor: ERP.acento },
   itemNavTexto: { color: ERP.sidebarTexto, fontSize: 13.5, fontWeight: '500' },
   itemNavTextoAtivo: { color: ERP.sidebarTextoAtivo, fontWeight: '700' },
 
@@ -357,29 +445,52 @@ const estilos = StyleSheet.create({
   topbar: {
     flexDirection: 'row', alignItems: 'center', height: 60, paddingHorizontal: 24,
     backgroundColor: ERP.superficie, borderBottomWidth: 1, borderBottomColor: ERP.borda,
+    ...ERP.sombra.xs, zIndex: 1,
   },
   hamburger: { marginRight: 14 },
-  topbarTitulo: { fontSize: 15, fontWeight: '700', color: ERP.texto },
+  topbarTitulo: { fontSize: 13, fontWeight: '700', color: ERP.textoSecundario, letterSpacing: 0.2 },
 
   conteudo: { flex: 1 },
   conteudoInner: { padding: 28, paddingBottom: 60, maxWidth: 1180, width: '100%', alignSelf: 'center' },
 
-  card: { backgroundColor: ERP.superficie, borderRadius: ERP.raio.lg, borderWidth: 1, borderColor: ERP.borda, padding: 22 },
+  pageHeader: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 24 },
+  pageHeaderTitulo: { fontSize: 22, fontWeight: '800', color: ERP.texto, letterSpacing: -0.3 },
+  pageHeaderSubtitulo: { fontSize: 13.5, color: ERP.textoSecundario, marginTop: 5, lineHeight: 19.5, maxWidth: 560 },
+  pageHeaderAcao: { flexDirection: 'row', gap: 8 },
 
-  kpi: { flexBasis: 220, flexGrow: 1, backgroundColor: ERP.superficie, borderRadius: ERP.raio.lg, borderWidth: 1, borderColor: ERP.borda, padding: 18 },
+  card: {
+    backgroundColor: ERP.superficie, borderRadius: ERP.raio.lg, borderWidth: 1, borderColor: ERP.borda, padding: 22,
+    ...ERP.sombra.xs, marginBottom: 16,
+  },
+  cardHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 16, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: ERP.bordaSuave },
+  cardHeaderTitulo: { fontSize: 14.5, fontWeight: '800', color: ERP.texto, letterSpacing: -0.1 },
+  cardHeaderSubtitulo: { fontSize: 12, color: ERP.textoMuted, marginTop: 2 },
+
+  kpi: {
+    flexBasis: 220, flexGrow: 1, backgroundColor: ERP.superficie, borderRadius: ERP.raio.lg, borderWidth: 1, borderColor: ERP.borda, padding: 18,
+    ...ERP.sombra.xs, ...transicaoWeb('transform, box-shadow, border-color'),
+  },
+  kpiHover: { borderColor: ERP.bordaForte, transform: [{ translateY: -2 }], ...ERP.sombra.sm },
   kpiAlerta: { backgroundColor: ERP.perigoSoft, borderColor: '#F3C1BC' },
   kpiSucesso: { backgroundColor: ERP.sucessoSoft, borderColor: '#AEE6C9' },
-  kpiValor: { fontSize: 28, fontWeight: '800', color: ERP.texto },
-  kpiLabel: { fontSize: 12.5, color: ERP.textoSecundario, marginTop: 4, fontWeight: '600' },
+  kpiTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  kpiIconeBox: { width: 22, height: 22, borderRadius: 6, backgroundColor: 'rgba(16,24,40,0.04)', alignItems: 'center', justifyContent: 'center' },
+  kpiValor: { fontSize: 27, fontWeight: '800', color: ERP.texto, marginTop: 8, letterSpacing: -0.5, fontVariant: ['tabular-nums'] },
+  kpiLabel: { fontSize: 12, color: ERP.textoSecundario, fontWeight: '600', flexShrink: 1 },
 
-  badge: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20, alignSelf: 'flex-start' },
+  badge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 20, alignSelf: 'flex-start' },
+  badgePonto: { width: 5, height: 5, borderRadius: 3 },
   badgeTexto: { fontSize: 11, fontWeight: '700' },
 
   botao: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
     backgroundColor: ERP.texto, borderRadius: ERP.raio.sm, paddingHorizontal: 16, height: 40,
+    ...transicaoWeb('background-color, box-shadow, border-color'),
+    ...(Platform.OS === 'web' ? { cursor: 'pointer' as any } : null),
   },
+  botaoHover: { backgroundColor: '#000', ...ERP.sombra.sm },
   botaoSecundario: { backgroundColor: ERP.superficie, borderWidth: 1, borderColor: ERP.bordaForte },
+  botaoSecundarioHover: { backgroundColor: ERP.fundo, borderColor: ERP.textoMuted },
   botaoPerigo: { backgroundColor: ERP.perigo },
   botaoTexto: { color: '#fff', fontSize: 13.5, fontWeight: '700' },
 
@@ -387,28 +498,36 @@ const estilos = StyleSheet.create({
   campoInput: {
     height: 42, borderWidth: 1, borderColor: ERP.bordaForte, borderRadius: ERP.raio.sm,
     paddingHorizontal: 13, fontSize: 14, color: ERP.texto, backgroundColor: ERP.superficie,
+    ...transicaoWeb('border-color'),
   },
+  campoInputFocado: { borderColor: ERP.acento, borderWidth: 1.5 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(16,24,40,0.55)', alignItems: 'center', justifyContent: 'center', padding: 20 },
-  modalCard: { backgroundColor: ERP.superficie, borderRadius: ERP.raio.lg, padding: 22 },
-  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  modalTitulo: { fontSize: 16, fontWeight: '800', color: ERP.texto },
+  modalCard: { backgroundColor: ERP.superficie, borderRadius: ERP.raio.xl, padding: 24, ...ERP.sombra.lg },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: ERP.bordaSuave },
+  modalTitulo: { fontSize: 16.5, fontWeight: '800', color: ERP.texto, letterSpacing: -0.2 },
+  modalFechar: { width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center', ...transicaoWeb('background-color') },
 
   subAbas: {
     flexDirection: 'row', backgroundColor: ERP.fundo, borderRadius: ERP.raio.sm,
     padding: 3, marginBottom: 18, borderWidth: 1, borderColor: ERP.borda,
   },
-  subAba: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: ERP.raio.sm - 2 },
+  subAba: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: ERP.raio.sm - 2, ...transicaoWeb('background-color') },
   subAbaAtiva: { backgroundColor: ERP.superficie, shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 3, shadowOffset: { width: 0, height: 1 } },
   subAbaTexto: { fontSize: 12.5, fontWeight: '600', color: ERP.textoSecundario },
   subAbaTextoAtiva: { color: ERP.texto, fontWeight: '700' },
 
-  vazio: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, gap: 10 },
+  vazio: { alignItems: 'center', justifyContent: 'center', paddingVertical: 44, gap: 12 },
+  vazioIconeBox: { width: 46, height: 46, borderRadius: 23, backgroundColor: ERP.fundo, alignItems: 'center', justifyContent: 'center' },
   vazioTexto: { color: ERP.textoMuted, fontSize: 13 },
 
-  tabelaHeader: { flexDirection: 'row', paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: ERP.borda, marginBottom: 4 },
-  tabelaHeaderTexto: { fontSize: 11, fontWeight: '700', color: ERP.textoMuted, letterSpacing: 0.4, textTransform: 'uppercase' },
-  tabelaLinha: { flexDirection: 'row', alignItems: 'center', paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#F1F3F6' },
+  tabelaHeader: { flexDirection: 'row', paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: ERP.borda, marginBottom: 2 },
+  tabelaHeaderTexto: { fontSize: 10.5, fontWeight: '700', color: ERP.textoMuted, letterSpacing: 0.5, textTransform: 'uppercase' },
+  tabelaLinha: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 8, marginHorizontal: -8,
+    borderRadius: 8, borderBottomWidth: 1, borderBottomColor: ERP.bordaSuave, ...transicaoWeb('background-color'),
+  },
+  tabelaLinhaHover: { backgroundColor: ERP.hover },
   tabelaCelula: { fontSize: 13.5, color: ERP.texto },
 
   tabelaCardMobile: { borderWidth: 1, borderColor: ERP.borda, borderRadius: ERP.raio.md, padding: 14, marginBottom: 10, gap: 10, backgroundColor: ERP.superficie },

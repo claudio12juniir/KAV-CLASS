@@ -5,7 +5,7 @@ import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'reac
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, SectionCard, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, PageHeader, SectionCard, Tabela } from './_ui';
 
 export default function ComunicadosEscola() {
   const [carregando, setCarregando] = useState(true);
@@ -105,8 +105,10 @@ export default function ComunicadosEscola() {
 
   return (
     <ErpShell titulo="Comunicados" acao={<Botao texto="Novo comunicado" icone="add" onPress={abrirNovo} />}>
-      <Text style={estilos.titulo}>Comunicados</Text>
-      <Text style={estilos.subtitulo}>Broadcast por e-mail pra escola toda. Rascunho edita/apaga livre — depois de enviado, não dá pra desfazer</Text>
+      <PageHeader
+        titulo="Comunicados"
+        subtitulo="Broadcast por e-mail pra escola toda. Rascunho edita/apaga livre — depois de enviado, não dá pra desfazer"
+      />
 
       <SectionCard>
         {comunicados.length === 0 ? (
@@ -162,8 +164,6 @@ export default function ComunicadosEscola() {
 }
 
 const estilos = StyleSheet.create({
-  titulo: { fontSize: 20, fontWeight: '800', color: ERP.texto },
-  subtitulo: { fontSize: 13, color: ERP.textoSecundario, marginTop: 3, marginBottom: 20 },
   linhaTitulo: { fontSize: 13.5, fontWeight: '600', color: ERP.texto },
   linhaSub: { fontSize: 12, color: ERP.textoSecundario, marginTop: 2 },
   link: { fontSize: 13, fontWeight: '600', color: ERP.textoSecundario },
