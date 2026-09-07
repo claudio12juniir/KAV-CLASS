@@ -48,6 +48,7 @@ export default function RelatoriosProfessorScreen() {
 
   // ── Visão comum aos dois papéis ─────────────────────────────────────────
   const [faltas, setFaltas] = useState<any[]>([]);
+  const [alunosEmRisco, setAlunosEmRisco] = useState<{ id: string; nome: string; motivos: string[] }[]>([]);
 
   // ── Painel de métricas do GESTOR (S5.2) ─────────────────────────────────
   const anoAtual = new Date().getFullYear();
@@ -111,6 +112,7 @@ export default function RelatoriosProfessorScreen() {
               { mes: 'Abr', valor: 0, altura: '10%' },
             ]);
         setFaltas(Array.isArray(dados.faltas) ? dados.faltas : []);
+        setAlunosEmRisco(Array.isArray(dados.alunosEmRisco) ? dados.alunosEmRisco : []);
       }
 
       if (papelAtual === 'DONO' || papelAtual === 'GESTOR') {
@@ -317,6 +319,24 @@ export default function RelatoriosProfessorScreen() {
             </View>
           </View>
         </>
+      )}
+
+      {alunosEmRisco.length > 0 && (
+        <View style={styles.cardFaltas}>
+          <Text style={styles.tituloSecao}>Alunos em Risco</Text>
+          <Text style={styles.subtitulo}>Faltas seguidas, pagamento atrasado ou sem aula marcada — junto, é sinal de cancelamento.</Text>
+          {alunosEmRisco.map((a) => (
+            <View key={a.id} style={[styles.linhaFalta, { alignItems: 'flex-start' }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.nomeFalta}>{a.nome}</Text>
+                <Text style={styles.qtdFalta}>{a.motivos.join(' · ')}</Text>
+              </View>
+              <View style={[styles.badgeStatus, { backgroundColor: '#FFEBEE' }]}>
+                <Text style={[styles.textoStatusFalta, { color: '#C62828' }]}>Risco</Text>
+              </View>
+            </View>
+          ))}
+        </View>
       )}
 
       <View style={styles.cardFaltas}>

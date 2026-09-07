@@ -5,6 +5,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as SecureStore from 'expo-secure-store';
+import * as Sharing from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useState } from 'react';
@@ -71,6 +72,38 @@ export default function PagamentoAlunoScreen() {
   const [nomeComprovante, setNomeComprovante] = useState('');
   const [comprovanteAnexo, setComprovanteAnexo] = useState<{ uri: string; nome: string; mime: string } | null>(null);
   const [modalImagemAnexo, setModalImagemAnexo] = useState(false);
+
+  const [recibo, setRecibo] = useState<any | null>(null);
+  const [carregandoRecibo, setCarregandoRecibo] = useState(false);
+
+  const verRecibo = async (id: string) => {
+    setCarregandoRecibo(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/pagamentos/${id}/recibo`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const dados = await res.json();
+      if (res.ok) setRecibo(dados);
+      else Alert.alert('Não foi possível gerar o recibo', dados.erro || 'Tente novamente.');
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão.');
+    } finally {
+      setCarregandoRecibo(false);
+    }
+  };
+
+  const compartilharRecibo = async () => {
+    if (!recibo) return;
+    const texto = `Recibo #${recibo.numeroRecibo}\nAluno: ${recibo.aluno}\nProfessor: ${recibo.professor}\nValor: R$ ${Number(recibo.valor).toFixed(2).replace('.', ',')}\nPago em: ${recibo.dataPagamento ? new Date(recibo.dataPagamento).toLocaleDateString('pt-BR') : '—'}`;
+    try {
+      const fileUri = `${FileSystem.cacheDirectory}recibo_${recibo.numeroRecibo}.txt`;
+      await FileSystem.writeAsStringAsync(fileUri, texto);
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(fileUri, { dialogTitle: 'Recibo' });
+    } catch {
+      Alert.alert('Erro', 'Não foi possível compartilhar o recibo.');
+    }
+  };
 
   const parcelaAtual = parcelas.find(p => p.status === 'PENDENTE' || p.status === 'ATRASADO' || p.status === 'EM_ANALISE');
 
@@ -312,9 +345,9 @@ export default function PagamentoAlunoScreen() {
     const podeAbrir = item.status !== 'PAGO';
     return (
       <TouchableOpacity
-        style={[styles.cardParcela, !podeAbrir && { opacity: 0.5 }]}
-        onPress={() => abrirModal(item)}
-        activeOpacity={podeAbrir ? 0.75 : 1}
+        style={[styles.cardParcela, !podeAbrir && { opacity: 0.85 }]}
+        onPress={() => (podeAbrir ? abrirModal(item) : verRecibo(item.id))}
+        activeOpacity={0.75}
       >
         <View style={{ flex: 1 }}>
           <Text style={styles.mesParcela}>{item.mes}</Text>
@@ -327,7 +360,12 @@ export default function PagamentoAlunoScreen() {
             <Text style={[styles.textoBadge, { color: cfg.cor }]}>{cfg.label}</Text>
           </View>
         </View>
-        {podeAbrir && <Ionicons name="chevron-forward" size={18} color={CORES.secundaria} style={{ marginLeft: 6 }} />}
+        <Ionicons
+          name={podeAbrir ? 'chevron-forward' : 'receipt-outline'}
+          size={18}
+          color={podeAbrir ? CORES.secundaria : CORES.acento}
+          style={{ marginLeft: 6 }}
+        />
       </TouchableOpacity>
     );
   };
@@ -619,6 +657,42 @@ export default function PagamentoAlunoScreen() {
             <Image source={{ uri: comprovanteAnexo.uri }} style={styles.imagemAnexoCompleta} resizeMode="contain" />
           )}
         </Pressable>
+      </Modal>
+
+      <Modal visible={!!recibo || carregandoRecibo} transparent animationType="fade" onRequestClose={() => setRecibo(null)}>
+        <View style={styles.overlay}>
+          <View style={styles.modal}>
+            {carregandoRecibo && !recibo ? (
+              <SyncLoader size="large" color={CORES.acento} />
+            ) : recibo ? (
+              <>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                  <Text style={{ color: CORES.primaria, fontSize: 15, fontWeight: 'bold' }}>RECIBO #{recibo.numeroRecibo}</Text>
+                  <TouchableOpacity onPress={() => setRecibo(null)}>
+                    <Ionicons name="close" size={22} color={CORES.secundaria} />
+                  </TouchableOpacity>
+                </View>
+                {[
+                  ['Professor', recibo.professor],
+                  ['Valor', `R$ ${Number(recibo.valor).toFixed(2).replace('.', ',')}`],
+                  ['Pago em', recibo.dataPagamento ? new Date(recibo.dataPagamento).toLocaleDateString('pt-BR') : '—'],
+                ].map(([label, valor]) => (
+                  <View key={label} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: CORES.borda }}>
+                    <Text style={{ color: CORES.secundaria, fontSize: 13 }}>{label}</Text>
+                    <Text style={{ color: CORES.primaria, fontSize: 13, fontWeight: '700' }}>{valor}</Text>
+                  </View>
+                ))}
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', gap: 8, justifyContent: 'center', backgroundColor: CORES.acento, borderRadius: 10, paddingVertical: 14, marginTop: 18 }}
+                  onPress={compartilharRecibo}
+                >
+                  <Ionicons name="share-outline" size={18} color={CORES.fundo} />
+                  <Text style={{ color: CORES.fundo, fontWeight: 'bold' }}>COMPARTILHAR</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+          </View>
+        </View>
       </Modal>
     </View>
   );

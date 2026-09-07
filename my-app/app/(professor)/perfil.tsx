@@ -72,6 +72,9 @@ export default function PerfilProfessorScreen() {
   const [senhaVisivel, setSenhaVisivel] = useState(false);
   const [accordionSenha, setAccordionSenha] = useState(false);
 
+  const [avaliacoes, setAvaliacoes] = useState<{ media: number | null; total: number; avaliacoes: any[] }>({ media: null, total: 0, avaliacoes: [] });
+  const [carregandoAvaliacoes, setCarregandoAvaliacoes] = useState(true);
+
   const carregarPerfil = useCallback(async () => {
     try {
       const token = await SecureStore.getItemAsync('kav_token');
@@ -112,7 +115,21 @@ export default function PerfilProfessorScreen() {
     }
   }, []);
 
-  useFocusEffect(useCallback(() => { carregarPerfil(); carregarAssinatura(); }, [carregarPerfil, carregarAssinatura]));
+  const carregarAvaliacoes = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/professor/avaliacoes`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) setAvaliacoes(await res.json());
+    } catch (err) {
+      console.error('Erro ao carregar avaliações:', err);
+    } finally {
+      setCarregandoAvaliacoes(false);
+    }
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarPerfil(); carregarAssinatura(); carregarAvaliacoes(); }, [carregarPerfil, carregarAssinatura, carregarAvaliacoes]));
 
   const diasRestantesTeste = assinatura?.assinaturaFim
     ? Math.max(0, Math.ceil((new Date(assinatura.assinaturaFim).getTime() - Date.now()) / 86400000))
@@ -365,6 +382,43 @@ export default function PerfilProfessorScreen() {
           autoCapitalize="none"
           keyboardType="url"
         />
+
+        {/* Minhas avaliações */}
+        <Text style={styles.secaoLabel}>MINHAS AVALIAÇÕES</Text>
+        {carregandoAvaliacoes ? (
+          <SyncLoader size="small" color={CORES.acento} />
+        ) : avaliacoes.total === 0 ? (
+          <Text style={{ color: CORES.secundaria, fontSize: 13, marginBottom: 20 }}>
+            Nenhuma avaliação recebida ainda.
+          </Text>
+        ) : (
+          <View style={{ marginBottom: 20 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <Text style={{ fontSize: 28, fontWeight: 'bold', color: CORES.primaria }}>
+                {avaliacoes.media?.toFixed(1)}
+              </Text>
+              <View style={{ flexDirection: 'row' }}>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <Ionicons key={n} name={n <= Math.round(avaliacoes.media || 0) ? 'star' : 'star-outline'} size={16} color={CORES.aviso} />
+                ))}
+              </View>
+              <Text style={{ color: CORES.secundaria, fontSize: 12 }}>({avaliacoes.total})</Text>
+            </View>
+            {avaliacoes.avaliacoes.slice(0, 5).map((a: any) => (
+              <View key={a.id} style={{ borderTopWidth: 1, borderTopColor: CORES.borda, paddingVertical: 10 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text style={{ fontWeight: '700', color: CORES.primaria, fontSize: 13 }}>{a.aluno?.nome || 'Aluno'}</Text>
+                  <View style={{ flexDirection: 'row' }}>
+                    {[1, 2, 3, 4, 5].map((n) => (
+                      <Ionicons key={n} name={n <= a.nota ? 'star' : 'star-outline'} size={12} color={CORES.aviso} />
+                    ))}
+                  </View>
+                </View>
+                {a.comentario ? <Text style={{ color: CORES.secundaria, fontSize: 12.5, marginTop: 4 }}>{a.comentario}</Text> : null}
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Alterar senha */}
         <TouchableOpacity

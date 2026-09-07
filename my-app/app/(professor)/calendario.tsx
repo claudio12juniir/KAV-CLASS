@@ -3,8 +3,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useState } from 'react';
 import {
+  Alert,
   ScrollView,
   StyleSheet,
   Text,
@@ -78,6 +81,51 @@ export default function CalendarioProfessorScreen() {
     setDiaSelecionado(1);
   };
 
+  // Exporta a agenda do mês visível como .ics — sem duração cadastrada por
+  // aula, assume 1h fixa (mesmo padrão de slot fixo já usado no resto do
+  // app). Duração real por modalidade fica pra quando a aula passar a
+  // nascer de uma Modalidade em vez de avulsa.
+  const formatarICS = (data: Date) => {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${data.getUTCFullYear()}${pad(data.getUTCMonth() + 1)}${pad(data.getUTCDate())}T${pad(data.getUTCHours())}${pad(data.getUTCMinutes())}${pad(data.getUTCSeconds())}Z`;
+  };
+
+  const exportarAgendaICS = async () => {
+    const todasAulas = Object.values(aulasMes).flat();
+    if (todasAulas.length === 0) {
+      Alert.alert('Nada pra exportar', 'Não há aulas neste mês.');
+      return;
+    }
+    const agora = formatarICS(new Date());
+    const eventos = todasAulas.map((aula: any) => {
+      const inicio = new Date(aula.dataHora);
+      const fim = new Date(inicio.getTime() + 60 * 60 * 1000);
+      return [
+        'BEGIN:VEVENT',
+        `UID:${aula.id}@kavclass.app`,
+        `DTSTAMP:${agora}`,
+        `DTSTART:${formatarICS(inicio)}`,
+        `DTEND:${formatarICS(fim)}`,
+        `SUMMARY:Aula com ${aula.aluno?.nome || 'aluno'}`,
+        `DESCRIPTION:${aula.tipo === 'REPOSICAO' ? 'Reposição' : 'Aula regular'}${aula.tema ? ' — ' + aula.tema.replace(/\n/g, ' ') : ''}`,
+        'END:VEVENT',
+      ].join('\r\n');
+    });
+    const conteudo = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//KAV Class//Agenda//PT', 'CALSCALE:GREGORIAN', ...eventos, 'END:VCALENDAR'].join('\r\n');
+
+    try {
+      const fileUri = `${FileSystem.cacheDirectory}agenda_${anoAtual}_${mesAtual + 1}.ics`;
+      await FileSystem.writeAsStringAsync(fileUri, conteudo);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, { mimeType: 'text/calendar', dialogTitle: 'Exportar agenda' });
+      } else {
+        Alert.alert('Exportado', 'Arquivo .ics gerado, mas o compartilhamento não está disponível neste dispositivo.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Não foi possível exportar a agenda.');
+    }
+  };
+
   const totalDias = diasNoMes(anoAtual, mesAtual);
   const offset = primeiroDiaDaSemana(anoAtual, mesAtual);
   const aulasDoDia = aulasMes[diaSelecionado] || [];
@@ -102,7 +150,9 @@ export default function CalendarioProfessorScreen() {
           <Ionicons name="menu" size={24} color="#000000" />
         </TouchableOpacity>
         <Text style={styles.titulo}>AGENDA</Text>
-        <View style={{ width: 40 }} />
+        <TouchableOpacity onPress={exportarAgendaICS} style={{ width: 40, alignItems: 'flex-end' }}>
+          <Ionicons name="download-outline" size={22} color="#000000" />
+        </TouchableOpacity>
       </View>
 
       {/* Navegação de mês */}

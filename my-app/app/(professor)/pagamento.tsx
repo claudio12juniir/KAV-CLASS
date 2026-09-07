@@ -64,6 +64,13 @@ export default function FinanceiroProfessorScreen() {
   const [notificando, setNotificando] = useState<string | null>(null);
   const [modalImagemComprovante, setModalImagemComprovante] = useState<string | null>(null);
 
+  const [recibo, setRecibo] = useState<any | null>(null);
+  const [carregandoRecibo, setCarregandoRecibo] = useState(false);
+
+  const [faturaDividir, setFaturaDividir] = useState<any | null>(null);
+  const [partesDividir, setPartesDividir] = useState<{ valor: string; vencimento: string }[]>([]);
+  const [dividindo, setDividindo] = useState(false);
+
   const abrirComprovantePdf = async (dataUrl: string) => {
     try {
       const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
@@ -198,6 +205,81 @@ export default function FinanceiroProfessorScreen() {
     }
   };
 
+  const verRecibo = async (id: string) => {
+    setCarregandoRecibo(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/pagamentos/${id}/recibo`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const dados = await res.json();
+      if (res.ok) setRecibo(dados);
+      else Alert.alert('Não foi possível gerar o recibo', dados.erro || 'Tente novamente.');
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão.');
+    } finally {
+      setCarregandoRecibo(false);
+    }
+  };
+
+  const compartilharRecibo = async () => {
+    if (!recibo) return;
+    const texto = `Recibo #${recibo.numeroRecibo}\nAluno: ${recibo.aluno}\nProfessor: ${recibo.professor}\nValor: R$ ${Number(recibo.valor).toFixed(2).replace('.', ',')}\nPago em: ${new Date(recibo.dataPagamento).toLocaleDateString('pt-BR')}\nEmitido em: ${new Date(recibo.emitidoEm).toLocaleDateString('pt-BR')}`;
+    try {
+      const fileUri = `${FileSystem.cacheDirectory}recibo_${recibo.numeroRecibo}.txt`;
+      await FileSystem.writeAsStringAsync(fileUri, texto);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, { dialogTitle: 'Recibo' });
+      }
+    } catch {
+      Alert.alert('Erro', 'Não foi possível compartilhar o recibo.');
+    }
+  };
+
+  const abrirModalDividir = (item: any) => {
+    setFaturaDividir(item);
+    setPartesDividir([
+      { valor: (Number(item.valor) / 2).toFixed(2), vencimento: '' },
+      { valor: (Number(item.valor) / 2).toFixed(2), vencimento: '' },
+    ]);
+  };
+
+  const somaPartes = partesDividir.reduce((acc, p) => acc + (parseFloat(p.valor.replace(',', '.')) || 0), 0);
+
+  const confirmarDivisao = async () => {
+    if (!faturaDividir) return;
+    if (Math.abs(somaPartes - Number(faturaDividir.valor)) > 0.01) {
+      Alert.alert('Valores não batem', `A soma das partes (R$ ${somaPartes.toFixed(2)}) precisa ser igual ao valor original (R$ ${Number(faturaDividir.valor).toFixed(2)}).`);
+      return;
+    }
+    setDividindo(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/pagamentos/${faturaDividir.id}/dividir`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          partes: partesDividir.map(p => ({
+            valor: parseFloat(p.valor.replace(',', '.')),
+            vencimento: p.vencimento || undefined,
+          })),
+        }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        Alert.alert('Fatura dividida!', `${partesDividir.length} novas parcelas criadas.`);
+        setFaturaDividir(null);
+        carregarDados();
+      } else {
+        Alert.alert('Não foi possível dividir', dados.erro || 'Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão.');
+    } finally {
+      setDividindo(false);
+    }
+  };
+
   const totalArrecadado = mensalidadesMes
     .filter(m => m.status === 'PAGO')
     .reduce((acc, cur) => acc + Number(cur.valor), 0);
@@ -207,7 +289,8 @@ export default function FinanceiroProfessorScreen() {
   const renderItem = ({ item }: { item: any }) => {
     const displayStatus = calcularStatusDisplay(item);
     const cfg = STATUS_MAP[displayStatus] || STATUS_MAP['EM_DIA'];
-    const temAcao = displayStatus === 'A_VENCER' || displayStatus === 'EM_ANALISE';
+    const podeDividir = item.status === 'PENDENTE' || item.status === 'ATRASADO';
+    const temAcao = displayStatus === 'A_VENCER' || displayStatus === 'EM_ANALISE' || displayStatus === 'PAGO' || podeDividir;
 
     return (
       <View style={styles.card}>
@@ -271,6 +354,18 @@ export default function FinanceiroProfessorScreen() {
               >
                 <Ionicons name="checkmark-circle" size={16} color={CORES.fundo} />
                 <Text style={styles.textoBotaoConfirmar}>Confirmar Pagamento</Text>
+              </TouchableOpacity>
+            )}
+            {displayStatus === 'PAGO' && (
+              <TouchableOpacity style={styles.botaoRecibo} onPress={() => verRecibo(item.id)} disabled={carregandoRecibo}>
+                <Ionicons name="receipt-outline" size={16} color={CORES.acento} />
+                <Text style={styles.textoBotaoRecibo}>Ver recibo</Text>
+              </TouchableOpacity>
+            )}
+            {podeDividir && (
+              <TouchableOpacity style={styles.botaoRecibo} onPress={() => abrirModalDividir(item)}>
+                <Ionicons name="git-branch-outline" size={16} color={CORES.acento} />
+                <Text style={styles.textoBotaoRecibo}>Dividir fatura</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -396,6 +491,96 @@ export default function FinanceiroProfessorScreen() {
           )}
         </Pressable>
       </Modal>
+
+      {/* Recibo */}
+      <Modal visible={!!recibo || carregandoRecibo} transparent animationType="fade" onRequestClose={() => setRecibo(null)}>
+        <View style={styles.overlay}>
+          <View style={[styles.modal, { maxHeight: undefined }]}>
+            {carregandoRecibo && !recibo ? (
+              <SyncLoader size="large" color={CORES.acento} />
+            ) : recibo ? (
+              <>
+                <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitulo}>RECIBO #{recibo.numeroRecibo}</Text>
+                  <TouchableOpacity onPress={() => setRecibo(null)}>
+                    <Ionicons name="close" size={22} color={CORES.secundaria} />
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.reciboLinha}><Text style={styles.reciboLabel}>Aluno</Text><Text style={styles.reciboValor}>{recibo.aluno}</Text></View>
+                <View style={styles.reciboLinha}><Text style={styles.reciboLabel}>Professor</Text><Text style={styles.reciboValor}>{recibo.professor}</Text></View>
+                <View style={styles.reciboLinha}><Text style={styles.reciboLabel}>Valor</Text><Text style={styles.reciboValor}>R$ {Number(recibo.valor).toFixed(2).replace('.', ',')}</Text></View>
+                {recibo.metodo && <View style={styles.reciboLinha}><Text style={styles.reciboLabel}>Método</Text><Text style={styles.reciboValor}>{recibo.metodo}</Text></View>}
+                <View style={styles.reciboLinha}><Text style={styles.reciboLabel}>Pago em</Text><Text style={styles.reciboValor}>{recibo.dataPagamento ? new Date(recibo.dataPagamento).toLocaleDateString('pt-BR') : '—'}</Text></View>
+                <View style={styles.reciboLinha}><Text style={styles.reciboLabel}>Emitido em</Text><Text style={styles.reciboValor}>{new Date(recibo.emitidoEm).toLocaleDateString('pt-BR')}</Text></View>
+                <TouchableOpacity style={[styles.btnSalvar, { flexDirection: 'row', gap: 8, justifyContent: 'center' }]} onPress={compartilharRecibo}>
+                  <Ionicons name="share-outline" size={18} color={CORES.fundo} />
+                  <Text style={styles.btnSalvarTexto}>COMPARTILHAR</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Dividir fatura */}
+      <Modal visible={!!faturaDividir} transparent animationType="slide" onRequestClose={() => setFaturaDividir(null)}>
+        <KeyboardAvoidingView style={styles.overlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.modal}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitulo}>DIVIDIR FATURA</Text>
+              <TouchableOpacity onPress={() => setFaturaDividir(null)}>
+                <Ionicons name="close" size={22} color={CORES.secundaria} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalDesc}>
+              Valor original: R$ {faturaDividir ? Number(faturaDividir.valor).toFixed(2).replace('.', ',') : '0,00'} — divida em quantas partes quiser, desde que a soma bata.
+            </Text>
+            <ScrollView style={{ maxHeight: 260 }}>
+              {partesDividir.map((p, i) => (
+                <View key={i} style={{ flexDirection: 'row', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+                  <TextInput
+                    style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                    value={p.valor}
+                    onChangeText={(v) => setPartesDividir(prev => prev.map((x, idx) => idx === i ? { ...x, valor: v } : x))}
+                    placeholder="Valor"
+                    keyboardType="decimal-pad"
+                  />
+                  <TextInput
+                    style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                    value={p.vencimento}
+                    onChangeText={(v) => setPartesDividir(prev => prev.map((x, idx) => idx === i ? { ...x, vencimento: v } : x))}
+                    placeholder="AAAA-MM-DD (opcional)"
+                  />
+                  {partesDividir.length > 2 && (
+                    <TouchableOpacity onPress={() => setPartesDividir(prev => prev.filter((_, idx) => idx !== i))}>
+                      <Ionicons name="trash-outline" size={20} color={CORES.erro} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))}
+            </ScrollView>
+            <TouchableOpacity
+              style={{ alignSelf: 'flex-start', marginBottom: 14 }}
+              onPress={() => setPartesDividir(prev => [...prev, { valor: '0.00', vencimento: '' }])}
+            >
+              <Text style={{ color: CORES.acento, fontWeight: 'bold', fontSize: 13 }}>+ adicionar parte</Text>
+            </TouchableOpacity>
+            <Text style={{ color: CORES.secundaria, fontSize: 12, marginBottom: 10 }}>
+              Soma atual: R$ {somaPartes.toFixed(2).replace('.', ',')}
+            </Text>
+            <TouchableOpacity
+              style={[styles.btnSalvar, dividindo && { opacity: 0.6 }]}
+              onPress={confirmarDivisao}
+              disabled={dividindo}
+            >
+              {dividindo
+                ? <SyncLoader color={CORES.fundo} size="small" />
+                : <Text style={styles.btnSalvarTexto}>CONFIRMAR DIVISÃO</Text>
+              }
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -461,6 +646,15 @@ const styles = StyleSheet.create({
     backgroundColor: CORES.sucesso, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8,
   },
   textoBotaoConfirmar: { color: CORES.fundo, fontWeight: 'bold', fontSize: 13 },
+  botaoRecibo: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: CORES.acentoClaro, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8,
+    borderWidth: 1, borderColor: CORES.acento,
+  },
+  textoBotaoRecibo: { color: CORES.acento, fontWeight: 'bold', fontSize: 13 },
+  reciboLinha: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: CORES.borda },
+  reciboLabel: { color: CORES.secundaria, fontSize: 13 },
+  reciboValor: { color: CORES.primaria, fontSize: 13, fontWeight: '700' },
 
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   modal: {

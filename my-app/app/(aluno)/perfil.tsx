@@ -11,6 +11,7 @@ import {
   Alert,
   Image,
   Linking,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -37,7 +38,7 @@ interface PerfilAluno {
   tempoContrato: number | null;
   createdAt: string;
   fotoUrl: string | null;
-  professor: { nome: string; telefone: string | null } | null;
+  professor: { id: string; nome: string; telefone: string | null; fotoUrl: string | null; chavePix: string | null } | null;
 }
 
 export default function PerfilScreen() {
@@ -57,6 +58,12 @@ export default function PerfilScreen() {
   const [novaSenha, setNovaSenha] = useState('');
   const [confirmarSenha, setConfirmarSenha] = useState('');
   const [mostrarSenhas, setMostrarSenhas] = useState(false);
+
+  // Avaliação do professor
+  const [modalAvaliacaoAberto, setModalAvaliacaoAberto] = useState(false);
+  const [notaAvaliacao, setNotaAvaliacao] = useState(0);
+  const [comentarioAvaliacao, setComentarioAvaliacao] = useState('');
+  const [enviandoAvaliacao, setEnviandoAvaliacao] = useState(false);
 
   const carregarPerfil = useCallback(async () => {
     try {
@@ -151,6 +158,40 @@ export default function PerfilScreen() {
       Alert.alert("Erro", "Falha na conexão com o servidor.");
     } finally {
       setSalvando(false);
+    }
+  };
+
+  const enviarAvaliacao = async () => {
+    if (!perfil?.professor?.id) return;
+    if (notaAvaliacao < 1) {
+      Alert.alert('Escolha uma nota', 'Toque nas estrelas pra dar uma nota de 1 a 5.');
+      return;
+    }
+    setEnviandoAvaliacao(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const resposta = await fetchComRetry(`${API_URL}/api/aluno/avaliacoes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          professorId: perfil.professor.id,
+          nota: notaAvaliacao,
+          comentario: comentarioAvaliacao.trim() || undefined,
+        }),
+      });
+      if (resposta.ok) {
+        setModalAvaliacaoAberto(false);
+        setNotaAvaliacao(0);
+        setComentarioAvaliacao('');
+        Alert.alert('Obrigado!', 'Sua avaliação foi enviada ao professor.');
+      } else {
+        const dados = await resposta.json();
+        Alert.alert('Não foi possível avaliar', dados.erro || 'Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão com o servidor.');
+    } finally {
+      setEnviandoAvaliacao(false);
     }
   };
 
@@ -279,9 +320,16 @@ export default function PerfilScreen() {
               <LinhaPerfil icone="wallet-outline" label="Mensalidade" valor={`R$ ${perfil.valorMensalidade.toFixed(2)}`} />
             )}
             {perfil.diaVencimento != null && (
-              <LinhaPerfil icone="receipt-outline" label="Vencimento" valor={`Dia ${perfil.diaVencimento}`} ultimo />
+              <LinhaPerfil icone="receipt-outline" label="Vencimento" valor={`Dia ${perfil.diaVencimento}`} />
+            )}
+            {perfil.professor.chavePix && (
+              <LinhaPerfil icone="qr-code-outline" label="Chave PIX" valor={perfil.professor.chavePix} ultimo />
             )}
           </View>
+          <TouchableOpacity style={styles.botaoAvaliar} onPress={() => setModalAvaliacaoAberto(true)}>
+            <Ionicons name="star-outline" size={16} color={CORES.acento} />
+            <Text style={styles.textoBotaoAvaliar}>Avaliar meu professor</Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -398,6 +446,42 @@ export default function PerfilScreen() {
       </View>
 
       <View style={{ height: 40 }} />
+
+      <Modal visible={modalAvaliacaoAberto} transparent animationType="fade" onRequestClose={() => setModalAvaliacaoAberto(false)}>
+        <View style={styles.modalFundo}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitulo}>Avaliar {perfil?.professor?.nome}</Text>
+            <Text style={styles.modalSubtitulo}>Como estão sendo suas aulas?</Text>
+            <View style={styles.estrelasLinha}>
+              {[1, 2, 3, 4, 5].map((n) => (
+                <TouchableOpacity key={n} onPress={() => setNotaAvaliacao(n)} style={{ padding: 4 }}>
+                  <Ionicons name={n <= notaAvaliacao ? 'star' : 'star-outline'} size={34} color={CORES.aviso} />
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TextInput
+              style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
+              value={comentarioAvaliacao}
+              onChangeText={setComentarioAvaliacao}
+              placeholder="Comentário (opcional)"
+              placeholderTextColor={CORES.secundaria}
+              multiline
+            />
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+              <TouchableOpacity style={[styles.botaoModalSecundario, { flex: 1 }]} onPress={() => setModalAvaliacaoAberto(false)}>
+                <Text style={styles.textoBotaoModalSecundario}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.botaoSalvar, { flex: 1, marginTop: 0 }, enviandoAvaliacao && styles.botaoDesabilitado]}
+                onPress={enviarAvaliacao}
+                disabled={enviandoAvaliacao}
+              >
+                {enviandoAvaliacao ? <SyncLoader color={CORES.fundo} size="small" /> : <Text style={styles.textoBotaoSalvar}>Enviar</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -465,4 +549,17 @@ const styles = StyleSheet.create({
     color: CORES.secundaria, fontSize: 12, textAlign: 'center',
     textDecorationLine: 'underline', opacity: 0.6,
   },
+  botaoAvaliar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginTop: 10, paddingVertical: 12, borderRadius: 10,
+    borderWidth: 1, borderColor: CORES.acento, backgroundColor: CORES.acentoClaro,
+  },
+  textoBotaoAvaliar: { color: CORES.acento, fontWeight: '700', fontSize: 13.5 },
+  modalFundo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 },
+  modalCard: { backgroundColor: CORES.superficie, borderRadius: 16, padding: 22 },
+  modalTitulo: { fontSize: 17, fontWeight: 'bold', color: CORES.primaria, marginBottom: 4 },
+  modalSubtitulo: { fontSize: 13, color: CORES.secundaria, marginBottom: 16 },
+  estrelasLinha: { flexDirection: 'row', justifyContent: 'center', marginBottom: 16 },
+  botaoModalSecundario: { paddingVertical: 14, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: CORES.borda },
+  textoBotaoModalSecundario: { color: CORES.secundaria, fontWeight: '700', fontSize: 14 },
 });

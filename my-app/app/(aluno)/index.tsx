@@ -4,9 +4,10 @@ import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import React, { useCallback, useRef, useState } from 'react';
 import {
-  Animated, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View,
+  Alert, Animated, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View,
 } from 'react-native';
 import LoadingGlobal from '../../components/LoadingGlobal';
 import ProfileFooter from '../../components/ProfileFooter';
@@ -76,6 +77,17 @@ export default function AlunoDashboard() {
   const [modalPlano, setModalPlano] = useState(false);
   const [nomeAluno, setNomeAluno] = useState('');
   const [fotoAluno, setFotoAluno] = useState<string | null>(null);
+
+  // Crédito de horas / reserva de sala (Fase 2, S2.3)
+  const [saldoCredito, setSaldoCredito] = useState<number | null>(null);
+  const [salas, setSalas] = useState<any[]>([]);
+  const [modalReservaAberto, setModalReservaAberto] = useState(false);
+  const [salaEscolhida, setSalaEscolhida] = useState<string | null>(null);
+  const [dataReserva, setDataReserva] = useState(new Date());
+  const [mostrarPickerData, setMostrarPickerData] = useState(false);
+  const [mostrarPickerHora, setMostrarPickerHora] = useState(false);
+  const [horasReserva, setHorasReserva] = useState('1');
+  const [reservando, setReservando] = useState(false);
 
   const progressAnim = useRef(new Animated.Value(0)).current;
   const frequenciaAnim = useRef(new Animated.Value(0)).current;
@@ -148,7 +160,76 @@ export default function AlunoDashboard() {
     }
   };
 
-  useFocusEffect(useCallback(() => { carregarDashboard(); }, []));
+  const carregarCredito = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const [resSaldo, resSalas] = await Promise.all([
+        fetchComRetry(`${API_URL}/api/aluno/creditos/saldo`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetchComRetry(`${API_URL}/api/aluno/salas`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      if (resSaldo.ok) setSaldoCredito((await resSaldo.json()).saldo);
+      if (resSalas.ok) setSalas(await resSalas.json());
+    } catch (err) {
+      console.error('Erro ao carregar crédito:', err);
+    }
+  }, []);
+
+  useFocusEffect(useCallback(() => { carregarDashboard(); carregarCredito(); }, [carregarCredito]));
+
+  const abrirModalReserva = () => {
+    setSalaEscolhida(salas[0]?.id ?? null);
+    setDataReserva(new Date());
+    setHorasReserva('1');
+    setModalReservaAberto(true);
+  };
+
+  const aoMudarDataIOS = (_event: any, dataReal?: Date) => { if (dataReal) setDataReserva(dataReal); };
+  const aoMudarDataAndroid = (_event: any, dataReal?: Date) => {
+    if (dataReal) {
+      const nova = new Date(dataReserva);
+      nova.setFullYear(dataReal.getFullYear(), dataReal.getMonth(), dataReal.getDate());
+      setDataReserva(nova);
+    }
+  };
+  const confirmarDataAndroid = () => { setMostrarPickerData(false); setMostrarPickerHora(true); };
+  const aoMudarHoraAndroid = (_event: any, dataReal?: Date) => {
+    if (dataReal) {
+      const nova = new Date(dataReserva);
+      nova.setHours(dataReal.getHours(), dataReal.getMinutes());
+      setDataReserva(nova);
+    }
+  };
+  const confirmarHoraAndroid = () => { setMostrarPickerHora(false); };
+
+  const confirmarReserva = async () => {
+    if (!salaEscolhida) return;
+    const horas = parseFloat(horasReserva.replace(',', '.'));
+    if (!horas || horas <= 0) {
+      Alert.alert('Horas inválidas', 'Informe quantas horas você quer reservar.');
+      return;
+    }
+    setReservando(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/aluno/reservas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ salaId: salaEscolhida, dataHoraInicio: dataReserva.toISOString(), horas }),
+      });
+      const dadosResposta = await res.json();
+      if (res.ok) {
+        setModalReservaAberto(false);
+        carregarCredito();
+        Alert.alert('Reservado!', 'Sua reserva de sala foi confirmada.');
+      } else {
+        Alert.alert('Não foi possível reservar', dadosResposta.erro || 'Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão.');
+    } finally {
+      setReservando(false);
+    }
+  };
 
   if (carregando) return <LoadingGlobal />;
 
@@ -343,6 +424,32 @@ export default function AlunoDashboard() {
                 )}
               </View>
 
+              {/* Widget 4: Crédito de horas (só aparece se a escola tem salas configuradas) */}
+              {salas.length > 0 && (
+                <View style={styles.widget}>
+                  <View style={styles.widgetHeader}>
+                    <View style={[styles.widgetIcone, { backgroundColor: '#F3E5F5' }]}>
+                      <Ionicons name="time-outline" size={20} color="#7B1FA2" />
+                    </View>
+                    <Text style={styles.widgetTitulo}>Crédito de Horas</Text>
+                  </View>
+                  <Text style={{ fontSize: 26, fontWeight: 'bold', color: CORES.primaria }}>
+                    {saldoCredito ?? 0}h <Text style={{ fontSize: 13, fontWeight: '400', color: CORES.secundaria }}>disponíveis</Text>
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.botaoReservar, (saldoCredito ?? 0) <= 0 && { opacity: 0.5 }]}
+                    onPress={abrirModalReserva}
+                    disabled={(saldoCredito ?? 0) <= 0}
+                  >
+                    <Ionicons name="calendar-outline" size={16} color="#fff" />
+                    <Text style={styles.botaoReservarTexto}>Reservar sala</Text>
+                  </TouchableOpacity>
+                  {(saldoCredito ?? 0) <= 0 && (
+                    <Text style={styles.semDadosPag}>Sem crédito disponível — peça um pacote ao seu professor.</Text>
+                  )}
+                </View>
+              )}
+
             </Animated.View>
           </>
         )}
@@ -372,6 +479,77 @@ export default function AlunoDashboard() {
             <TouchableOpacity style={styles.modalBotao} onPress={() => setModalPlano(false)}>
               <Text style={styles.modalBotaoTexto}>Entendi</Text>
             </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Modal: Reservar sala com crédito */}
+      <Modal visible={modalReservaAberto} transparent animationType="slide" onRequestClose={() => setModalReservaAberto(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setModalReservaAberto(false)}>
+          <Pressable style={[styles.modalCard, { alignItems: 'stretch' }]} onPress={() => {}}>
+            <Text style={[styles.modalTitulo, { marginBottom: 4 }]}>Reservar Sala</Text>
+            <Text style={{ color: CORES.secundaria, fontSize: 12.5, marginBottom: 16, textAlign: 'center' }}>
+              Saldo disponível: {saldoCredito ?? 0}h
+            </Text>
+
+            <Text style={styles.reservaLabel}>Sala</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {salas.map((s) => (
+                  <TouchableOpacity
+                    key={s.id}
+                    style={[styles.chipSala, salaEscolhida === s.id && styles.chipSalaAtiva]}
+                    onPress={() => setSalaEscolhida(s.id)}
+                  >
+                    <Text style={[styles.chipSalaTexto, salaEscolhida === s.id && { color: '#fff' }]}>{s.nome}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
+
+            <Text style={styles.reservaLabel}>Data e horário</Text>
+            <TouchableOpacity
+              style={styles.reservaDataBotao}
+              onPress={() => setMostrarPickerData(true)}
+            >
+              <Ionicons name="calendar-outline" size={18} color={CORES.secundaria} />
+              <Text style={styles.reservaDataTexto}>
+                {dataReserva.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long' })} às {dataReserva.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </TouchableOpacity>
+
+            {Platform.OS === 'ios' && mostrarPickerData && (
+              <View>
+                <DateTimePicker value={dataReserva} mode="datetime" display="spinner" onChange={aoMudarDataIOS} locale="pt-BR" textColor="#000000" themeVariant="light" />
+                <TouchableOpacity style={styles.modalBotao} onPress={() => setMostrarPickerData(false)}>
+                  <Text style={styles.modalBotaoTexto}>Confirmar</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            {Platform.OS === 'android' && mostrarPickerData && (
+              <DateTimePicker value={dataReserva} mode="date" display="default" onChange={(e, d) => { setMostrarPickerData(false); aoMudarDataAndroid(e, d); confirmarDataAndroid(); }} />
+            )}
+            {Platform.OS === 'android' && mostrarPickerHora && (
+              <DateTimePicker value={dataReserva} mode="time" display="default" is24Hour onChange={(e, d) => { setMostrarPickerHora(false); aoMudarHoraAndroid(e, d); }} />
+            )}
+
+            <Text style={styles.reservaLabel}>Quantas horas?</Text>
+            <TextInput
+              style={styles.reservaInput}
+              value={horasReserva}
+              onChangeText={setHorasReserva}
+              keyboardType="decimal-pad"
+              placeholder="Ex: 1"
+            />
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+              <TouchableOpacity style={[styles.modalBotao, { flex: 1, backgroundColor: CORES.superficie, borderWidth: 1, borderColor: CORES.borda }]} onPress={() => setModalReservaAberto(false)}>
+                <Text style={[styles.modalBotaoTexto, { color: CORES.secundaria }]}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalBotao, { flex: 1 }, reservando && { opacity: 0.6 }]} onPress={confirmarReserva} disabled={reservando}>
+                <Text style={styles.modalBotaoTexto}>{reservando ? 'Reservando...' : 'Confirmar'}</Text>
+              </TouchableOpacity>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -469,6 +647,28 @@ const styles = StyleSheet.create({
   statusPillTexto: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
   vencimentoTexto: { fontSize: 12, fontWeight: '600', marginTop: 2 },
   semDadosPag: { color: CORES.secundaria, fontSize: 13 },
+  botaoReservar: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: '#7B1FA2', borderRadius: 10, paddingVertical: 12, marginTop: 12,
+  },
+  botaoReservarTexto: { color: '#fff', fontWeight: 'bold', fontSize: 13.5 },
+  reservaLabel: { color: CORES.secundaria, fontSize: 12, fontWeight: '600', marginBottom: 8, letterSpacing: 0.5 },
+  chipSala: {
+    paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20,
+    backgroundColor: CORES.fundo, borderWidth: 1, borderColor: CORES.borda,
+  },
+  chipSalaAtiva: { backgroundColor: CORES.acento, borderColor: CORES.acento },
+  chipSalaTexto: { fontSize: 12.5, fontWeight: '600', color: CORES.secundaria },
+  reservaDataBotao: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: CORES.fundo, borderWidth: 1, borderColor: CORES.borda,
+    borderRadius: 8, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 14,
+  },
+  reservaDataTexto: { color: CORES.primaria, fontSize: 14 },
+  reservaInput: {
+    backgroundColor: CORES.fundo, borderWidth: 1, borderColor: CORES.borda,
+    borderRadius: 8, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: CORES.primaria, marginBottom: 8,
+  },
 
   // Widget 3: Plano
   semPlano: { color: CORES.secundaria, fontSize: 13, fontStyle: 'italic' },

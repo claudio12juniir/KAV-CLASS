@@ -84,7 +84,14 @@ export default function AlunosProfessorScreen() {
   // ── Modal perfil (aluno ativo) ──────────────────────────────────────────────
   const [modalPerfilVisivel, setModalPerfilVisivel] = useState(false);
   const [alunoSelecionado, setAlunoSelecionado]     = useState<any | null>(null);
-  const [abaAtiva, setAbaAtiva]                     = useState<'historico' | 'ajustes'>('historico');
+  const [abaAtiva, setAbaAtiva]                     = useState<'historico' | 'ajustes' | 'creditos'>('historico');
+  const [creditos, setCreditos]                     = useState<{ saldo: number; compras: any[]; reservas: any[] } | null>(null);
+  const [carregandoCreditos, setCarregandoCreditos] = useState(false);
+  const [pacotesCredito, setPacotesCredito]         = useState<any[]>([]);
+  const [pacoteEscolhido, setPacoteEscolhido]       = useState<string | null>(null);
+  const [concedendoCredito, setConcedendoCredito]   = useState(false);
+  const [anotacoes, setAnotacoes]                   = useState('');
+  const [salvandoAnotacoes, setSalvandoAnotacoes]   = useState(false);
   const [diaSemana, setDiaSemana]                   = useState(1);
   const [horario, setHorario]                       = useState('08:00');
   const [salvandoHorario, setSalvandoHorario]       = useState(false);
@@ -164,7 +171,72 @@ export default function AlunosProfessorScreen() {
     // Trata PENDENTE e qualquer outro valor como ATIVO para a UI do toggle
     setStatusAluno(aluno.status === 'INATIVO' ? 'INATIVO' : 'ATIVO');
     setNovoValorMensalidade(aluno.valorMensalidade != null ? String(aluno.valorMensalidade) : '');
+    setAnotacoes(aluno.anotacoesPrivadas || '');
     setModalPerfilVisivel(true);
+  };
+
+  const salvarAnotacoes = async () => {
+    if (!alunoSelecionado) return;
+    setSalvandoAnotacoes(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/alunos/${alunoSelecionado.id}/anotacoes`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ anotacoes }),
+      });
+      if (res.ok) Alert.alert('Salvo!', 'Anotação privada atualizada — só você vê isso.');
+      else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível salvar.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setSalvandoAnotacoes(false);
+    }
+  };
+
+  const carregarCreditos = useCallback(async (alunoId: string) => {
+    setCarregandoCreditos(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const [resCreditos, resPacotes] = await Promise.all([
+        fetchComRetry(`${API_URL}/api/alunos/${alunoId}/creditos`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetchComRetry(`${API_URL}/api/pacotes-credito`, { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      if (resCreditos.ok) setCreditos(await resCreditos.json());
+      if (resPacotes.ok) {
+        const pacotes = await resPacotes.json();
+        setPacotesCredito(pacotes);
+        setPacoteEscolhido(pacotes[0]?.id ?? null);
+      }
+    } catch (err) {
+      console.error('Erro ao carregar créditos:', err);
+    } finally {
+      setCarregandoCreditos(false);
+    }
+  }, []);
+
+  const concederCredito = async () => {
+    if (!alunoSelecionado || !pacoteEscolhido) return;
+    setConcedendoCredito(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/alunos/${alunoSelecionado.id}/creditos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ pacoteCreditoId: pacoteEscolhido }),
+      });
+      if (res.ok) {
+        Alert.alert('Crédito concedido!', 'O saldo do aluno já foi atualizado.');
+        carregarCreditos(alunoSelecionado.id);
+      } else {
+        const dados = await res.json();
+        Alert.alert('Não foi possível conceder', dados.erro || 'Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão.');
+    } finally {
+      setConcedendoCredito(false);
+    }
   };
 
   // ── Abrir configuração (pendente) ───────────────────────────────────────────
@@ -832,10 +904,89 @@ export default function AlunosProfessorScreen() {
                 >
                   <Text style={[styles.textoAba, abaAtiva === 'ajustes' && styles.textoAbaAtivo]}>Ajustes</Text>
                 </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.aba, abaAtiva === 'creditos' && styles.abaAtiva]}
+                  onPress={() => { setAbaAtiva('creditos'); if (alunoSelecionado) carregarCreditos(alunoSelecionado.id); }}
+                >
+                  <Text style={[styles.textoAba, abaAtiva === 'creditos' && styles.textoAbaAtivo]}>Créditos</Text>
+                </TouchableOpacity>
               </View>
 
               <ScrollView contentContainerStyle={styles.modalContent} showsVerticalScrollIndicator={false}>
-                {abaAtiva === 'historico' ? (
+                {abaAtiva === 'creditos' ? (
+                  carregandoCreditos ? (
+                    <SyncLoader size="small" color={CORES.acento} />
+                  ) : (
+                    <>
+                      <View style={styles.saldoCreditoCard}>
+                        <Text style={styles.saldoCreditoLabel}>SALDO ATUAL</Text>
+                        <Text style={styles.saldoCreditoValor}>{creditos?.saldo ?? 0}h</Text>
+                      </View>
+
+                      {pacotesCredito.length === 0 ? (
+                        <Text style={styles.textoVazioHistorico}>
+                          Nenhum pacote de crédito cadastrado ainda pra sua escola.
+                        </Text>
+                      ) : (
+                        <>
+                          <Text style={styles.labelCampo}>Conceder pacote de crédito</Text>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                            {pacotesCredito.map((p: any) => (
+                              <TouchableOpacity
+                                key={p.id}
+                                style={[styles.chipPacote, pacoteEscolhido === p.id && styles.chipPacoteAtivo]}
+                                onPress={() => setPacoteEscolhido(p.id)}
+                              >
+                                <Text style={[styles.chipPacoteTexto, pacoteEscolhido === p.id && styles.chipPacoteTextoAtivo]}>
+                                  {p.nome} ({p.horas}h)
+                                </Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                          <TouchableOpacity
+                            style={[styles.botaoSalvarMensalidade, concedendoCredito && { opacity: 0.6 }]}
+                            onPress={concederCredito}
+                            disabled={concedendoCredito}
+                          >
+                            {concedendoCredito
+                              ? <SyncLoader color={CORES.fundo} size="small" />
+                              : <Text style={styles.textoBotaoSalvar}>Conceder Crédito</Text>
+                            }
+                          </TouchableOpacity>
+                        </>
+                      )}
+
+                      <View style={styles.linhaSeparadora} />
+                      <Text style={styles.labelCampo}>Histórico de crédito concedido</Text>
+                      {!creditos?.compras?.length ? (
+                        <Text style={styles.textoVazioHistorico}>Nenhum crédito concedido ainda.</Text>
+                      ) : (
+                        creditos.compras.map((c: any) => (
+                          <View key={c.id} style={styles.linhaCredito}>
+                            <Text style={styles.linhaCreditoTexto}>{c.pacoteCredito?.nome || 'Pacote'}</Text>
+                            <Text style={styles.linhaCreditoValor}>+{c.horas}h</Text>
+                          </View>
+                        ))
+                      )}
+
+                      <Text style={[styles.labelCampo, { marginTop: 14 }]}>Reservas de sala</Text>
+                      {!creditos?.reservas?.length ? (
+                        <Text style={styles.textoVazioHistorico}>Nenhuma reserva ainda.</Text>
+                      ) : (
+                        creditos.reservas.map((r: any) => (
+                          <View key={r.id} style={styles.linhaCredito}>
+                            <Text style={styles.linhaCreditoTexto}>
+                              {r.sala?.nome} — {new Date(r.dataHoraInicio).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
+                            </Text>
+                            <Text style={[styles.linhaCreditoValor, { color: r.ativa ? CORES.erro : CORES.secundaria }]}>
+                              {r.ativa ? '−' : ''}{r.horas}h {!r.ativa && '(cancelada)'}
+                            </Text>
+                          </View>
+                        ))
+                      )}
+                    </>
+                  )
+                ) : abaAtiva === 'historico' ? (
                   (!alunoSelecionado.aulas || alunoSelecionado.aulas.length === 0) ? (
                     <Text style={styles.textoVazioHistorico}>Nenhuma aula registrada.</Text>
                   ) : (
@@ -1007,6 +1158,28 @@ export default function AlunosProfessorScreen() {
                       <SyncLoader size="small" color={CORES.acento} style={{ marginTop: 8 }} />
                     )}
 
+                    <View style={styles.linhaSeparadora} />
+
+                    <Text style={styles.labelCampo}>Anotação privada (só você vê)</Text>
+                    <TextInput
+                      style={[styles.inputCampo, { height: 90, textAlignVertical: 'top' }]}
+                      value={anotacoes}
+                      onChangeText={setAnotacoes}
+                      placeholder="Ex: prefere aulas à tarde, prova em breve, já reagendou 2x..."
+                      placeholderTextColor={CORES.secundaria}
+                      multiline
+                    />
+                    <TouchableOpacity
+                      style={[styles.botaoSalvarMensalidade, salvandoAnotacoes && { opacity: 0.6 }]}
+                      onPress={salvarAnotacoes}
+                      disabled={salvandoAnotacoes}
+                    >
+                      {salvandoAnotacoes
+                        ? <SyncLoader color={CORES.fundo} size="small" />
+                        : <Text style={styles.textoBotaoSalvar}>Salvar anotação</Text>
+                      }
+                    </TouchableOpacity>
+
                     <View style={{ height: 10 }} />
                   </>
                 )}
@@ -1163,6 +1336,26 @@ const styles = StyleSheet.create({
 
   horariosGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 24 },
   linhaSeparadora: { height: 1, backgroundColor: CORES.borda, marginVertical: 24 },
+
+  saldoCreditoCard: {
+    backgroundColor: CORES.acentoClaro, borderRadius: 12, padding: 18, alignItems: 'center', marginBottom: 16,
+    borderWidth: 1, borderColor: CORES.acento,
+  },
+  saldoCreditoLabel: { color: CORES.acento, fontSize: 11, fontWeight: 'bold', letterSpacing: 2 },
+  saldoCreditoValor: { color: CORES.primaria, fontSize: 28, fontWeight: 'bold', marginTop: 4 },
+  chipPacote: {
+    paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20,
+    backgroundColor: CORES.fundo, borderWidth: 1, borderColor: CORES.borda,
+  },
+  chipPacoteAtivo: { backgroundColor: CORES.primaria, borderColor: CORES.primaria },
+  chipPacoteTexto: { fontSize: 12.5, fontWeight: '600', color: CORES.secundaria },
+  chipPacoteTextoAtivo: { color: '#fff' },
+  linhaCredito: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: CORES.borda,
+  },
+  linhaCreditoTexto: { color: CORES.primaria, fontSize: 13, flex: 1, marginRight: 8 },
+  linhaCreditoValor: { color: CORES.sucesso, fontSize: 13, fontWeight: '700' },
 
   botaoSalvarHorario: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,

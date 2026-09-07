@@ -136,7 +136,7 @@ function ProfessorDrawer() {
         <Drawer.Screen name="pagamento"   options={{ drawerLabel: 'Financeiro',     drawerIcon: ({ color }) => <Ionicons name="cash-outline"       size={22} color={color} /> }} />
         <Drawer.Screen name="reposicoes"  options={{ drawerLabel: 'Reposições',     drawerIcon: ({ color }) => <Ionicons name="repeat-outline"     size={22} color={color} /> }} />
         <Drawer.Screen name="relatorios"  options={{ drawerLabel: 'Relatórios',     drawerIcon: ({ color }) => <Ionicons name="bar-chart-outline"  size={22} color={color} /> }} />
-        <Drawer.Screen name="chat"        options={{ drawerLabel: 'Mural da Turma', drawerIcon: ({ color }) => <Ionicons name="chatbubbles-outline" size={22} color={color} /> }} />
+        <Drawer.Screen name="chat"        options={{ drawerLabel: 'Mensagens', drawerIcon: ({ color }) => <Ionicons name="chatbubbles-outline" size={22} color={color} /> }} />
         <Drawer.Screen name="escanear-presenca" options={{ drawerLabel: 'Escanear Presença', drawerIcon: ({ color }) => <Ionicons name="qr-code-outline" size={22} color={color} /> }} />
         <Drawer.Screen name="perfil"      options={{ drawerItemStyle: { display: 'none' } }} />
       </Drawer>
