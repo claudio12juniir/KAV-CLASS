@@ -3314,7 +3314,7 @@ app.post('/api/matriculas/:id/faturas', exigirProfessor, async (req, res) => {
     const fatura = await prisma.pagamento.create({
       data: {
         valor: valorFinal,
-        vencimento: new Date(vencimento),
+        vencimento: ancorarNoDia(vencimento),
         status: 'PENDENTE',
         professorId: matricula.professorId,
         alunoId: matricula.alunoId,
@@ -3361,7 +3361,7 @@ app.put('/api/pagamentos/:id/dividir', exigirProfessor, async (req, res) => {
         criadas.push(await tx.pagamento.create({
           data: {
             valor: p.valor,
-            vencimento: p.vencimento ? new Date(p.vencimento) : original.vencimento,
+            vencimento: p.vencimento ? ancorarNoDia(p.vencimento) : original.vencimento,
             status: 'PENDENTE',
             professorId: original.professorId,
             alunoId: original.alunoId,
@@ -4240,7 +4240,7 @@ app.post('/api/contas-pagar', exigirProfessor, carregarEscolaDoProfessor, async 
       return res.status(400).json({ erro: 'descricao, valor (número > 0) e vencimento são obrigatórios.' });
     }
     const conta = await prisma.contaPagar.create({
-      data: { descricao: descricao.trim(), valor, vencimento: new Date(vencimento), escolaId: req.auth.escolaId },
+      data: { descricao: descricao.trim(), valor, vencimento: ancorarNoDia(vencimento), escolaId: req.auth.escolaId },
     });
     res.status(201).json(conta);
   } catch (err) {
@@ -4473,7 +4473,7 @@ app.post('/api/leads/:id/tarefas', exigirProfessor, carregarEscolaDoProfessor, a
     const tarefa = await prisma.tarefaLead.create({
       data: {
         descricao: descricao.trim(),
-        dataPrevista: new Date(dataPrevista),
+        dataPrevista: ancorarNoDia(dataPrevista),
         leadId: lead.id,
         responsavelId: responsavelId || req.auth.id,
         escolaId: req.auth.escolaId,
