@@ -1494,6 +1494,23 @@ app.put('/api/alunos/:id/responsavel', exigirProfessor, async (req, res) => {
   }
 });
 
+// PUT /api/alunos/:id/anotacoes — nota privada do professor sobre o aluno.
+// Nunca aparece em nenhuma rota que o próprio Aluno consulta (perfil, dashboard) —
+// é só pro professor lembrar de algo, tipo "prova em breve" ou "prefere tarde".
+app.put('/api/alunos/:id/anotacoes', exigirProfessor, async (req, res) => {
+  try {
+    const { anotacoes } = req.body;
+    const { count } = await prisma.aluno.updateMany({
+      where: { id: req.params.id, professorId: req.auth.id },
+      data: { anotacoesPrivadas: typeof anotacoes === 'string' ? anotacoes.slice(0, 2000) : null },
+    });
+    if (!count) return res.status(404).json({ erro: 'Aluno não encontrado.' });
+    res.json({ mensagem: 'Anotação salva.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao salvar anotação.');
+  }
+});
+
 app.get('/api/meus-alunos', exigirProfessor, async (req, res) => {
   try {
     const professorId = req.auth.id;
@@ -1834,7 +1851,7 @@ app.get('/api/aluno/perfil', exigirAluno, async (req, res) => {
         tempoContrato: true, dataInicioContrato: true, createdAt: true, fotoUrl: true,
         vinculoResponsavel: true,
         responsavel: { select: { nome: true, cpf: true, email: true, telefone: true } },
-        professor: { select: { nome: true, telefone: true } },
+        professor: { select: { id: true, nome: true, telefone: true, fotoUrl: true, chavePix: true } },
       },
     });
     if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
@@ -2073,8 +2090,16 @@ app.post('/api/aluno/mensagens', exigirAluno, async (req, res) => {
 // 7. MURAL DA TURMA (CHAT EM GRUPO)
 // ============================================================================
 
-// GET /api/mural — professor vê o mural da própria turma; aluno vê o mural
-// do professor dele. Quem manda é req.auth (token), nunca query solta.
+// GET /api/mural — quadro de avisos do professor pra turma inteira (só
+// broadcast, remetente 'professor'). Professor vê o próprio mural; aluno vê
+// o mural do professor dele. Quem manda é req.auth (token), nunca query solta.
+//
+// FIX: antes esta rota também devolvia as mensagens PRIVADAS de todo aluno
+// do professor (POST /api/aluno/mensagens), o que vazava a conversa de um
+// aluno pros outros alunos verem no próprio mural. Mural agora é só
+// broadcast; a conversa privada tem rota própria
+// (GET/POST /api/aluno/mensagens do lado aluno, /api/professor/mensagens do
+// lado professor) que já filtrava certo por alunoId.
 app.get('/api/mural', autenticar, async (req, res) => {
   try {
     let professorId;
@@ -2086,27 +2111,12 @@ app.get('/api/mural', autenticar, async (req, res) => {
       professorId = req.auth.id;
     }
 
-    const alunos = await prisma.aluno.findMany({ where: { professorId }, select: { id: true } });
-    const alunoIds = alunos.map(a => a.id);
+    const msgsProf = await prisma.mensagem.findMany({
+      where: { professorId, remetente: 'professor' },
+      orderBy: { createdAt: 'asc' },
+    });
 
-    const [msgsAlunos, msgsProf] = await Promise.all([
-      prisma.mensagem.findMany({
-        where: { alunoId: { in: alunoIds }, remetente: { not: 'professor' } },
-        include: { aluno: { select: { nome: true } } },
-        orderBy: { createdAt: 'asc' },
-      }),
-      prisma.mensagem.findMany({
-        where: { professorId, remetente: 'professor' },
-        orderBy: { createdAt: 'asc' },
-      }),
-    ]);
-
-    const todas = [
-      ...msgsAlunos.map(m => ({ id: m.id, texto: m.texto, remetente: m.remetente, nome: m.aluno?.nome ?? 'Aluno', createdAt: m.createdAt })),
-      ...msgsProf.map(m => ({ id: m.id, texto: m.texto, remetente: 'professor', nome: 'Professor(a)', createdAt: m.createdAt })),
-    ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-
-    res.json(todas);
+    res.json(msgsProf.map(m => ({ id: m.id, texto: m.texto, remetente: 'professor', nome: 'Professor(a)', createdAt: m.createdAt })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -2192,6 +2202,46 @@ app.post('/api/professor/mensagens', exigirProfessor, async (req, res) => {
     }
 
     res.status(201).json(msg);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// GET /api/professor/conversas — lista de alunos do professor com a última
+// mensagem trocada (ou null se nunca conversaram), ordenada pela mais
+// recente primeiro. É a tela "lista de conversas" que faltava pro professor
+// conseguir achar rápido quem mandou mensagem, sem abrir aluno por aluno.
+app.get('/api/professor/conversas', exigirProfessor, async (req, res) => {
+  try {
+    const professorId = req.auth.id;
+    const alunos = await prisma.aluno.findMany({
+      where: { professorId },
+      select: { id: true, nome: true, fotoUrl: true, status: true },
+      orderBy: { nome: 'asc' },
+    });
+    const alunoIds = alunos.map(a => a.id);
+
+    const mensagens = await prisma.mensagem.findMany({
+      where: { alunoId: { in: alunoIds } },
+      orderBy: { createdAt: 'desc' },
+      select: { alunoId: true, texto: true, remetente: true, createdAt: true },
+    });
+
+    const ultimaPorAluno = new Map();
+    for (const m of mensagens) {
+      if (!ultimaPorAluno.has(m.alunoId)) ultimaPorAluno.set(m.alunoId, m);
+    }
+
+    const conversas = alunos
+      .map(a => ({ aluno: a, ultimaMensagem: ultimaPorAluno.get(a.id) || null }))
+      .sort((x, y) => {
+        const tx = x.ultimaMensagem ? new Date(x.ultimaMensagem.createdAt).getTime() : 0;
+        const ty = y.ultimaMensagem ? new Date(y.ultimaMensagem.createdAt).getTime() : 0;
+        return ty - tx;
+      });
+
+    res.json(conversas);
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -2716,9 +2766,35 @@ app.get('/api/turmas', exigirProfessor, async (req, res) => {
   }
 });
 
+// GET /api/escola/turmas — DONO/GESTOR vê as turmas de TODOS os
+// professores da Escola (a rota acima, /api/turmas, continua só-do-próprio
+// professor, sem mudança nenhuma — usada por quem já a chama hoje). Inclui
+// a contagem de matrículas ativas pra dar noção de ocupação (X/limite).
+app.get('/api/escola/turmas', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const turmas = await prisma.turma.findMany({
+      where: { escolaId: professor.escolaId },
+      include: {
+        curso: { select: { nome: true } },
+        sala: { select: { nome: true } },
+        professor: { select: { nome: true } },
+        _count: { select: { matriculas: true } },
+      },
+      orderBy: { nome: 'asc' },
+    });
+    res.json(turmas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao listar turmas.' });
+  }
+});
+
 app.post('/api/turmas', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
   try {
-    const { nome, cursoId, salaId, limiteAlunos } = req.body;
+    const { nome, cursoId, salaId, limiteAlunos, professorId } = req.body;
     if (!nome?.trim() || !cursoId) return res.status(400).json({ erro: 'nome e cursoId são obrigatórios.' });
 
     const escolaId = req.auth.escolaId;
@@ -2732,6 +2808,16 @@ app.post('/api/turmas', exigirProfessor, carregarEscolaDoProfessor, async (req, 
       if (!sala) return res.status(400).json({ erro: 'Sala não encontrada.' });
     }
 
+    // professorId é opcional — quem cria pode atribuir a turma a outro
+    // professor da mesma Escola (uso típico: DONO/GESTOR montando a grade).
+    // Sem informar, cai no próprio professor logado, como sempre foi.
+    let professorDaTurma = req.auth.id;
+    if (professorId) {
+      const prof = await prisma.professor.findFirst({ where: { id: professorId, escolaId } });
+      if (!prof) return res.status(400).json({ erro: 'Professor não encontrado nesta Escola.' });
+      professorDaTurma = professorId;
+    }
+
     const limite = limiteAlunos != null ? parseInt(String(limiteAlunos), 10) : null;
     const turma = await prisma.turma.create({
       data: {
@@ -2739,7 +2825,7 @@ app.post('/api/turmas', exigirProfessor, carregarEscolaDoProfessor, async (req, 
         cursoId,
         salaId: salaId || null,
         limiteAlunos: Number.isFinite(limite) ? limite : null,
-        professorId: req.auth.id,
+        professorId: professorDaTurma,
         escolaId,
       },
       include: { curso: true, sala: true },
@@ -2751,8 +2837,25 @@ app.post('/api/turmas', exigirProfessor, carregarEscolaDoProfessor, async (req, 
   }
 });
 
+// PATCH /api/turmas/:id — o próprio professor dono da turma sempre pode
+// editar; DONO/GESTOR da mesma Escola também podem (gerir a grade inteira é
+// o ponto do Catálogo no painel institucional), mesmo sem ser o professor
+// da turma.
 app.patch('/api/turmas/:id', exigirProfessor, async (req, res) => {
   try {
+    const professor = await prisma.professor.findUnique({
+      where: { id: req.auth.id },
+      select: { escolaId: true, papel: true },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+
+    const turmaAtual = await prisma.turma.findUnique({ where: { id: req.params.id }, select: { professorId: true, escolaId: true } });
+    if (!turmaAtual) return res.status(404).json({ erro: 'Turma não encontrada.' });
+
+    const podeEditar = turmaAtual.professorId === req.auth.id
+      || (['DONO', 'GESTOR'].includes(professor.papel) && turmaAtual.escolaId === professor.escolaId);
+    if (!podeEditar) return res.status(404).json({ erro: 'Turma não encontrada.' });
+
     const { nome, salaId, limiteAlunos, ativa } = req.body;
     const dados = {};
     if (nome?.trim()) dados.nome = nome.trim();
@@ -2763,18 +2866,13 @@ app.patch('/api/turmas/:id', exigirProfessor, async (req, res) => {
     }
     if (salaId !== undefined) {
       if (salaId) {
-        const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
-        const sala = await prisma.sala.findFirst({ where: { id: salaId, escolaId: professor?.escolaId } });
+        const sala = await prisma.sala.findFirst({ where: { id: salaId, escolaId: professor.escolaId } });
         if (!sala) return res.status(400).json({ erro: 'Sala não encontrada.' });
       }
       dados.salaId = salaId || null;
     }
 
-    const { count } = await prisma.turma.updateMany({
-      where: { id: req.params.id, professorId: req.auth.id },
-      data: dados,
-    });
-    if (!count) return res.status(404).json({ erro: 'Turma não encontrada.' });
+    await prisma.turma.update({ where: { id: req.params.id }, data: dados });
     res.json({ mensagem: 'Turma atualizada.' });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar turma.');
@@ -3061,13 +3159,24 @@ app.post('/api/matriculas', exigirProfessor, async (req, res) => {
     if (!alunoId || typeof valorMensalidade !== 'number' || valorMensalidade <= 0) {
       return res.status(400).json({ erro: 'alunoId e valorMensalidade (número > 0) são obrigatórios.' });
     }
-    const professorId = req.auth.id;
 
-    const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, professorId } });
-    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a este professor.' });
+    const quemPede = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true, papel: true } });
+    if (!quemPede) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    const ehGestao = ['DONO', 'GESTOR'].includes(quemPede.papel);
+
+    // Professor comum só matricula o próprio aluno; DONO/GESTOR pode
+    // matricular qualquer aluno da Escola — a matrícula nasce vinculada ao
+    // professor de fato responsável pelo aluno (aluno.professorId), não a
+    // quem clicou em "criar" no painel.
+    const aluno = ehGestao
+      ? await prisma.aluno.findFirst({ where: { id: alunoId, escolaId: quemPede.escolaId } })
+      : await prisma.aluno.findFirst({ where: { id: alunoId, professorId: req.auth.id } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a esta Escola.' });
+    if (!aluno.professorId) return res.status(400).json({ erro: 'Este aluno ainda não tem professor atribuído — atribua um antes de matricular.' });
+    const professorId = aluno.professorId;
 
     if (turmaId) {
-      const turma = await prisma.turma.findFirst({ where: { id: turmaId, professorId } });
+      const turma = await prisma.turma.findFirst({ where: { id: turmaId, escolaId: aluno.escolaId } });
       if (!turma) return res.status(400).json({ erro: 'Turma não encontrada.' });
     }
     if (planoPagamentoId) {
@@ -3101,6 +3210,31 @@ app.post('/api/matriculas', exigirProfessor, async (req, res) => {
   }
 });
 
+// GET /api/escola/matriculas — DONO/GESTOR vê as matrículas de TODOS os
+// professores da Escola, com o status do contrato mais recente de cada uma
+// (se existir), pra dar a visão de "quem falta assinar" sem abrir uma a uma.
+app.get('/api/escola/matriculas', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const matriculas = await prisma.matricula.findMany({
+      where: { escolaId: professor.escolaId },
+      include: {
+        aluno: { select: { nome: true, email: true } },
+        professor: { select: { nome: true } },
+        turma: { select: { nome: true } },
+        contratos: { orderBy: { createdAt: 'desc' }, take: 1 },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(matriculas);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao listar matrículas.' });
+  }
+});
+
 app.get('/api/aluno/matriculas', exigirAluno, async (req, res) => {
   try {
     const matriculas = await prisma.matricula.findMany({
@@ -3116,13 +3250,23 @@ app.get('/api/aluno/matriculas', exigirAluno, async (req, res) => {
 });
 
 // Carrega a matrícula garantindo que quem pediu (professor OU aluno, os dois
-// autenticados por token de verdade) é dono dela. Devolve null (já com o
-// status certo respondido) se não for.
+// autenticados por token de verdade) é dono dela. DONO/GESTOR da mesma
+// Escola também passam, mesmo sem ser o professor da matrícula — é o painel
+// institucional cuidando de matrícula de qualquer professor da Escola.
+// Devolve null (já com o status certo respondido) se não for.
 async function carregarMatriculaDoDono(req, res) {
   const matricula = await prisma.matricula.findUnique({ where: { id: req.params.id } });
   if (!matricula) { res.status(404).json({ erro: 'Matrícula não encontrada.' }); return null; }
-  const dono = req.auth.papel === 'professor' ? matricula.professorId === req.auth.id : matricula.alunoId === req.auth.id;
-  if (!dono) { res.status(404).json({ erro: 'Matrícula não encontrada.' }); return null; }
+
+  if (req.auth.papel === 'professor') {
+    if (matricula.professorId === req.auth.id) return matricula;
+    const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true, papel: true } });
+    const gestao = professor && ['DONO', 'GESTOR'].includes(professor.papel) && professor.escolaId === matricula.escolaId;
+    if (!gestao) { res.status(404).json({ erro: 'Matrícula não encontrada.' }); return null; }
+    return matricula;
+  }
+
+  if (matricula.alunoId !== req.auth.id) { res.status(404).json({ erro: 'Matrícula não encontrada.' }); return null; }
   return matricula;
 }
 
@@ -3382,6 +3526,35 @@ app.get('/api/aluno/creditos/saldo', exigirAluno, async (req, res) => {
   try {
     const saldo = await calcularSaldoCredito(prisma, req.auth.id);
     res.json({ saldo });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// GET /api/alunos/:id/creditos — professor vê o saldo e o histórico de
+// crédito concedido/gasto de um aluno seu, pra decidir se concede mais
+// antes de o aluno pedir. Mesmo cálculo de saldo do lado aluno.
+app.get('/api/alunos/:id/creditos', exigirProfessor, async (req, res) => {
+  try {
+    const alunoAlvo = await prisma.aluno.findUnique({ where: { id: req.params.id }, select: { professorId: true } });
+    if (!alunoAlvo || alunoAlvo.professorId !== req.auth.id) {
+      return res.status(404).json({ erro: 'Aluno não encontrado.' });
+    }
+    const [saldo, compras, reservas] = await Promise.all([
+      calcularSaldoCredito(prisma, req.params.id),
+      prisma.compraCredito.findMany({
+        where: { alunoId: req.params.id },
+        include: { pacoteCredito: { select: { nome: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.reservaSala.findMany({
+        where: { alunoId: req.params.id },
+        include: { sala: { select: { nome: true } } },
+        orderBy: { dataHoraInicio: 'desc' },
+      }),
+    ]);
+    res.json({ saldo, compras, reservas });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -4102,6 +4275,58 @@ app.put('/api/contas-pagar/:id/pagar', exigirProfessor, carregarEscolaDoProfesso
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao pagar conta.' });
+  }
+});
+
+// GET /api/escola/dre?mes=9&ano=2026 — DRE simplificado do mês: cruza
+// mensalidade de aluno paga (Pagamento) com o caixa avulso (LancamentoCaixa,
+// que já inclui as ContaPagar pagas via /contas-pagar/:id/pagar — mesmo
+// lançamento, sem contar nada em dobro). "Simplificado" porque não tem
+// plano de contas nem categoria — é receita x despesa do mês, o suficiente
+// pra tirar a escola da planilha paralela sem construir um ERP contábil.
+app.get('/api/escola/dre', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const agora = new Date();
+    const mes = req.query.mes ? parseInt(String(req.query.mes), 10) - 1 : agora.getMonth();
+    const ano = req.query.ano ? parseInt(String(req.query.ano), 10) : agora.getFullYear();
+    const inicio = new Date(ano, mes, 1, 0, 0, 0, 0);
+    const fim = new Date(ano, mes + 1, 0, 23, 59, 59, 999);
+    const escolaId = professor.escolaId;
+
+    const [mensalidadesPagas, lancamentos, contasPendentes] = await Promise.all([
+      prisma.pagamento.findMany({
+        where: { professor: { escolaId }, status: 'PAGO', dataPagamento: { gte: inicio, lte: fim } },
+        select: { valor: true },
+      }),
+      prisma.lancamentoCaixa.findMany({
+        where: { escolaId, data: { gte: inicio, lte: fim } },
+        orderBy: { data: 'desc' },
+      }),
+      prisma.contaPagar.findMany({
+        where: { escolaId, paga: false, vencimento: { lte: fim } },
+        orderBy: { vencimento: 'asc' },
+      }),
+    ]);
+
+    const receitaMensalidades = mensalidadesPagas.reduce((acc, p) => acc + p.valor, 0);
+    const receitaAvulsa = lancamentos.filter(l => l.tipo === 'ENTRADA').reduce((acc, l) => acc + l.valor, 0);
+    const despesas = lancamentos.filter(l => l.tipo === 'SAIDA').reduce((acc, l) => acc + l.valor, 0);
+    const receitaTotal = receitaMensalidades + receitaAvulsa;
+
+    res.json({
+      periodo: { mes: mes + 1, ano },
+      receita: { mensalidades: receitaMensalidades, avulsa: receitaAvulsa, total: receitaTotal },
+      despesas: { total: despesas },
+      resultado: receitaTotal - despesas,
+      lancamentos,
+      contasPendentes,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao gerar DRE.' });
   }
 });
 
@@ -5722,7 +5947,33 @@ app.get('/api/relatorios', exigirProfessor, async (req, res) => {
       status: a.faltas === 0 ? 'Excelente' : a.faltas <= 1 ? 'Bom' : 'Atenção',
     }));
 
-    res.json({ faturamentoAtual, grafico, faltas });
+    // "Alunos em risco" (ideia nova, sem modelo novo): junta 3 sinais que já
+    // existem espalhados — 2+ faltas em 30 dias, pagamento atrasado, ou
+    // nenhuma aula futura agendada — pra não precisar abrir 3 telas
+    // diferentes pra notar que um aluno pode estar prestes a cancelar.
+    const [alunosAtivos, pagamentosAtrasados, aulasFuturas] = await Promise.all([
+      prisma.aluno.findMany({ where: { professorId, status: 'ATIVO' }, select: { id: true, nome: true } }),
+      prisma.pagamento.findMany({ where: { professorId, status: 'ATRASADO' }, select: { alunoId: true } }),
+      prisma.aula.findMany({
+        where: { professorId, dataHora: { gte: hoje }, status: { not: 'CANCELADA' } },
+        select: { alunoId: true },
+      }),
+    ]);
+    const idsComAtraso = new Set(pagamentosAtrasados.map(p => p.alunoId));
+    const idsComAulaFutura = new Set(aulasFuturas.map(a => a.alunoId));
+
+    const alunosEmRisco = alunosAtivos
+      .map(a => {
+        const motivos = [];
+        const qtdFaltas = faltasPorAluno[a.id]?.faltas || 0;
+        if (qtdFaltas >= 2) motivos.push(`${qtdFaltas} faltas nos últimos 30 dias`);
+        if (idsComAtraso.has(a.id)) motivos.push('Pagamento atrasado');
+        if (!idsComAulaFutura.has(a.id)) motivos.push('Sem aula futura agendada');
+        return { id: a.id, nome: a.nome, motivos };
+      })
+      .filter(a => a.motivos.length > 0);
+
+    res.json({ faturamentoAtual, grafico, faltas, alunosEmRisco });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });

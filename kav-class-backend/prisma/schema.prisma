@@ -261,6 +261,10 @@ model Aluno {
   fotoUrl        String?
   googleId       String?   @unique
 
+  // Anotação privada do professor sobre o aluno — nunca exposta pra rota
+  // do próprio aluno, só pra quem já é dono dele (GET/PUT /api/alunos/:id/anotacoes).
+  anotacoesPrivadas String?
+
   status             StatusAluno      @default(PENDENTE)
   valorMensalidade   Float?
   diaVencimento      Int?
