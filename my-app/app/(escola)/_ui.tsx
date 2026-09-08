@@ -38,6 +38,7 @@ export const NAV_ESCOLA: GrupoNav[] = [
     { chave: 'logistica', rota: '/(escola)/logistica', rotulo: 'Logística', icone: 'apps-outline' },
     { chave: 'coordenacao', rota: '/(escola)/coordenacao', rotulo: 'Coordenação', icone: 'ribbon-outline' },
     { chave: 'calendario', rota: '/(escola)/calendario', rotulo: 'Cronograma', icone: 'calendar-outline' },
+    { chave: 'chats', rota: '/(escola)/chats', rotulo: 'Chats das Turmas', icone: 'chatbubbles-outline' },
   ]},
   { titulo: 'Crescimento', itens: [
     { chave: 'captacao', rota: '/(escola)/captacao', rotulo: 'Experimentais', icone: 'megaphone-outline' },

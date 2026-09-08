@@ -7738,6 +7738,69 @@ app.post('/api/professores/:id/chat-turma', async (req, res) => {
   }
 });
 
+// GET /api/escola/chats-turma — aba "Chats das Turmas": a Secretaria/gestão
+// enxerga, numa lista só, todas as turmas (uma por professor) com sinal de
+// atividade (última mensagem + total), sem precisar entrar professor por
+// professor em Equipe. Mesma regra de acesso somente-leitura de
+// resolverAcessoChatTurma, mas agregada pra escola inteira de uma vez.
+app.get('/api/escola/chats-turma', async (req, res) => {
+  try {
+    const gestor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!gestor) return;
+
+    const professores = await prisma.professor.findMany({
+      where: { escolaId: gestor.escolaId },
+      select: { id: true, nome: true, fotoUrl: true },
+      orderBy: { nome: 'asc' },
+    });
+
+    const resumo = await Promise.all(professores.map(async (prof) => {
+      const [ultimaMensagem, totalMensagens, alunosAtivos] = await Promise.all([
+        prisma.mensagemTurma.findFirst({
+          where: { professorId: prof.id },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.mensagemTurma.count({ where: { professorId: prof.id } }),
+        prisma.aluno.count({ where: { professorId: prof.id, status: 'ATIVO' } }),
+      ]);
+
+      let autorUltimaMensagem = null;
+      if (ultimaMensagem) {
+        if (ultimaMensagem.autorTipo === 'PROFESSOR') {
+          autorUltimaMensagem = prof.nome;
+        } else {
+          const aluno = await prisma.aluno.findUnique({ where: { id: ultimaMensagem.autorId }, select: { nome: true } });
+          autorUltimaMensagem = aluno?.nome || 'Aluno';
+        }
+      }
+
+      return {
+        professorId: prof.id,
+        nomeProfessor: prof.nome,
+        fotoProfessor: prof.fotoUrl,
+        alunosAtivos,
+        totalMensagens,
+        ultimaMensagem: ultimaMensagem ? {
+          texto: ultimaMensagem.texto,
+          autorTipo: ultimaMensagem.autorTipo,
+          autor: autorUltimaMensagem,
+          createdAt: ultimaMensagem.createdAt,
+        } : null,
+      };
+    }));
+
+    resumo.sort((a, b) => {
+      const dataA = a.ultimaMensagem?.createdAt ? new Date(a.ultimaMensagem.createdAt).getTime() : 0;
+      const dataB = b.ultimaMensagem?.createdAt ? new Date(b.ultimaMensagem.createdAt).getTime() : 0;
+      return dataB - dataA;
+    });
+
+    res.json(resumo);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar os chats das turmas.');
+  }
+});
+
 // POST /api/escola/alunos/criar — DONO/GESTOR cadastra o aluno direto,
 // vinculado a um professor já existente da própria Escola (equivalente
 // institucional do fluxo de "código de convite" que o aluno usaria sozinho
