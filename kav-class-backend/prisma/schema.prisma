@@ -114,6 +114,24 @@ enum VinculoResponsavel {
   DEPENDENTE
 }
 
+// Regra de remuneração do professor (INSTITUTION, Sprint 1 do briefing
+// 08/09/2026) — v1 pragmática e global por Escola, sem regra por professor
+// individual (isso é o escopo completo de S8.3/RegraPagamentoProfissional,
+// que fica pra quando a Fase 7/RBAC estiver pronta, ver docs/institution-briefing-2026-09-08.md §6).
+enum TipoRemuneracaoProfessor {
+  POR_AULA
+  POR_ALUNO_MES
+}
+
+// Estado de um slot na grade semanal recorrente do professor
+// (DisponibilidadeProfessor). "Horário em aula" NÃO é um valor aqui — é
+// derivado em tempo de leitura cruzando com Aula do dia/hora (ver runbook
+// institution-sprint1).
+enum TipoDisponibilidade {
+  DISPONIVEL
+  PAUSA
+}
+
 // Papel do Professor dentro da própria Escola. Todo Professor de hoje vira
 // DONO da sua Escola de 1 pessoa na migração (ver 20260829000000_add_escola_multi_tenant) —
 // GESTOR e o convite de mais professores para a mesma Escola só existem depois
@@ -169,30 +187,52 @@ model Escola {
   stripeConnectAccountId          String?
   stripeConnectOnboardingCompleto Boolean @default(false)
 
-  professores  Professor[]
-  alunos       Aluno[]
-  convites     ConviteProfessor[]
-  responsaveis ResponsavelFinanceiro[]
-  cursos          Curso[]
-  salas           Sala[]
-  turmas          Turma[]
-  modalidades     Modalidade[]
-  planosPagamento PlanoPagamento[]
-  tabelasValores  TabelaValores[]
-  matriculas      Matricula[]
-  pacotesCredito  PacoteCredito[]
-  reservasSala    ReservaSala[]
-  contratos       Contrato[]
-  lancamentosCaixa LancamentoCaixa[]
-  fechamentosCaixa FechamentoCaixa[]
-  contasPagar      ContaPagar[]
-  estagiosFunil    EstagioFunil[]
-  leads            Lead[]
-  tarefasLead      TarefaLead[]
-  linksCaptacao    LinkCaptacao[]
-  aulasExperimentais AulaExperimental[]
-  diasNaoLetivos   DiaNaoLetivo[]
-  comunicados      Comunicado[]
+  // ─── Perfil da Instituição (INSTITUTION, Sprint 1 do briefing 08/09/2026) ───
+  // Nullable de propósito: escola já existente continua funcionando sem
+  // preencher nada disso até passar por Perfil da Instituição uma vez.
+  // horarioFuncionamento guarda a grade de dias úteis/fim de semana em JSON
+  // livre (mesmo shape reaproveitado pela UI de Cronograma, Sprint 10) em vez
+  // de tabela normalizada — não há necessidade de consulta relacional sobre
+  // isso, só leitura/escrita do bloco inteiro pela tela de perfil.
+  horarioFuncionamento Json?
+  logoUrl              String?
+  email                String?
+
+  // valorPorAula é a base do cálculo de pagamento de professor (Sprint 7,
+  // "coração do sistema" nas palavras do usuário) — v1 global por Escola,
+  // não por professor (ver TipoRemuneracaoProfessor acima).
+  valorPorAula             Float?
+  tipoRemuneracaoProfessor TipoRemuneracaoProfessor @default(POR_AULA)
+  diaFechamento            Int?
+
+  professores          Professor[]
+  alunos               Aluno[]
+  convites             ConviteProfessor[]
+  responsaveis         ResponsavelFinanceiro[]
+  cursos               Curso[]
+  salas                Sala[]
+  turmas               Turma[]
+  modalidades          Modalidade[]
+  planosPagamento      PlanoPagamento[]
+  tabelasValores       TabelaValores[]
+  matriculas           Matricula[]
+  pacotesCredito       PacoteCredito[]
+  reservasSala         ReservaSala[]
+  contratos            Contrato[]
+  lancamentosCaixa     LancamentoCaixa[]
+  fechamentosCaixa     FechamentoCaixa[]
+  contasPagar          ContaPagar[]
+  folhasPagamento      FolhaPagamentoProfessor[]
+  despesasFixas        DespesaFixa[]
+  cronogramas          CronogramaConteudo[]
+  relatoriosAluno      RelatorioAluno[]
+  estagiosFunil        EstagioFunil[]
+  leads                Lead[]
+  tarefasLead          TarefaLead[]
+  linksCaptacao        LinkCaptacao[]
+  aulasExperimentais   AulaExperimental[]
+  diasNaoLetivos       DiaNaoLetivo[]
+  comunicados          Comunicado[]
   produtos             Produto[]
   movimentacoesEstoque MovimentacaoEstoque[]
 
@@ -216,6 +256,16 @@ model Professor {
   linkPagamentoCartao String?
   googleId            String?   @unique
 
+  // ─── Cadastro completo de Equipe (INSTITUTION, Sprint 1 do briefing 08/09/2026) ───
+  // Nullable de propósito: professor já cadastrado antes desta sprint
+  // continua funcionando sem esses dados até a escola completar o cadastro
+  // em equipe.tsx. dataPagamento é o dia do mês (1-31) em que a escola paga
+  // o professor — não confundir com Escola.diaFechamento (data de corte do
+  // cálculo, não da liberação do pagamento).
+  contatoEmergencia String?
+  dataPagamento     Int?
+  contratoUrl       String?
+
   stripeCustomerId String?
   assinaturaStatus StatusAssinaturaProfessor @default(INATIVO)
   assinaturaFim    DateTime?
@@ -225,27 +275,56 @@ model Professor {
   escola   Escola       @relation(fields: [escolaId], references: [id])
   papel    PapelUsuario @default(DONO)
 
-  alunos       Aluno[]
-  aulas        Aula[]
-  pagamentos   Pagamento[]
-  materiais    Material[]
-  reposicoes   Reposicao[]
-  notificacoes Notificacao[]
-  mensagens    Mensagem[]
-  turmas       Turma[]
-  matriculas   Matricula[]
-  avaliacoes   Avaliacao[]
-  leadsDeInteresse Lead[]
-  tarefasLead      TarefaLead[]
-  linksCaptacao    LinkCaptacao[]
-  aulasExperimentais AulaExperimental[]
+  alunos              Aluno[]
+  aulas               Aula[]
+  pagamentos          Pagamento[]
+  materiais           Material[]
+  reposicoes          Reposicao[]
+  notificacoes        Notificacao[]
+  mensagens           Mensagem[]
+  turmas              Turma[]
+  matriculas          Matricula[]
+  avaliacoes          Avaliacao[]
+  leadsDeInteresse    Lead[]
+  tarefasLead         TarefaLead[]
+  linksCaptacao       LinkCaptacao[]
+  aulasExperimentais  AulaExperimental[]
   comunicadosEnviados Comunicado[]
+  disponibilidades    DisponibilidadeProfessor[]
+  mensagensTurma      MensagemTurma[]
+  folhasPagamento     FolhaPagamentoProfessor[]
+  cronogramas         CronogramaConteudo[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([stripeCustomerId])
   @@index([escolaId])
+}
+
+// ─── DISPONIBILIDADE DO PROFESSOR (INSTITUTION, Sprint 1 do briefing 08/09/2026) ───
+// Grade semanal RECORRENTE (não são slots de uma semana específica): a
+// escola marca em quais dias/horas o professor pode dar aula. É regra
+// global — quando a escola tenta marcar aula de um aluno na grade desse
+// professor, só os horários DISPONIVEL ficam clicáveis (aplicado na UI de
+// Equipe/Logística, não faz sentido travar isso a nível de banco). PAUSA é
+// café/almoço — bloqueado igual a um horário fora da disponibilidade.
+// "Horário em aula" não tem valor de tipo aqui: é derivado cruzando
+// diaSemana/horaInicio/horaFim com Aula.dataHora do professor no dia.
+model DisponibilidadeProfessor {
+  id         String              @id @default(uuid())
+  diaSemana  Int // 0=Dom … 6=Sáb, mesmo padrão de Aluno.diaSemanaNumero
+  horaInicio String // "HH:mm"
+  horaFim    String // "HH:mm"
+  tipo       TipoDisponibilidade @default(DISPONIVEL)
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([professorId, diaSemana])
 }
 
 // ─── 2. ALUNO ────────────────────────────────────────────────────
@@ -275,6 +354,12 @@ model Aluno {
   tempoContrato      Int? // Em meses
   dataInicioContrato DateTime? // Data de ativação do contrato
 
+  // Anexo do contrato fechado (INSTITUTION Sprint 5, briefing 08/09/2026) —
+  // upload de arquivo, distinto de Contrato (fluxo de assinatura digital por
+  // token, por Matricula). Nullable de propósito: aluno cadastrado antes
+  // desta sprint, ou sem contrato em papel anexado, continua funcionando.
+  contratoUrl String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -299,16 +384,18 @@ model Aluno {
   responsavel        ResponsavelFinanceiro? @relation(fields: [responsavelId], references: [id])
   vinculoResponsavel VinculoResponsavel?
 
-  aulas          Aula[]
-  pagamentos     Pagamento[]
-  reposicoes     Reposicao[]
-  mensagens      Mensagem[]
-  materiais      Material[]
-  matriculas     Matricula[]
-  avaliacoes     Avaliacao[]
-  comprasCredito CompraCredito[]
-  reservasSala   ReservaSala[]
+  aulas                Aula[]
+  pagamentos           Pagamento[]
+  reposicoes           Reposicao[]
+  mensagens            Mensagem[]
+  materiais            Material[]
+  matriculas           Matricula[]
+  avaliacoes           Avaliacao[]
+  comprasCredito       CompraCredito[]
+  reservasSala         ReservaSala[]
   movimentacoesEstoque MovimentacaoEstoque[]
+  relatorios           RelatorioAluno[]
+  envioComunicados     EnvioComunicado[]
 
   @@index([professorId, status])
   @@index([status])
@@ -371,6 +458,30 @@ model Aula {
   // negócio em aberto). Presença deste campo é o que decide se o botão de
   // "Entrar na aula" aparece — sem precisar de um campo tipo/enum novo.
   linkOnline String?
+
+  // ─── Presença dupla + decisão de reposição (INSTITUTION Sprint 2, briefing 08/09/2026) ───
+  // Nullable de propósito: aula criada antes desta sprint (e toda aula fora
+  // do fluxo de check-in biométrico) continua funcionando só com `presenca`
+  // como sempre funcionou. presencaProfessorEm/presencaAlunoEm são
+  // confirmações INDEPENDENTES (cada lado só grava o próprio timestamp);
+  // `presenca` continua sendo atualizado pelas rotas novas quando os dois
+  // batem, pra não quebrar relatório nenhum que já lê esse campo.
+  presencaProfessorEm      DateTime?
+  presencaAlunoEm          DateTime?
+  // Auditoria de quando a escola faz override manual (só com a senha de
+  // quem está sendo marcado — nunca a senha de quem está logado).
+  confirmadoManualmentePor String? // "PROFESSOR" | "ALUNO"
+  motivoManual             String?
+  // Decisão da escola sobre "é reposição ou não" — campo À PARTE do fluxo
+  // de solicitação/aprovação de Reposicao (model Reposicao/StatusReposicao,
+  // já existente e com fluxo de 2 camadas próprio). Não confundir os dois:
+  // aqui é só uma marcação editável na Grade de hoje, sem aprovação nenhuma.
+  decisaoReposicao         Boolean?
+
+  // Assunto dado na aula (INSTITUTION Sprint 9, briefing 08/09/2026) —
+  // preenchido pelo professor ao confirmar presença, com base no
+  // CronogramaConteudo vigente do curso (universal ou pessoal).
+  assuntoTratado String?
 
   avaliacoes Avaliacao[]
 
@@ -470,6 +581,37 @@ model Mensagem {
   @@index([professorId, remetente])
 }
 
+// Quem escreveu uma mensagem no chat de turma (MensagemTurma) — professor
+// ou um dos alunos ativos dele, nunca a Escola diretamente (a Escola só lê,
+// não participa da conversa como terceira voz).
+enum AutorMensagemTurma {
+  PROFESSOR
+  ALUNO
+}
+
+// ─── CHAT DA TURMA (INSTITUTION Sprint 4, briefing 08/09/2026) ───────────
+// Grupo escopado por professorId (não por Turma — Aluno pode ter vários
+// vínculos via Matricula, mas o chat da turma é do professor "dono" de
+// login do aluno). Distinto de Mensagem (1:1 professor↔aluno) e de
+// /api/mural (broadcast 1-via, sem resposta) — este é bidirecional e em
+// grupo. Participantes (quem pode ler/postar) são calculados em tempo de
+// consulta: alunos ATIVOS daquele professor sem mensalidade ATRASADO —
+// sem tabela de membros dedicada, pra não duplicar o que já dá pra derivar
+// de Aluno.status + Pagamento.status.
+model MensagemTurma {
+  id        String             @id @default(uuid())
+  texto     String
+  autorTipo AutorMensagemTurma
+  autorId   String
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([professorId, createdAt])
+}
+
 // ─── 7. NOTIFICAÇÕES ─────────────────────────────────────────────
 model Notificacao {
   id         String          @id @default(uuid())
@@ -563,12 +705,75 @@ model Curso {
   tabelaValores   TabelaValores? @relation(fields: [tabelaValoresId], references: [id], onDelete: SetNull)
 
   aulasExperimentais AulaExperimental[]
+  cronogramas        CronogramaConteudo[]
+  diasNaoLetivos     DiaNaoLetivoCurso[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([escolaId])
   @@index([tabelaValoresId])
+}
+
+// ─── COORDENAÇÃO (INSTITUTION Sprint 9, briefing 08/09/2026) ─────────────
+// Duas opções de cronograma por curso: UNIVERSAL (a escola decide, sobe
+// material — professorId fica null) ou PESSOAL (cada professor sobe o
+// próprio, professorId obrigatório). Um curso pode ter várias entradas ao
+// longo do tempo; "vigente" é sempre a mais recente por (cursoId,
+// professorId) — não existe campo de "ativo" separado, pra não duplicar
+// controle de estado com a ordenação por data.
+enum TipoCronograma {
+  UNIVERSAL
+  PESSOAL
+}
+
+model CronogramaConteudo {
+  id       String         @id @default(uuid())
+  tipo     TipoCronograma
+  anexoUrl String?
+  titulo   String?
+
+  cursoId String
+  curso   Curso  @relation(fields: [cursoId], references: [id])
+
+  // Nullable de propósito: só preenchido quando tipo=PESSOAL. UNIVERSAL é
+  // decidido pela escola, sem dono individual.
+  professorId String?
+  professor   Professor? @relation(fields: [professorId], references: [id])
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([cursoId, tipo])
+  @@index([professorId])
+}
+
+// Relatório do aluno — solicitado pela coordenação a um professor, ou
+// enviado direto pela própria coordenação (autorTipo distingue os dois,
+// sem tabela separada pra cada caso).
+enum AutorRelatorioAluno {
+  PROFESSOR
+  COORDENACAO
+}
+
+model RelatorioAluno {
+  id        String              @id @default(uuid())
+  autorTipo AutorRelatorioAluno
+  descricao String?
+  anexoUrl  String?
+
+  alunoId String
+  aluno   Aluno  @relation(fields: [alunoId], references: [id])
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([alunoId, createdAt])
 }
 
 // ─── 12. SALA ─────────────────────────────────────────────────────
@@ -579,7 +784,7 @@ model Sala {
   ativa     Boolean @default(true)
 
   escolaId String
-  escola   Escola  @relation(fields: [escolaId], references: [id])
+  escola   Escola        @relation(fields: [escolaId], references: [id])
   turmas   Turma[]
   aulas    Aula[]
   reservas ReservaSala[]
@@ -639,11 +844,11 @@ enum PeriodicidadePlano {
 // RecorrenciaAula que já existe pra Aluno, em vez de duplicar SEMANAL/
 // QUINZENAL/MENSAL num enum novo.
 model Modalidade {
-  id              String          @id @default(uuid())
-  nome            String
-  frequencia      RecorrenciaAula
-  duracaoMinutos  Int
-  padrao          Boolean         @default(false)
+  id             String          @id @default(uuid())
+  nome           String
+  frequencia     RecorrenciaAula
+  duracaoMinutos Int
+  padrao         Boolean         @default(false)
 
   escolaId String
   escola   Escola @relation(fields: [escolaId], references: [id])
@@ -660,9 +865,9 @@ model PlanoPagamento {
   nome          String
   periodicidade PeriodicidadePlano
 
-  escolaId String
-  escola   Escola       @relation(fields: [escolaId], references: [id])
-  valores  ValorPlano[]
+  escolaId   String
+  escola     Escola       @relation(fields: [escolaId], references: [id])
+  valores    ValorPlano[]
   matriculas Matricula[]
 
   createdAt DateTime @default(now())
@@ -699,8 +904,8 @@ model TabelaValores {
 // irmãs na mesma transação), não por constraint de banco — evita a
 // complexidade de um índice único parcial só pra isso.
 model VersaoTabelaValores {
-  id     String  @id @default(uuid())
-  ativa  Boolean @default(false)
+  id    String  @id @default(uuid())
+  ativa Boolean @default(false)
 
   tabelaId String
   tabela   TabelaValores @relation(fields: [tabelaId], references: [id])
@@ -765,6 +970,19 @@ model Matricula {
   planoPagamentoId String?
   planoPagamento   PlanoPagamento? @relation(fields: [planoPagamentoId], references: [id], onDelete: SetNull)
 
+  // Plano personalizado (INSTITUTION Sprint 5, briefing 08/09/2026): quando
+  // a matrícula não usa um PlanoPagamento global, a escola pode descrever
+  // um plano só dela aqui — o valor em si continua sendo valorMensalidade
+  // (já existente), este campo é só a descrição livre exibida na ficha.
+  planoPersonalizadoDescricao String?
+
+  // Pausa de cobrança pós-avaliação mensal (INSTITUTION Sprint 9, briefing
+  // 08/09/2026): quando o aluno responde a avaliação mensal, esse campo
+  // recebe o 1º dia do mês seguinte — enquanto "agora < avaliacaoPendenteAte",
+  // a régua de cobrança/lembrete não incomoda esse aluno de novo. Checagem
+  // direta na tela/rota de cobrança, sem novo model.
+  avaliacaoPendenteAte DateTime?
+
   // Preenchido quando esta matrícula nasce da conversão de um Lead (S4.3) —
   // é o que alimenta o relatório de conversão experimental → matrícula.
   // Não confundir com AulaExperimental.leadId: aqui é o RESULTADO
@@ -805,6 +1023,14 @@ model Avaliacao {
   id         String  @id @default(uuid())
   nota       Int
   comentario String?
+
+  // ─── Avaliação mensal (INSTITUTION Sprint 9, briefing 08/09/2026) ──────
+  // notaEscola é separada de `nota` (que continua sendo a nota do
+  // professor) — o aluno avalia os dois numa mesma submissão mensal.
+  // Nullable de propósito: avaliações de aula pontuais (aulaId preenchido,
+  // já existiam antes desta sprint) não têm mesReferencia nem notaEscola.
+  notaEscola    Int?
+  mesReferencia String? // "YYYY-MM"
 
   alunoId String
   aluno   Aluno  @relation(fields: [alunoId], references: [id])
@@ -922,8 +1148,8 @@ model Contrato {
 
   testemunhas String[] // nomes livres, configurável por contrato
 
-  nomeAssinanteResponsavel String?
-  cpfAssinanteResponsavel  String?
+  nomeAssinanteResponsavel  String?
+  cpfAssinanteResponsavel   String?
   assinadoPeloResponsavelEm DateTime?
 
   nomeRepresentanteEscola     String?
@@ -1015,6 +1241,60 @@ model ContaPagar {
   @@index([escolaId, paga])
 }
 
+// ─── FOLHA DE PAGAMENTO DE PROFESSOR (INSTITUTION Sprint 7, briefing 08/09/2026) ───
+// "O coração do sistema", nas palavras do usuário. v1 pragmática de
+// S8.3/RegraPagamentoProfessor do roadmap mestre: cálculo global por Escola
+// (Escola.valorPorAula + tipoRemuneracaoProfessor, Sprint 1), sem regra por
+// professor individual — isso fica pra quando a Fase 7/RBAC existir e
+// justificar a complexidade extra (ver docs/institution-briefing-2026-09-08.md §6).
+enum StatusFolhaPagamento {
+  ABERTA
+  FECHADA
+}
+
+model FolhaPagamentoProfessor {
+  id             String               @id @default(uuid())
+  mes            Int
+  ano            Int
+  valorCalculado Float
+  // Nullable de propósito: só preenchido quando a escola ajusta manualmente
+  // — enquanto null, o valor exibido é sempre valorCalculado.
+  valorAjustado  Float?
+  comprovantes   String[] // até 3 URLs, validado em app
+  status         StatusFolhaPagamento @default(ABERTA)
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+  escolaId    String
+  escola      Escola    @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([professorId, mes, ano])
+  @@index([escolaId, mes, ano])
+}
+
+// ─── DESPESA FIXA (INSTITUTION Sprint 7, briefing 08/09/2026) ────────────
+// Despesa recorrente da Escola (aluguel, internet, etc.), editável pela
+// própria instituição. Despesas avulsas (não-recorrentes) reusam ContaPagar,
+// que já existia — sem model novo pra isso.
+model DespesaFixa {
+  id         String  @id @default(uuid())
+  descricao  String
+  valor      Float
+  recorrente Boolean @default(true)
+  ativa      Boolean @default(true)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([escolaId, ativa])
+}
+
 // ─── 24. CRM DE LEADS ──────────────────────────────────────────────
 // Funil configurável por Escola — cada Escola define seus próprios
 // estágios (ex.: "Em Diálogo", "Aula experimental marcada"), não um enum
@@ -1024,10 +1304,10 @@ model ContaPagar {
 // sprint, registrado no runbook, não é suposição silenciosa.
 
 model EstagioFunil {
-  id     String  @id @default(uuid())
-  nome   String
-  ordem  Int
-  ativo  Boolean @default(true)
+  id    String  @id @default(uuid())
+  nome  String
+  ordem Int
+  ativo Boolean @default(true)
 
   escolaId String
   escola   Escola @relation(fields: [escolaId], references: [id])
@@ -1040,14 +1320,14 @@ model EstagioFunil {
 }
 
 model Lead {
-  id        String  @id @default(uuid())
-  nome      String
-  telefone  String?
-  email     String?
-  origem    String? // texto livre: "Instagram", "Indicação", etc.
+  id       String  @id @default(uuid())
+  nome     String
+  telefone String?
+  email    String?
+  origem   String? // texto livre: "Instagram", "Indicação", etc.
 
-  arquivado           Boolean @default(false)
-  motivoArquivamento  String?
+  arquivado          Boolean @default(false)
+  motivoArquivamento String?
 
   // Link público de auto-cadastro pra ESTE lead específico (S4.2) — gerado
   // sob demanda por POST /api/leads/:id/link-cadastro. Diferente de
@@ -1067,10 +1347,10 @@ model Lead {
   escolaId String
   escola   Escola @relation(fields: [escolaId], references: [id])
 
-  tarefas TarefaLead[]
+  tarefas            TarefaLead[]
   aulasExperimentais AulaExperimental[]
   // Lado "um" da relação 1:1 — a FK única de verdade mora em Matricula.leadId.
-  matricula Matricula?
+  matricula          Matricula?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1186,9 +1466,18 @@ model AulaExperimental {
 // Turma/Matricula pra "respeitar" em outro lugar (cada Aula nasce como um
 // registro concreto, não derivado de uma regra semanal). Ver runbook de
 // S1.4 pra essa decisão de escopo, registrada, não assumida em silêncio.
+// Tipos novos (INSTITUTION Sprint 10, briefing 08/09/2026): PALESTRA,
+// PASSEIO, FESTIVAL, APRESENTACAO e FERIAS — o antigo "Calendário" só
+// cobria feriado/recesso da escola inteira; "Cronograma" cobre qualquer
+// evento (bloqueia agenda dos cursos afetados, não conta falta).
 enum TipoDiaNaoLetivo {
   FERIADO
   RECESSO
+  PALESTRA
+  PASSEIO
+  FESTIVAL
+  APRESENTACAO
+  FERIAS
 }
 
 model DiaNaoLetivo {
@@ -1197,13 +1486,33 @@ model DiaNaoLetivo {
   descricao String
   tipo      TipoDiaNaoLetivo @default(FERIADO)
 
+  // Nullable de propósito (Sprint 10): evento de 1 dia só (o caso de sempre,
+  // feriado/recesso pontual) não precisa preencher — `data` sozinha já
+  // define o dia. Preenchido só quando o evento cobre um intervalo
+  // (ex.: "Férias de julho").
+  dataFim DateTime?
+
   escolaId String
   escola   Escola @relation(fields: [escolaId], references: [id])
+
+  // Cursos afetados (N:N). Vazio = escola inteira, compatível com todo
+  // registro criado antes desta sprint (que sempre foi escola inteira).
+  cursos DiaNaoLetivoCurso[]
 
   createdAt DateTime @default(now())
 
   @@unique([escolaId, data])
   @@index([escolaId])
+}
+
+model DiaNaoLetivoCurso {
+  diaNaoLetivoId String
+  diaNaoLetivo   DiaNaoLetivo @relation(fields: [diaNaoLetivoId], references: [id], onDelete: Cascade)
+  cursoId        String
+  curso          Curso        @relation(fields: [cursoId], references: [id], onDelete: Cascade)
+
+  @@id([diaNaoLetivoId, cursoId])
+  @@index([cursoId])
 }
 
 // ─── COMUNICADOS EM ESCALA (Fase 5, S5.1) ────────────────────────
@@ -1260,12 +1569,22 @@ model EnvioComunicado {
   sucesso           Boolean
   erro              String?
 
+  // Push + leitura no app do aluno (INSTITUTION Sprint 11, briefing
+  // 08/09/2026). Reaproveita esta mesma tabela (que já rastreava entrega de
+  // e-mail por destinatário) em vez de criar uma tabela nova só pra push —
+  // alunoId é nullable de propósito: só preenchido quando destinatarioTipo
+  // = "ALUNO" (Professor não tem tela de "comunicados lidos" no app).
+  alunoId String?
+  aluno   Aluno?    @relation(fields: [alunoId], references: [id], onDelete: SetNull)
+  lidoEm  DateTime?
+
   comunicadoId String
   comunicado   Comunicado @relation(fields: [comunicadoId], references: [id])
 
   createdAt DateTime @default(now())
 
   @@index([comunicadoId])
+  @@index([alunoId, lidoEm])
 }
 
 // ─── ESTOQUE SIMPLES (Fase 5, S5.5) ────────────────────────

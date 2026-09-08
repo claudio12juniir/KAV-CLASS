@@ -71,6 +71,12 @@ export default function FinanceiroProfessorScreen() {
   const [partesDividir, setPartesDividir] = useState<{ valor: string; vencimento: string }[]>([]);
   const [dividindo, setDividindo] = useState(false);
 
+  // Réplica da folha de pagamento da escola (INSTITUTION Sprint 7, briefing
+  // 08/09/2026) — só existe pra professor de Pacote Escola; SELF (Pacote
+  // Professor) nunca vê essa seção.
+  const [pacote, setPacote] = useState<string | null>(null);
+  const [folhaEscola, setFolhaEscola] = useState<any | null>(null);
+
   const abrirComprovantePdf = async (dataUrl: string) => {
     try {
       const matches = dataUrl.match(/^data:([^;]+);base64,(.+)$/s);
@@ -108,6 +114,11 @@ export default function FinanceiroProfessorScreen() {
         const p = await resPerfil.json();
         setChavePix(p.chavePix || '');
         setLinkCartao(p.linkPagamentoCartao || '');
+        setPacote(p.escola?.pacote || null);
+        if (p.escola?.pacote === 'PACOTE_ESCOLA') {
+          const resFolha = await fetchComRetry(`${API_URL}/api/professor/folha-pagamento`, { headers: { Authorization: `Bearer ${token}` } });
+          if (resFolha.ok) setFolhaEscola(await resFolha.json());
+        }
       }
     } catch (err) {
       console.error(err);
@@ -417,6 +428,16 @@ export default function FinanceiroProfessorScreen() {
         </View>
       </View>
 
+      {pacote === 'PACOTE_ESCOLA' && folhaEscola && (
+        <View style={estilosFolha.card}>
+          <Text style={estilosFolha.label}>SUA FOLHA DE PAGAMENTO ESTE MÊS</Text>
+          <Text style={estilosFolha.valor}>
+            R$ {Number(folhaEscola.valorAjustado ?? folhaEscola.valorCalculado).toFixed(2).replace('.', ',')}
+          </Text>
+          <Text style={estilosFolha.status}>{folhaEscola.status === 'FECHADA' ? 'Folha fechada' : 'Folha em aberto'}</Text>
+        </View>
+      )}
+
       <Text style={styles.tituloSecao}>MENSALIDADES DO MÊS</Text>
 
       <FlatList
@@ -673,4 +694,11 @@ const styles = StyleSheet.create({
     backgroundColor: CORES.acento, borderRadius: 10, padding: 15, alignItems: 'center', marginTop: 4,
   },
   btnSalvarTexto: { color: CORES.fundo, fontSize: 14, fontWeight: 'bold', letterSpacing: 2 },
+});
+
+const estilosFolha = StyleSheet.create({
+  card: { marginHorizontal: 20, marginTop: 14, padding: 16, borderRadius: 14, backgroundColor: '#0B1220' },
+  label: { color: '#9AA5B1', fontSize: 11, fontWeight: '700', letterSpacing: 1.2 },
+  valor: { color: '#fff', fontSize: 24, fontWeight: '800', marginTop: 6 },
+  status: { color: '#32BCAD', fontSize: 12, fontWeight: '600', marginTop: 4 },
 });

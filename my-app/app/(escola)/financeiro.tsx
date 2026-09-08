@@ -1,15 +1,17 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
+import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useState } from 'react';
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, Linking, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
 import { Badge, Botao, Campo, ErpShell, EstadoVazio, Kpi, Modal, PageHeader, SectionCard, SubAbasSimples, Tabela } from './_ui';
 
-type Sub = 'cobranca' | 'renovacao' | 'caixa' | 'dre';
+type Sub = 'cobranca' | 'renovacao' | 'folha' | 'caixa' | 'dre' | 'pagamentos';
 
 function hojeISO() {
   const d = new Date();
@@ -47,13 +49,31 @@ export default function FinanceiroEscola() {
   // DRE
   const [dre, setDre] = useState<any | null>(null);
 
+  // Faturamento atual + Folha de pagamento + Despesas fixas (INSTITUTION
+  // Sprint 7, briefing 08/09/2026)
+  const [faturamentoAtual, setFaturamentoAtual] = useState(0);
+  const [folhaPagamento, setFolhaPagamento] = useState<any[]>([]);
+  const [folhaEditando, setFolhaEditando] = useState<any | null>(null);
+  const [valorAjuste, setValorAjuste] = useState('');
+  const [urlComprovante, setUrlComprovante] = useState('');
+  const [salvandoFolha, setSalvandoFolha] = useState(false);
+  const [despesasFixas, setDespesasFixas] = useState<any[]>([]);
+  const [modalDespesaFixa, setModalDespesaFixa] = useState(false);
+  const [descricaoDespesaFixa, setDescricaoDespesaFixa] = useState('');
+  const [valorDespesaFixa, setValorDespesaFixa] = useState('');
+  const [exportando, setExportando] = useState<'pdf' | 'excel' | null>(null);
+
+  // Pagamentos — "a pulsação financeira da empresa" (INSTITUTION Sprint 8,
+  // briefing 08/09/2026)
+  const [pagamentosStatus, setPagamentosStatus] = useState<{ inadimplentes: any[]; pagos: any[]; emDia: any[] }>({ inadimplentes: [], pagos: [], emDia: [] });
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const headers = { Authorization: `Bearer ${token}` };
       const agora = new Date();
-      const [resStripe, resResumo, resVencendo, resLanc, resContas, resFecha, resDre] = await Promise.all([
+      const [resStripe, resResumo, resVencendo, resLanc, resContas, resFecha, resDre, resFaturamento, resFolha, resDespesasFixas, resPagamentosStatus] = await Promise.all([
         fetchComRetry(`${BASE_URL}/api/escola/stripe-connect/status`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/cobranca-automatica/resumo`, { headers }),
         fetchComRetry(`${BASE_URL}/api/renovacoes/vencendo?dias=30`, { headers }),
@@ -61,6 +81,10 @@ export default function FinanceiroEscola() {
         fetchComRetry(`${BASE_URL}/api/contas-pagar`, { headers }),
         fetchComRetry(`${BASE_URL}/api/caixa/fechamentos`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/dre?mes=${agora.getMonth() + 1}&ano=${agora.getFullYear()}`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/faturamento-atual`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/folha-pagamento`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/despesas-fixas`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/pagamentos-status`, { headers }),
       ]);
       if (resStripe.ok) setStripeConnect(await resStripe.json());
       if (resResumo.ok) setResumoCobranca(await resResumo.json());
@@ -69,6 +93,10 @@ export default function FinanceiroEscola() {
       if (resContas.ok) setContasPagar(await resContas.json());
       if (resFecha.ok) setUltimoFechamento((await resFecha.json())[0] || null);
       if (resDre.ok) setDre(await resDre.json());
+      if (resFaturamento.ok) setFaturamentoAtual((await resFaturamento.json()).total || 0);
+      if (resFolha.ok) setFolhaPagamento(await resFolha.json());
+      if (resDespesasFixas.ok) setDespesasFixas(await resDespesasFixas.json());
+      if (resPagamentosStatus.ok) setPagamentosStatus(await resPagamentosStatus.json());
     } catch (err) {
       console.error('Erro ao carregar Financeiro:', err);
     } finally {
@@ -210,6 +238,111 @@ export default function FinanceiroEscola() {
     }
   };
 
+  const abrirEdicaoFolha = (folha: any) => {
+    setFolhaEditando(folha);
+    setValorAjuste(folha.valorAjustado != null ? String(folha.valorAjustado) : '');
+    setUrlComprovante('');
+  };
+
+  const salvarAjusteFolha = async () => {
+    if (!folhaEditando) return;
+    setSalvandoFolha(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/folha-pagamento/${folhaEditando.id}/ajustar`, {
+        method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ valorAjustado: valorAjuste ? parseFloat(valorAjuste.replace(',', '.')) : null }),
+      });
+      if (res.ok) { setFolhaEditando(null); carregarDados(); }
+      else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível ajustar.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setSalvandoFolha(false);
+    }
+  };
+
+  const anexarComprovante = async () => {
+    if (!folhaEditando || !urlComprovante.trim()) return;
+    setSalvandoFolha(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/folha-pagamento/${folhaEditando.id}/comprovantes`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: urlComprovante.trim() }),
+      });
+      const dados = await res.json();
+      if (res.ok) { setFolhaEditando(dados); setUrlComprovante(''); carregarDados(); }
+      else Alert.alert('Erro', dados.erro || 'Não foi possível anexar.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setSalvandoFolha(false);
+    }
+  };
+
+  const criarDespesaFixa = async () => {
+    const valor = parseFloat(valorDespesaFixa.replace(',', '.'));
+    if (!descricaoDespesaFixa.trim() || !valor || valor <= 0) { Alert.alert('Atenção', 'Preencha a descrição e um valor válido.'); return; }
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/despesas-fixas`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ descricao: descricaoDespesaFixa.trim(), valor }),
+      });
+      if (res.ok) { setModalDespesaFixa(false); setDescricaoDespesaFixa(''); setValorDespesaFixa(''); carregarDados(); }
+      else Alert.alert('Não foi possível criar', (await res.json()).erro || 'Tente novamente.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    }
+  };
+
+  const exportarRelatorio = async (formato: 'pdf' | 'excel') => {
+    if (!dre) return;
+    setExportando(formato);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const url = `${BASE_URL}/api/escola/dre/${dre.periodo.mes}/${dre.periodo.ano}/${formato === 'pdf' ? 'pdf' : 'excel'}`;
+      const res = await fetchComRetry(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) { Alert.alert('Erro', 'Não foi possível gerar o relatório.'); return; }
+      const blob = await res.blob();
+      const base64: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.readAsDataURL(blob);
+      });
+      const extensao = formato === 'pdf' ? 'pdf' : 'xlsx';
+      const fileUri = `${FileSystem.cacheDirectory}relatorio-financeiro-${dre.periodo.mes}-${dre.periodo.ano}.${extensao}`;
+      await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(fileUri);
+      else Alert.alert('Relatório gerado', `Salvo em: ${fileUri}`);
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setExportando(null);
+    }
+  };
+
+  const abrirWhatsApp = (telefone: string | null) => {
+    if (!telefone) { Alert.alert('Sem telefone', 'Este aluno não tem telefone cadastrado.'); return; }
+    const numero = telefone.replace(/\D/g, '');
+    Linking.openURL(`https://wa.me/${numero}`);
+  };
+
+  const alternarDespesaFixa = async (despesa: any) => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/despesas-fixas/${despesa.id}`, {
+        method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ativa: !despesa.ativa }),
+      });
+      if (res.ok) carregarDados();
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    }
+  };
+
   if (carregando) {
     return <ErpShell titulo="Financeiro"><View style={{ paddingTop: 60, alignItems: 'center' }}><SyncLoader size="large" color={ERP.texto} /></View></ErpShell>;
   }
@@ -218,12 +351,18 @@ export default function FinanceiroEscola() {
     <ErpShell titulo="Financeiro">
       <PageHeader titulo="Financeiro" subtitulo="Cobrança automática via Stripe Connect e renovação de matrículas" />
 
+      <View style={estilos.kpiGrade}>
+        <Kpi label="Faturamento atual (mês)" valor={`R$ ${faturamentoAtual.toFixed(2).replace('.', ',')}`} tom="sucesso" icone="trending-up-outline" />
+      </View>
+
       <SubAbasSimples
         opcoes={[
           { chave: 'cobranca', rotulo: `Cobrança${resumoCobranca?.precisamDeAcao?.length ? ` · ${resumoCobranca.precisamDeAcao.length}` : ''}` },
           { chave: 'renovacao', rotulo: `Renovação${alunosVencendo.length ? ` · ${alunosVencendo.length}` : ''}` },
+          { chave: 'folha', rotulo: 'Pagamento professores' },
           { chave: 'caixa', rotulo: 'Caixa' },
           { chave: 'dre', rotulo: 'DRE' },
+          { chave: 'pagamentos', rotulo: `Pagamentos${pagamentosStatus.inadimplentes.length ? ` · ${pagamentosStatus.inadimplentes.length}` : ''}` },
         ]}
         ativa={sub} onMudar={setSub}
       />
@@ -327,6 +466,30 @@ export default function FinanceiroEscola() {
         </SectionCard>
       )}
 
+      {sub === 'folha' && (
+        <SectionCard titulo="Pagamento de professores" subtitulo="Calculado automaticamente pela presença confirmada no mês, ajustável quando necessário">
+          <Tabela
+            vazioTexto="Nenhum professor cadastrado ainda."
+            vazioIcone="people-outline"
+            dados={folhaPagamento}
+            colunas={[
+              { chave: 'professor', titulo: 'Professor', flex: 2, render: (f: any) => <Text style={{ fontSize: 13.5, fontWeight: '600', color: ERP.texto }}>{f.professor?.nome}</Text> },
+              { chave: 'calculado', titulo: 'Calculado', flex: 1.5, render: (f: any) => <Text style={estilos.linhaSub}>R$ {Number(f.valorCalculado).toFixed(2).replace('.', ',')}</Text> },
+              { chave: 'final', titulo: 'A pagar', flex: 1.5, render: (f: any) => (
+                <Text style={{ fontSize: 13.5, fontWeight: '700', color: ERP.texto }}>
+                  R$ {Number(f.valorAjustado ?? f.valorCalculado).toFixed(2).replace('.', ',')}
+                </Text>
+              )},
+              { chave: 'status', titulo: 'Status', flex: 1, render: (f: any) => <Badge texto={f.status === 'FECHADA' ? 'Fechada' : 'Aberta'} tom={f.status === 'FECHADA' ? 'sucesso' : 'default'} /> },
+              { chave: 'comprovantes', titulo: 'Comprovantes', flex: 1, render: (f: any) => <Text style={estilos.linhaSub}>{f.comprovantes?.length || 0}/3</Text> },
+              { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (f: any) => (
+                <Botao texto="Ver / ajustar" variante="secundario" onPress={() => abrirEdicaoFolha(f)} />
+              )},
+            ]}
+          />
+        </SectionCard>
+      )}
+
       {sub === 'caixa' && (
         <>
           <SectionCard>
@@ -382,7 +545,22 @@ export default function FinanceiroEscola() {
             />
           </SectionCard>
 
-          <SectionCard titulo="Contas a pagar" acao={<Botao texto="Nova conta" variante="secundario" icone="add" onPress={() => setModalContaPagar(true)} />}>
+          <SectionCard titulo="Despesas fixas" subtitulo="Recorrentes (aluguel, internet etc.) — editáveis pela própria instituição" acao={<Botao texto="Nova despesa" variante="secundario" icone="add" onPress={() => setModalDespesaFixa(true)} />}>
+            <Tabela
+              vazioTexto="Nenhuma despesa fixa cadastrada."
+              vazioIcone="cash-outline"
+              dados={despesasFixas}
+              colunas={[
+                { chave: 'descricao', titulo: 'Descrição', flex: 3 },
+                { chave: 'valor', titulo: 'Valor', flex: 1, render: (d: any) => <Text style={estilos.linhaSub}>R$ {Number(d.valor).toFixed(2).replace('.', ',')}</Text> },
+                { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (d: any) => (
+                  <Botao texto={d.ativa ? 'Ativa' : 'Inativa'} variante="secundario" onPress={() => alternarDespesaFixa(d)} />
+                )},
+              ]}
+            />
+          </SectionCard>
+
+          <SectionCard titulo="Contas a pagar" subtitulo="Despesas avulsas" acao={<Botao texto="Nova conta" variante="secundario" icone="add" onPress={() => setModalContaPagar(true)} />}>
             <Tabela
               vazioTexto="Nenhuma conta cadastrada."
               vazioIcone="document-text-outline"
@@ -403,7 +581,15 @@ export default function FinanceiroEscola() {
       )}
 
       {sub === 'dre' && (
-        <SectionCard titulo={!dre ? undefined : new Date(dre.periodo.ano, dre.periodo.mes - 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}>
+        <SectionCard
+          titulo={!dre ? undefined : new Date(dre.periodo.ano, dre.periodo.mes - 1).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
+          acao={dre ? (
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <Botao texto="Exportar PDF" variante="secundario" icone="document-text-outline" onPress={() => exportarRelatorio('pdf')} carregando={exportando === 'pdf'} />
+              <Botao texto="Exportar Excel" variante="secundario" icone="grid-outline" onPress={() => exportarRelatorio('excel')} carregando={exportando === 'excel'} />
+            </View>
+          ) : undefined}
+        >
           {!dre ? (
             <EstadoVazio icone="stats-chart-outline" texto="Sem dados pro mês atual ainda." />
           ) : (
@@ -449,6 +635,61 @@ export default function FinanceiroEscola() {
         </SectionCard>
       )}
 
+      {sub === 'pagamentos' && (
+        <>
+          <SectionCard titulo="Inadimplentes" subtitulo="Pelo menos uma mensalidade em atraso">
+            {pagamentosStatus.inadimplentes.length === 0 ? (
+              <EstadoVazio icone="checkmark-circle-outline" texto="Nenhum aluno inadimplente." />
+            ) : (
+              <Tabela
+                vazioTexto=""
+                dados={pagamentosStatus.inadimplentes}
+                colunas={[
+                  { chave: 'nome', titulo: 'Aluno', flex: 3 },
+                  { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (a: any) => (
+                    <Botao texto="WhatsApp" variante="secundario" icone="logo-whatsapp" onPress={() => abrirWhatsApp(a.telefone)} />
+                  )},
+                ]}
+              />
+            )}
+          </SectionCard>
+
+          <SectionCard titulo="Pagos este mês">
+            {pagamentosStatus.pagos.length === 0 ? (
+              <EstadoVazio icone="cash-outline" texto="Nenhum pagamento confirmado este mês ainda." />
+            ) : (
+              <Tabela
+                vazioTexto=""
+                dados={pagamentosStatus.pagos}
+                colunas={[
+                  { chave: 'nome', titulo: 'Aluno', flex: 3 },
+                  { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (a: any) => (
+                    <Botao texto="WhatsApp" variante="secundario" icone="logo-whatsapp" onPress={() => abrirWhatsApp(a.telefone)} />
+                  )},
+                ]}
+              />
+            )}
+          </SectionCard>
+
+          <SectionCard titulo="Em dia">
+            {pagamentosStatus.emDia.length === 0 ? (
+              <EstadoVazio icone="time-outline" texto="Nenhum aluno nesta lista." />
+            ) : (
+              <Tabela
+                vazioTexto=""
+                dados={pagamentosStatus.emDia}
+                colunas={[
+                  { chave: 'nome', titulo: 'Aluno', flex: 3 },
+                  { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (a: any) => (
+                    <Botao texto="WhatsApp" variante="secundario" icone="logo-whatsapp" onPress={() => abrirWhatsApp(a.telefone)} />
+                  )},
+                ]}
+              />
+            )}
+          </SectionCard>
+        </>
+      )}
+
       <Modal visivel={modalLancamento} titulo="Novo lançamento" onFechar={() => setModalLancamento(false)}>
         <Text style={estilos.labelChip}>Tipo</Text>
         <View style={{ flexDirection: 'row', gap: 8, marginBottom: 16 }}>
@@ -469,6 +710,34 @@ export default function FinanceiroEscola() {
         <Campo label="Valor (R$)" value={valorConta} onChangeText={setValorConta} keyboardType="decimal-pad" placeholder="Ex: 800,00" />
         <Campo label="Vencimento (AAAA-MM-DD)" value={vencimentoConta} onChangeText={setVencimentoConta} placeholder="Ex: 2026-10-05" />
         <Botao texto="Criar conta" onPress={criarContaPagar} carregando={salvandoCaixa} />
+      </Modal>
+
+      <Modal visivel={modalDespesaFixa} titulo="Nova despesa fixa" onFechar={() => setModalDespesaFixa(false)}>
+        <Campo label="Descrição" value={descricaoDespesaFixa} onChangeText={setDescricaoDespesaFixa} placeholder="Ex: Aluguel" />
+        <Campo label="Valor (R$)" value={valorDespesaFixa} onChangeText={setValorDespesaFixa} keyboardType="decimal-pad" placeholder="Ex: 3000,00" />
+        <Botao texto="Criar despesa" onPress={criarDespesaFixa} />
+      </Modal>
+
+      <Modal visivel={!!folhaEditando} titulo={`Folha · ${folhaEditando?.professor?.nome || ''}`} onFechar={() => setFolhaEditando(null)}>
+        {folhaEditando && (
+          <>
+            <Text style={estilos.linhaSub}>Calculado automaticamente: R$ {Number(folhaEditando.valorCalculado).toFixed(2).replace('.', ',')}</Text>
+            <View style={{ height: 12 }} />
+            <Campo label="Valor ajustado (opcional)" value={valorAjuste} onChangeText={setValorAjuste} keyboardType="decimal-pad" placeholder="Deixe vazio pra usar o valor calculado" />
+            <Botao texto="Salvar ajuste" onPress={salvarAjusteFolha} carregando={salvandoFolha} />
+
+            <Text style={[estilos.labelChip, { marginTop: 20 }]}>Comprovantes ({folhaEditando.comprovantes?.length || 0}/3)</Text>
+            {(folhaEditando.comprovantes || []).map((url: string, i: number) => (
+              <Text key={i} style={estilos.linhaSub} numberOfLines={1}>{url}</Text>
+            ))}
+            {(folhaEditando.comprovantes?.length || 0) < 3 && (
+              <>
+                <Campo label="URL do comprovante" value={urlComprovante} onChangeText={setUrlComprovante} placeholder="https://..." autoCapitalize="none" />
+                <Botao texto="Anexar comprovante" variante="secundario" onPress={anexarComprovante} carregando={salvandoFolha} />
+              </>
+            )}
+          </>
+        )}
       </Modal>
     </ErpShell>
   );

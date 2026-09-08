@@ -1,0 +1,163 @@
+import { useFocusEffect } from 'expo-router';
+import * as SecureStore from 'expo-secure-store';
+import React, { useCallback, useState } from 'react';
+import { Alert, StyleSheet, Text, View } from 'react-native';
+import SyncLoader from '../../components/SyncLoader';
+import { ERP } from '../../constants/erpTheme';
+import { BASE_URL, fetchComRetry } from '../api';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, PageHeader, SectionCard } from './_ui';
+
+function hojeYYYYMMDD() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function horaCurta(iso: string) {
+  return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Grade diária sala×horário×turma (INSTITUTION Sprint 6, briefing
+// 08/09/2026). "Salvar como recorrente" não é um motor novo: reaproveita
+// Turma.salaId (PATCH /api/turmas/:id, já existente no Catálogo) como o
+// padrão que vale dali em diante; "só hoje" reaproveita
+// PUT /api/aulas/:id/trocar-sala (S1.4), que já existia pra esse exato caso.
+export default function LogisticaEscola() {
+  const [carregando, setCarregando] = useState(true);
+  const [data, setData] = useState(hojeYYYYMMDD());
+  const [salas, setSalas] = useState<any[]>([]);
+  const [aulas, setAulas] = useState<any[]>([]);
+  const [aulaEditando, setAulaEditando] = useState<any | null>(null);
+  const [salaEscolhidaId, setSalaEscolhidaId] = useState<string | null>(null);
+  const [salvando, setSalvando] = useState(false);
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/logistica/grade?data=${data}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const dados = await res.json();
+        setSalas(dados.salas || []);
+        setAulas(dados.aulas || []);
+      }
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setCarregando(false);
+    }
+  }, [data]);
+
+  useFocusEffect(useCallback(() => { carregar(); }, [carregar]));
+
+  const abrirTrocaSala = (aula: any) => {
+    setAulaEditando(aula);
+    setSalaEscolhidaId(aula.sala?.id || null);
+  };
+
+  const salvarTroca = async (escopo: 'PONTUAL' | 'RECORRENTE') => {
+    if (!aulaEditando) return;
+    if (escopo === 'RECORRENTE' && !aulaEditando.turma) {
+      Alert.alert('Sem turma', 'Esta é uma aula avulsa, sem turma — só dá pra mudar "só hoje".');
+      return;
+    }
+    setSalvando(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const url = escopo === 'PONTUAL'
+        ? `${BASE_URL}/api/aulas/${aulaEditando.id}/trocar-sala`
+        : `${BASE_URL}/api/turmas/${aulaEditando.turma.id}`;
+      const res = await fetchComRetry(url, {
+        method: escopo === 'PONTUAL' ? 'PUT' : 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ salaId: salaEscolhidaId }),
+      });
+      if (res.ok) { setAulaEditando(null); carregar(); }
+      else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível salvar.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setSalvando(false);
+    }
+  };
+
+  const aulasPorSala = new Map<string, any[]>();
+  const semSala: any[] = [];
+  for (const aula of aulas) {
+    if (aula.sala?.id) {
+      if (!aulasPorSala.has(aula.sala.id)) aulasPorSala.set(aula.sala.id, []);
+      aulasPorSala.get(aula.sala.id)!.push(aula);
+    } else {
+      semSala.push(aula);
+    }
+  }
+
+  return (
+    <ErpShell titulo="Logística">
+      <PageHeader titulo="Logística do dia" subtitulo="Organização das aulas entre as salas — toda alteração fica salva automaticamente." />
+
+      <SectionCard>
+        <Campo label="Data" value={data} onChangeText={setData} placeholder="AAAA-MM-DD" />
+      </SectionCard>
+
+      {carregando ? (
+        <View style={{ paddingVertical: 40, alignItems: 'center' }}><SyncLoader size="large" color={ERP.texto} /></View>
+      ) : aulas.length === 0 ? (
+        <SectionCard><EstadoVazio icone="calendar-outline" texto="Nenhuma aula agendada nesta data." /></SectionCard>
+      ) : (
+        <>
+          {salas.map((sala) => {
+            const doSala = aulasPorSala.get(sala.id) || [];
+            if (doSala.length === 0) return null;
+            return (
+              <SectionCard key={sala.id} titulo={sala.nome} subtitulo={`${doSala.length} ${doSala.length === 1 ? 'aula' : 'aulas'}`}>
+                {doSala.map((aula) => (
+                  <LinhaAula key={aula.id} aula={aula} onMudarSala={() => abrirTrocaSala(aula)} />
+                ))}
+              </SectionCard>
+            );
+          })}
+          {semSala.length > 0 && (
+            <SectionCard titulo="Sem sala definida" subtitulo={`${semSala.length} ${semSala.length === 1 ? 'aula' : 'aulas'}`}>
+              {semSala.map((aula) => (
+                <LinhaAula key={aula.id} aula={aula} onMudarSala={() => abrirTrocaSala(aula)} />
+              ))}
+            </SectionCard>
+          )}
+        </>
+      )}
+
+      {aulaEditando && (
+        <SectionCard titulo={`Mudar sala · ${horaCurta(aulaEditando.dataHora)} ${aulaEditando.aluno?.nome || ''}`} style={{ borderColor: ERP.acento }}>
+          <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+            {salas.map((s) => (
+              <Botao key={s.id} texto={s.nome} variante={salaEscolhidaId === s.id ? 'primario' : 'secundario'} onPress={() => setSalaEscolhidaId(s.id)} />
+            ))}
+          </View>
+          <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+            <Botao texto="Só hoje" onPress={() => salvarTroca('PONTUAL')} carregando={salvando} />
+            <Botao texto="A partir de agora (turma)" variante="secundario" onPress={() => salvarTroca('RECORRENTE')} carregando={salvando} disabled={!aulaEditando.turma} />
+            <Botao texto="Cancelar" variante="secundario" onPress={() => setAulaEditando(null)} />
+          </View>
+        </SectionCard>
+      )}
+    </ErpShell>
+  );
+}
+
+function LinhaAula({ aula, onMudarSala }: { aula: any; onMudarSala: () => void }) {
+  return (
+    <View style={estilos.linha}>
+      <View style={{ flex: 1 }}>
+        <Text style={estilos.linhaTitulo}>{horaCurta(aula.dataHora)} · {aula.turma?.curso?.nome || aula.turma?.nome || 'Aula avulsa'}</Text>
+        <Text style={estilos.linhaSub}>{aula.professor?.nome} com {aula.aluno?.nome}</Text>
+        {!aula.turma && <Badge texto="Sem turma" tom="default" />}
+      </View>
+      <Botao texto="Mudar sala" variante="secundario" onPress={onMudarSala} />
+    </View>
+  );
+}
+
+const estilos = StyleSheet.create({
+  linha: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: ERP.bordaSuave },
+  linhaTitulo: { fontSize: 13.5, fontWeight: '700', color: ERP.texto },
+  linhaSub: { fontSize: 12, color: ERP.textoSecundario, marginTop: 2 },
+});

@@ -7,6 +7,12 @@ const jwt = require('jsonwebtoken');
 const cron = require('node-cron');
 const { PrismaClient } = require('@prisma/client');
 const { OAuth2Client } = require('google-auth-library');
+// Relatório financeiro em PDF/Excel (INSTITUTION Sprint 8, briefing
+// 08/09/2026) — pdfkit+exceljs escolhidos em vez de puppeteer: geram o
+// arquivo direto em memória, sem precisar de Chromium instalado no serviço
+// gratuito do Render (ver mapa de deploy em memória de longo prazo).
+const PDFDocument = require('pdfkit');
+const ExcelJS = require('exceljs');
 const stripe = process.env.STRIPE_SECRET_KEY
   ? require('stripe')(process.env.STRIPE_SECRET_KEY)
   : null;
@@ -2489,6 +2495,127 @@ app.post('/api/presenca/qrcode', autenticar, async (req, res) => {
   }
 });
 
+// ─── PRESENÇA DUPLA (INSTITUTION Sprint 2, briefing 08/09/2026) ──────────
+// Professor e aluno confirmam presença de forma independente (biometria no
+// app, via expo-local-authentication) — cada check-in só grava o timestamp
+// do próprio lado. Quando os dois já confirmaram, a aula vira PRESENTE de
+// verdade. Enquanto só um confirmou, `presenca` fica como estava (null/
+// PENDENTE_REPOSICAO) — não existe hoje um cron que decida "tempo esgotado,
+// vira AUSENCIA_*" automaticamente; isso ficaria pra uma sprint futura de
+// job agendado, registrado aqui como deliberadamente fora de escopo.
+function recalcularPresencaAula(aula) {
+  if (aula.presencaProfessorEm && aula.presencaAlunoEm) {
+    return { presenca: 'PRESENTE', status: 'CONCLUIDA' };
+  }
+  return null;
+}
+
+// POST /api/aulas/:id/checkin-professor — o próprio professor confirma
+// presença da aula dele (autenticado com o token normal; a biometria já
+// aconteceu no app antes de chamar esta rota).
+app.post('/api/aulas/:id/checkin-professor', exigirProfessor, async (req, res) => {
+  try {
+    const aula = await prisma.aula.findUnique({ where: { id: req.params.id } });
+    if (!aula || aula.professorId !== req.auth.id) return res.status(404).json({ erro: 'Aula não encontrada.' });
+    if (aula.presencaProfessorEm) return res.json({ mensagem: 'Você já confirmou presença nesta aula.', aula });
+
+    // assuntoTratado (INSTITUTION Sprint 9, briefing 08/09/2026): o
+    // professor descreve o que foi dado, com base no CronogramaConteudo
+    // vigente do curso — texto livre, sem validação contra o cronograma
+    // (a escola só usa isso pra controle de qualidade, não é obrigatório).
+    const data = { presencaProfessorEm: new Date() };
+    if (typeof req.body?.assuntoTratado === 'string') data.assuntoTratado = req.body.assuntoTratado.trim() || null;
+    Object.assign(data, recalcularPresencaAula({ ...aula, ...data }));
+
+    const atualizada = await prisma.aula.update({ where: { id: aula.id }, data });
+    res.json({ mensagem: 'Presença confirmada!', aula: atualizada });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao confirmar presença.');
+  }
+});
+
+// POST /api/aulas/:id/checkin-aluno — mesma ideia, do lado do aluno.
+app.post('/api/aulas/:id/checkin-aluno', exigirAluno, async (req, res) => {
+  try {
+    const aula = await prisma.aula.findUnique({ where: { id: req.params.id } });
+    if (!aula || aula.alunoId !== req.auth.id) return res.status(404).json({ erro: 'Aula não encontrada.' });
+    if (aula.presencaAlunoEm) return res.json({ mensagem: 'Você já confirmou presença nesta aula.', aula });
+
+    const data = { presencaAlunoEm: new Date() };
+    Object.assign(data, recalcularPresencaAula({ ...aula, ...data }));
+
+    const atualizada = await prisma.aula.update({ where: { id: aula.id }, data });
+    res.json({ mensagem: 'Presença confirmada!', aula: atualizada });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao confirmar presença.');
+  }
+});
+
+// PUT /api/aulas/:id/override-manual — quando professor ou aluno não
+// conseguiram levar o celular, a escola marca presença manualmente — mas só
+// com a senha de quem está sendo marcado (professor OU aluno, nunca a senha
+// de quem está logado como DONO/GESTOR). Auditoria: fica registrado quem
+// autorizou o override e o motivo.
+app.put('/api/aulas/:id/override-manual', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const { alvo, senha, motivo } = req.body;
+    if (!['PROFESSOR', 'ALUNO'].includes(alvo) || !senha) {
+      return res.status(400).json({ erro: 'alvo (PROFESSOR ou ALUNO) e senha são obrigatórios.' });
+    }
+
+    const aula = await prisma.aula.findUnique({
+      where: { id: req.params.id },
+      include: { professor: true, aluno: true },
+    });
+    if (!aula || aula.professor.escolaId !== professorLogado.escolaId) {
+      return res.status(404).json({ erro: 'Aula não encontrada nesta Escola.' });
+    }
+
+    const dono = alvo === 'PROFESSOR' ? aula.professor : aula.aluno;
+    if (!await bcrypt.compare(senha, dono.senha)) {
+      return res.status(401).json({ erro: `Senha do ${alvo === 'PROFESSOR' ? 'professor' : 'aluno'} incorreta.` });
+    }
+
+    const data = alvo === 'PROFESSOR' ? { presencaProfessorEm: new Date() } : { presencaAlunoEm: new Date() };
+    data.confirmadoManualmentePor = alvo;
+    data.motivoManual = motivo || null;
+    Object.assign(data, recalcularPresencaAula({ ...aula, ...data }));
+
+    const atualizada = await prisma.aula.update({ where: { id: aula.id }, data });
+    res.json({ mensagem: 'Presença marcada manualmente.', aula: atualizada });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao marcar presença manualmente.');
+  }
+});
+
+// PUT /api/aulas/:id/reposicao — só a escola decide se uma aula "é
+// reposição ou não" (campo à parte, independente do fluxo de solicitação/
+// aprovação de Reposicao já existente — ver decisão registrada no runbook).
+app.put('/api/aulas/:id/reposicao', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const { decisaoReposicao } = req.body;
+    if (typeof decisaoReposicao !== 'boolean') {
+      return res.status(400).json({ erro: 'decisaoReposicao deve ser true ou false.' });
+    }
+
+    const aula = await prisma.aula.findUnique({ where: { id: req.params.id }, include: { professor: true } });
+    if (!aula || aula.professor.escolaId !== professorLogado.escolaId) {
+      return res.status(404).json({ erro: 'Aula não encontrada nesta Escola.' });
+    }
+
+    const atualizada = await prisma.aula.update({ where: { id: aula.id }, data: { decisaoReposicao } });
+    res.json({ mensagem: 'Decisão de reposição atualizada.', aula: atualizada });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar decisão de reposição.');
+  }
+});
+
 app.post('/api/aulas/:id/material', exigirProfessor, async (req, res) => {
   try {
     const { titulo, tipo, conteudo, url } = req.body;
@@ -3155,7 +3282,7 @@ app.get('/api/matriculas', exigirProfessor, async (req, res) => {
 
 app.post('/api/matriculas', exigirProfessor, async (req, res) => {
   try {
-    const { alunoId, valorMensalidade, diaVencimento, turmaId, planoPagamentoId, leadId } = req.body;
+    const { alunoId, valorMensalidade, diaVencimento, turmaId, planoPagamentoId, planoPersonalizadoDescricao, leadId, professorId: professorIdBody } = req.body;
     if (!alunoId || typeof valorMensalidade !== 'number' || valorMensalidade <= 0) {
       return res.status(400).json({ erro: 'alunoId e valorMensalidade (número > 0) são obrigatórios.' });
     }
@@ -3166,14 +3293,22 @@ app.post('/api/matriculas', exigirProfessor, async (req, res) => {
 
     // Professor comum só matricula o próprio aluno; DONO/GESTOR pode
     // matricular qualquer aluno da Escola — a matrícula nasce vinculada ao
-    // professor de fato responsável pelo aluno (aluno.professorId), não a
-    // quem clicou em "criar" no painel.
+    // professor de fato responsável pelo aluno (aluno.professorId) por
+    // padrão, mas DONO/GESTOR pode escolher outro professor da Escola no
+    // body (multi-professor, INSTITUTION Sprint 5 — um mesmo aluno pode ter
+    // mais de uma Matricula, cada uma com seu professor).
     const aluno = ehGestao
       ? await prisma.aluno.findFirst({ where: { id: alunoId, escolaId: quemPede.escolaId } })
       : await prisma.aluno.findFirst({ where: { id: alunoId, professorId: req.auth.id } });
     if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a esta Escola.' });
-    if (!aluno.professorId) return res.status(400).json({ erro: 'Este aluno ainda não tem professor atribuído — atribua um antes de matricular.' });
-    const professorId = aluno.professorId;
+
+    let professorId = aluno.professorId;
+    if (ehGestao && professorIdBody) {
+      const professorEscolhido = await prisma.professor.findFirst({ where: { id: professorIdBody, escolaId: quemPede.escolaId } });
+      if (!professorEscolhido) return res.status(400).json({ erro: 'Professor não encontrado nesta Escola.' });
+      professorId = professorEscolhido.id;
+    }
+    if (!professorId) return res.status(400).json({ erro: 'Este aluno ainda não tem professor atribuído — atribua um antes de matricular.' });
 
     if (turmaId) {
       const turma = await prisma.turma.findFirst({ where: { id: turmaId, escolaId: aluno.escolaId } });
@@ -3200,6 +3335,7 @@ app.post('/api/matriculas', exigirProfessor, async (req, res) => {
         diaVencimento: diaVencimento != null ? parseInt(String(diaVencimento), 10) : 10,
         turmaId: turmaId || null,
         planoPagamentoId: planoPagamentoId || null,
+        planoPersonalizadoDescricao: planoPersonalizadoDescricao?.trim() || null,
         leadId: leadId || null,
       },
     });
@@ -3207,6 +3343,80 @@ app.post('/api/matriculas', exigirProfessor, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao criar matrícula.' });
+  }
+});
+
+// PATCH /api/matriculas/:id — edita um vínculo aluno×curso×professor já
+// existente (INSTITUTION Sprint 5). Troca de professor só por DONO/GESTOR
+// (mesma regra de criação); o resto (valor, vencimento, turma, plano) vale
+// pra professor dono também.
+app.patch('/api/matriculas/:id', exigirProfessor, async (req, res) => {
+  try {
+    const quemPede = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true, papel: true } });
+    if (!quemPede) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    const ehGestao = ['DONO', 'GESTOR'].includes(quemPede.papel);
+
+    const matricula = ehGestao
+      ? await prisma.matricula.findFirst({ where: { id: req.params.id, escolaId: quemPede.escolaId } })
+      : await prisma.matricula.findFirst({ where: { id: req.params.id, professorId: req.auth.id } });
+    if (!matricula) return res.status(404).json({ erro: 'Matrícula não encontrada.' });
+
+    const { valorMensalidade, diaVencimento, turmaId, planoPagamentoId, planoPersonalizadoDescricao, professorId } = req.body;
+    const data = {};
+    if (valorMensalidade !== undefined) {
+      if (typeof valorMensalidade !== 'number' || valorMensalidade <= 0) return res.status(400).json({ erro: 'valorMensalidade deve ser um número > 0.' });
+      data.valorMensalidade = valorMensalidade;
+    }
+    if (diaVencimento !== undefined) data.diaVencimento = parseInt(String(diaVencimento), 10) || 10;
+    if (turmaId !== undefined) {
+      if (turmaId) {
+        const turma = await prisma.turma.findFirst({ where: { id: turmaId, escolaId: matricula.escolaId } });
+        if (!turma) return res.status(400).json({ erro: 'Turma não encontrada.' });
+      }
+      data.turmaId = turmaId || null;
+    }
+    if (planoPagamentoId !== undefined) {
+      if (planoPagamentoId) {
+        const plano = await prisma.planoPagamento.findFirst({ where: { id: planoPagamentoId, escolaId: matricula.escolaId } });
+        if (!plano) return res.status(400).json({ erro: 'Plano de pagamento não encontrado.' });
+      }
+      data.planoPagamentoId = planoPagamentoId || null;
+    }
+    if (planoPersonalizadoDescricao !== undefined) data.planoPersonalizadoDescricao = planoPersonalizadoDescricao?.trim() || null;
+    if (professorId !== undefined) {
+      if (!ehGestao) return res.status(403).json({ erro: 'Só DONO/GESTOR pode trocar o professor de uma matrícula.' });
+      const professorEscolhido = await prisma.professor.findFirst({ where: { id: professorId, escolaId: matricula.escolaId } });
+      if (!professorEscolhido) return res.status(400).json({ erro: 'Professor não encontrado nesta Escola.' });
+      data.professorId = professorEscolhido.id;
+    }
+
+    const atualizada = await prisma.matricula.update({ where: { id: matricula.id }, data });
+    res.json(atualizada);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar matrícula.');
+  }
+});
+
+// DELETE /api/matriculas/:id — remove um vínculo aluno×curso×professor
+// (INSTITUTION Sprint 5). Só DONO/GESTOR — remover um vínculo financeiro é
+// uma decisão de gestão, não do professor individual. Se já existe Contrato
+// assinado pra essa matrícula, o banco recusa via FK (RESTRICT) — convertido
+// aqui numa mensagem clara em vez do 500 genérico.
+app.delete('/api/matriculas/:id', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const matricula = await prisma.matricula.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!matricula) return res.status(404).json({ erro: 'Matrícula não encontrada nesta Escola.' });
+
+    await prisma.matricula.delete({ where: { id: matricula.id } });
+    res.json({ mensagem: 'Vínculo removido.' });
+  } catch (err) {
+    if (err?.code === 'P2003') {
+      return res.status(400).json({ erro: 'Não é possível remover — existe um contrato vinculado a esta matrícula. Cancele o contrato primeiro.' });
+    }
+    tratarErro(err, res, 'Erro ao remover matrícula.');
   }
 });
 
@@ -3460,6 +3670,188 @@ app.get('/api/professor/avaliacoes', exigirProfessor, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/aluno/avaliacao-mensal — avaliação mensal do aluno sobre a
+// Escola e o professor principal (INSTITUTION Sprint 9, briefing
+// 08/09/2026). Distinta de POST /api/aluno/avaliacoes (avaliação pontual
+// de uma aula específica, já existente) — esta é uma vez por mês, sempre
+// sobre Aluno.professorId (o vínculo principal), e ao responder pausa a
+// cobrança/lembrete até o mês seguinte em todas as Matriculas do aluno.
+app.post('/api/aluno/avaliacao-mensal', exigirAluno, async (req, res) => {
+  try {
+    const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { professorId: true } });
+    if (!aluno?.professorId) return res.status(400).json({ erro: 'Você ainda não tem professor atribuído.' });
+
+    const { notaProfessor, notaEscola, comentario } = req.body;
+    if (!Number.isInteger(notaProfessor) || notaProfessor < 1 || notaProfessor > 5 || !Number.isInteger(notaEscola) || notaEscola < 1 || notaEscola > 5) {
+      return res.status(400).json({ erro: 'notaProfessor e notaEscola devem ser números inteiros de 1 a 5.' });
+    }
+
+    const agora = new Date();
+    const mesReferencia = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`;
+    const jaAvaliouEsseMes = await prisma.avaliacao.findFirst({ where: { alunoId: req.auth.id, mesReferencia } });
+    if (jaAvaliouEsseMes) return res.status(400).json({ erro: 'Você já avaliou este mês.' });
+
+    const proximoMes = new Date(agora.getFullYear(), agora.getMonth() + 1, 1);
+    await prisma.$transaction([
+      prisma.avaliacao.create({
+        data: { nota: notaProfessor, notaEscola, comentario: comentario?.trim() || null, alunoId: req.auth.id, professorId: aluno.professorId, mesReferencia },
+      }),
+      prisma.matricula.updateMany({ where: { alunoId: req.auth.id }, data: { avaliacaoPendenteAte: proximoMes } }),
+    ]);
+
+    res.status(201).json({ mensagem: 'Obrigado pela avaliação! Sua cobrança fica pausada até o próximo mês.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao registrar avaliação mensal.');
+  }
+});
+
+// ─── COORDENAÇÃO (INSTITUTION Sprint 9, briefing 08/09/2026) ─────────────
+
+// GET /api/escola/cronograma-conteudo?cursoId= — DONO/GESTOR vê tudo;
+// qualquer professor da Escola também pode ler (precisa saber o conteúdo
+// vigente pra confirmar presença), mas só vê PESSOAL dos outros como
+// metadado — o anexo em si é público pra quem já tem acesso à Escola,
+// mesmo padrão de "sem RBAC granular" desta fase.
+app.get('/api/escola/cronograma-conteudo', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { cursoId } = req.query;
+    const where = { escolaId: req.auth.escolaId };
+    if (cursoId) where.cursoId = cursoId;
+    const cronogramas = await prisma.cronogramaConteudo.findMany({
+      where,
+      include: { curso: { select: { nome: true } }, professor: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(cronogramas);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar cronogramas.');
+  }
+});
+
+app.post('/api/escola/cronograma-conteudo', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const { cursoId, tipo, professorId, anexoUrl, titulo } = req.body;
+    if (!cursoId || !['UNIVERSAL', 'PESSOAL'].includes(tipo)) {
+      return res.status(400).json({ erro: 'cursoId e tipo (UNIVERSAL|PESSOAL) são obrigatórios.' });
+    }
+    if (tipo === 'PESSOAL' && !professorId) {
+      return res.status(400).json({ erro: 'professorId é obrigatório quando tipo=PESSOAL.' });
+    }
+    const curso = await prisma.curso.findFirst({ where: { id: cursoId, escolaId: professorLogado.escolaId } });
+    if (!curso) return res.status(404).json({ erro: 'Curso não encontrado nesta Escola.' });
+
+    const cronograma = await prisma.cronogramaConteudo.create({
+      data: {
+        cursoId, tipo, titulo: titulo?.trim() || null, anexoUrl: anexoUrl || null,
+        professorId: tipo === 'PESSOAL' ? professorId : null,
+        escolaId: professorLogado.escolaId,
+      },
+    });
+    res.status(201).json(cronograma);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao criar cronograma.');
+  }
+});
+
+app.delete('/api/escola/cronograma-conteudo/:id', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { count } = await prisma.cronogramaConteudo.deleteMany({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!count) return res.status(404).json({ erro: 'Cronograma não encontrado.' });
+    res.json({ mensagem: 'Cronograma removido.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao remover cronograma.');
+  }
+});
+
+// GET/POST /api/escola/relatorios-aluno — coordenador solicita ao
+// professor (que sobe pelo mesmo POST, autorTipo=PROFESSOR) e a própria
+// coordenação também sobe direto (autorTipo=COORDENACAO).
+app.get('/api/escola/relatorios-aluno', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+  try {
+    const { alunoId } = req.query;
+    const where = { escolaId: req.auth.escolaId };
+    if (alunoId) where.alunoId = alunoId;
+    const relatorios = await prisma.relatorioAluno.findMany({ where, include: { aluno: { select: { nome: true } } }, orderBy: { createdAt: 'desc' } });
+    res.json(relatorios);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar relatórios.');
+  }
+});
+
+app.post('/api/escola/relatorios-aluno', exigirProfessor, async (req, res) => {
+  try {
+    const quemPede = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true, papel: true } });
+    if (!quemPede) return res.status(404).json({ erro: 'Professor não encontrado.' });
+
+    const { alunoId, descricao, anexoUrl } = req.body;
+    if (!alunoId) return res.status(400).json({ erro: 'alunoId é obrigatório.' });
+    const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, escolaId: quemPede.escolaId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado nesta Escola.' });
+
+    const autorTipo = ['DONO', 'GESTOR'].includes(quemPede.papel) ? 'COORDENACAO' : 'PROFESSOR';
+    const relatorio = await prisma.relatorioAluno.create({
+      data: { alunoId, descricao: descricao?.trim() || null, anexoUrl: anexoUrl || null, autorTipo, escolaId: quemPede.escolaId },
+    });
+    res.status(201).json(relatorio);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao criar relatório.');
+  }
+});
+
+// GET /api/escola/coordenacao/resumo — sessões por curso: cronograma
+// vigente (mais recente por tipo), média de avaliação (nota do professor e
+// nota da escola, entre os alunos matriculados naquele curso via Turma) e
+// contagem de relatórios dos alunos daquele curso.
+app.get('/api/escola/coordenacao/resumo', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const cursos = await prisma.curso.findMany({ where: { escolaId: professor.escolaId, ativo: true }, orderBy: { nome: 'asc' } });
+
+    const resumo = await Promise.all(cursos.map(async (curso) => {
+      const [cronogramas, matriculasDoCurso] = await Promise.all([
+        prisma.cronogramaConteudo.findMany({
+          where: { cursoId: curso.id },
+          include: { professor: { select: { nome: true } } },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.matricula.findMany({ where: { turma: { cursoId: curso.id } }, select: { alunoId: true } }),
+      ]);
+
+      const alunoIds = [...new Set(matriculasDoCurso.map((m) => m.alunoId))];
+      const avaliacoes = alunoIds.length
+        ? await prisma.avaliacao.findMany({ where: { alunoId: { in: alunoIds }, mesReferencia: { not: null } }, select: { nota: true, notaEscola: true } })
+        : [];
+      const relatoriosCount = alunoIds.length
+        ? await prisma.relatorioAluno.count({ where: { alunoId: { in: alunoIds } } })
+        : 0;
+
+      const mediaProfessor = avaliacoes.length ? avaliacoes.reduce((acc, a) => acc + a.nota, 0) / avaliacoes.length : null;
+      const comNotaEscola = avaliacoes.filter((a) => a.notaEscola != null);
+      const mediaEscola = comNotaEscola.length ? comNotaEscola.reduce((acc, a) => acc + (a.notaEscola || 0), 0) / comNotaEscola.length : null;
+
+      return {
+        curso: { id: curso.id, nome: curso.nome },
+        cronogramaUniversal: cronogramas.find((c) => c.tipo === 'UNIVERSAL') || null,
+        cronogramasPessoais: cronogramas.filter((c) => c.tipo === 'PESSOAL'),
+        mediaAvaliacaoProfessor: mediaProfessor,
+        mediaAvaliacaoEscola: mediaEscola,
+        totalRelatorios: relatoriosCount,
+      };
+    }));
+
+    res.json(resumo);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar resumo da coordenação.');
   }
 });
 
@@ -4284,6 +4676,42 @@ app.put('/api/contas-pagar/:id/pagar', exigirProfessor, carregarEscolaDoProfesso
 // lançamento, sem contar nada em dobro). "Simplificado" porque não tem
 // plano de contas nem categoria — é receita x despesa do mês, o suficiente
 // pra tirar a escola da planilha paralela sem construir um ERP contábil.
+// Cálculo do DRE em si, fatorado (INSTITUTION Sprint 8, briefing 08/09/2026)
+// pra ser reaproveitado pela rota JSON já existente e pelas exportações
+// PDF/Excel novas, sem duplicar a lógica. Estendido nesta sprint pra somar
+// DespesaFixa (Sprint 7) nas despesas — antes só entrava LancamentoCaixa.
+async function calcularDre(escolaId, mes, ano) {
+  const inicio = new Date(ano, mes, 1, 0, 0, 0, 0);
+  const fim = new Date(ano, mes + 1, 0, 23, 59, 59, 999);
+
+  const [mensalidadesPagas, lancamentos, contasPendentes, despesasFixas] = await Promise.all([
+    prisma.pagamento.findMany({
+      where: { professor: { escolaId }, status: 'PAGO', dataPagamento: { gte: inicio, lte: fim } },
+      select: { valor: true },
+    }),
+    prisma.lancamentoCaixa.findMany({ where: { escolaId, data: { gte: inicio, lte: fim } }, orderBy: { data: 'desc' } }),
+    prisma.contaPagar.findMany({ where: { escolaId, paga: false, vencimento: { lte: fim } }, orderBy: { vencimento: 'asc' } }),
+    prisma.despesaFixa.findMany({ where: { escolaId, ativa: true }, orderBy: { descricao: 'asc' } }),
+  ]);
+
+  const receitaMensalidades = mensalidadesPagas.reduce((acc, p) => acc + p.valor, 0);
+  const receitaAvulsa = lancamentos.filter((l) => l.tipo === 'ENTRADA').reduce((acc, l) => acc + l.valor, 0);
+  const despesasCaixa = lancamentos.filter((l) => l.tipo === 'SAIDA').reduce((acc, l) => acc + l.valor, 0);
+  const despesasFixasTotal = despesasFixas.reduce((acc, d) => acc + d.valor, 0);
+  const despesas = despesasCaixa + despesasFixasTotal;
+  const receitaTotal = receitaMensalidades + receitaAvulsa;
+
+  return {
+    periodo: { mes: mes + 1, ano },
+    receita: { mensalidades: receitaMensalidades, avulsa: receitaAvulsa, total: receitaTotal },
+    despesas: { caixa: despesasCaixa, fixas: despesasFixasTotal, total: despesas },
+    resultado: receitaTotal - despesas,
+    lancamentos,
+    contasPendentes,
+    despesasFixas,
+  };
+}
+
 app.get('/api/escola/dre', async (req, res) => {
   try {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
@@ -4292,41 +4720,423 @@ app.get('/api/escola/dre', async (req, res) => {
     const agora = new Date();
     const mes = req.query.mes ? parseInt(String(req.query.mes), 10) - 1 : agora.getMonth();
     const ano = req.query.ano ? parseInt(String(req.query.ano), 10) : agora.getFullYear();
-    const inicio = new Date(ano, mes, 1, 0, 0, 0, 0);
-    const fim = new Date(ano, mes + 1, 0, 23, 59, 59, 999);
-    const escolaId = professor.escolaId;
 
-    const [mensalidadesPagas, lancamentos, contasPendentes] = await Promise.all([
-      prisma.pagamento.findMany({
-        where: { professor: { escolaId }, status: 'PAGO', dataPagamento: { gte: inicio, lte: fim } },
-        select: { valor: true },
-      }),
-      prisma.lancamentoCaixa.findMany({
-        where: { escolaId, data: { gte: inicio, lte: fim } },
-        orderBy: { data: 'desc' },
-      }),
-      prisma.contaPagar.findMany({
-        where: { escolaId, paga: false, vencimento: { lte: fim } },
-        orderBy: { vencimento: 'asc' },
-      }),
-    ]);
-
-    const receitaMensalidades = mensalidadesPagas.reduce((acc, p) => acc + p.valor, 0);
-    const receitaAvulsa = lancamentos.filter(l => l.tipo === 'ENTRADA').reduce((acc, l) => acc + l.valor, 0);
-    const despesas = lancamentos.filter(l => l.tipo === 'SAIDA').reduce((acc, l) => acc + l.valor, 0);
-    const receitaTotal = receitaMensalidades + receitaAvulsa;
-
-    res.json({
-      periodo: { mes: mes + 1, ano },
-      receita: { mensalidades: receitaMensalidades, avulsa: receitaAvulsa, total: receitaTotal },
-      despesas: { total: despesas },
-      resultado: receitaTotal - despesas,
-      lancamentos,
-      contasPendentes,
-    });
+    res.json(await calcularDre(professor.escolaId, mes, ano));
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao gerar DRE.' });
+  }
+});
+
+// ─── RELATÓRIO PDF/EXCEL + PAGAMENTOS (INSTITUTION Sprint 8, briefing 08/09/2026) ───
+// Importante — motivo jurídico explícito do usuário: o relatório NUNCA cita
+// "KAV Class" em lugar nenhum (nome do arquivo, cabeçalho, rodapé). Um
+// problema jurídico da escola não deve envolver a plataforma.
+const NOMES_MESES_PT = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+function validarMesAno(req, res) {
+  const mes = parseInt(req.params.mes, 10);
+  const ano = parseInt(req.params.ano, 10);
+  if (!Number.isInteger(mes) || mes < 1 || mes > 12 || !Number.isInteger(ano)) {
+    res.status(400).json({ erro: 'mes (1-12) e ano na URL são obrigatórios e devem ser números válidos.' });
+    return null;
+  }
+  return { mes, ano };
+}
+
+// GET /api/escola/dre/:mes/:ano/pdf — relatório mensal formatado, com logo
+// da escola no topo quando cadastrado (Perfil da Instituição, Sprint 1).
+app.get('/api/escola/dre/:mes/:ano/pdf', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const periodo = validarMesAno(req, res);
+    if (!periodo) return;
+
+    const [dre, escola] = await Promise.all([
+      calcularDre(professor.escolaId, periodo.mes - 1, periodo.ano),
+      prisma.escola.findUnique({ where: { id: professor.escolaId }, select: { nome: true, logoUrl: true } }),
+    ]);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="relatorio-financeiro-${periodo.mes}-${periodo.ano}.pdf"`);
+
+    const doc = new PDFDocument({ margin: 50 });
+    doc.pipe(res);
+
+    if (escola?.logoUrl) {
+      try {
+        const respLogo = await fetch(escola.logoUrl);
+        if (respLogo.ok) {
+          const bufferLogo = Buffer.from(await respLogo.arrayBuffer());
+          doc.image(bufferLogo, 50, 45, { fit: [70, 70] });
+          doc.x = 130; doc.y = 50; // texto ao lado do logo, em vez de embaixo
+        }
+      } catch (err) {
+        console.error('[Relatório PDF] Falha ao baixar logo (segue sem logo):', err.message);
+      }
+    }
+
+    doc.fontSize(18).fillColor('#101828').text(escola?.nome || 'Relatório Financeiro');
+    doc.fontSize(11).fillColor('#555').text(`Relatório financeiro — ${NOMES_MESES_PT[periodo.mes - 1]}/${periodo.ano}`);
+    doc.x = 50;
+    doc.moveDown(2);
+    doc.fillColor('#101828');
+
+    doc.fontSize(14).text('Receitas', { underline: true });
+    doc.moveDown(0.4);
+    doc.fontSize(12).text(`Mensalidades pagas: R$ ${dre.receita.mensalidades.toFixed(2).replace('.', ',')}`);
+    doc.text(`Receita avulsa (caixa): R$ ${dre.receita.avulsa.toFixed(2).replace('.', ',')}`);
+    doc.moveDown(0.3);
+    doc.fillColor('#0a7a3d').fontSize(13).text(`Total de receitas: R$ ${dre.receita.total.toFixed(2).replace('.', ',')}`);
+
+    doc.moveDown(1.2);
+    doc.fillColor('#101828').fontSize(14).text('Despesas', { underline: true });
+    doc.moveDown(0.4);
+    doc.fontSize(12).text(`Despesas fixas: R$ ${dre.despesas.fixas.toFixed(2).replace('.', ',')}`);
+    doc.text(`Despesas avulsas (caixa): R$ ${dre.despesas.caixa.toFixed(2).replace('.', ',')}`);
+    doc.moveDown(0.3);
+    doc.fillColor('#B00020').fontSize(13).text(`Total de despesas: R$ ${dre.despesas.total.toFixed(2).replace('.', ',')}`);
+
+    doc.moveDown(1.5);
+    doc.fillColor(dre.resultado >= 0 ? '#0a7a3d' : '#B00020').fontSize(16)
+      .text(`Resultado do mês: R$ ${dre.resultado.toFixed(2).replace('.', ',')}`);
+
+    if (dre.lancamentos.length > 0) {
+      doc.moveDown(1.5);
+      doc.fillColor('#101828').fontSize(14).text('Lançamentos avulsos do mês', { underline: true });
+      doc.moveDown(0.4);
+      doc.fontSize(10);
+      for (const l of dre.lancamentos) {
+        const sinal = l.tipo === 'ENTRADA' ? '+' : '−';
+        doc.fillColor(l.tipo === 'ENTRADA' ? '#0a7a3d' : '#B00020')
+          .text(`${new Date(l.data).toLocaleDateString('pt-BR')} — ${l.descricao}: ${sinal} R$ ${Number(l.valor).toFixed(2).replace('.', ',')}`);
+      }
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) res.status(500).json({ erro: 'Erro ao gerar relatório em PDF.' });
+  }
+});
+
+// GET /api/escola/dre/:mes/:ano/excel — mesma planilha, em Excel.
+app.get('/api/escola/dre/:mes/:ano/excel', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const periodo = validarMesAno(req, res);
+    if (!periodo) return;
+
+    const [dre, escola] = await Promise.all([
+      calcularDre(professor.escolaId, periodo.mes - 1, periodo.ano),
+      prisma.escola.findUnique({ where: { id: professor.escolaId }, select: { nome: true } }),
+    ]);
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = escola?.nome || 'Relatório Financeiro';
+    const planilha = workbook.addWorksheet(`${NOMES_MESES_PT[periodo.mes - 1]} ${periodo.ano}`);
+
+    planilha.columns = [{ width: 32 }, { width: 18 }];
+    planilha.addRow([escola?.nome || 'Relatório Financeiro']).font = { bold: true, size: 14 };
+    planilha.addRow([`Relatório financeiro — ${NOMES_MESES_PT[periodo.mes - 1]}/${periodo.ano}`]);
+    planilha.addRow([]);
+
+    planilha.addRow(['Receitas']).font = { bold: true };
+    planilha.addRow(['Mensalidades pagas', dre.receita.mensalidades]);
+    planilha.addRow(['Receita avulsa (caixa)', dre.receita.avulsa]);
+    planilha.addRow(['Total de receitas', dre.receita.total]).font = { bold: true };
+    planilha.addRow([]);
+
+    planilha.addRow(['Despesas']).font = { bold: true };
+    planilha.addRow(['Despesas fixas', dre.despesas.fixas]);
+    planilha.addRow(['Despesas avulsas (caixa)', dre.despesas.caixa]);
+    planilha.addRow(['Total de despesas', dre.despesas.total]).font = { bold: true };
+    planilha.addRow([]);
+
+    planilha.addRow(['Resultado do mês', dre.resultado]).font = { bold: true, size: 12 };
+    planilha.addRow([]);
+
+    if (dre.lancamentos.length > 0) {
+      planilha.addRow(['Lançamentos avulsos do mês']).font = { bold: true };
+      planilha.addRow(['Data', 'Descrição', 'Tipo', 'Valor']);
+      for (const l of dre.lancamentos) {
+        planilha.addRow([new Date(l.data).toLocaleDateString('pt-BR'), l.descricao, l.tipo, l.valor]);
+      }
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="relatorio-financeiro-${periodo.mes}-${periodo.ano}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) res.status(500).json({ erro: 'Erro ao gerar relatório em Excel.' });
+  }
+});
+
+// GET /api/escola/pagamentos-status — "a pulsação financeira da empresa":
+// 3 listas a partir de Pagamento (inadimplentes/pagos/em dia). Reusa a
+// mesma definição de inadimplente do KPI do Painel (Sprint 3): pelo menos
+// um Pagamento ATRASADO. "Pagos" = pagamento mais recente com status PAGO
+// no mês corrente; "Em dia" = tem pendência mas ainda dentro do vencimento.
+app.get('/api/escola/pagamentos-status', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const agora = new Date();
+    const inicioMes = new Date(agora.getFullYear(), agora.getMonth(), 1, 0, 0, 0, 0);
+    const fimMes = new Date(agora.getFullYear(), agora.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const alunos = await prisma.aluno.findMany({
+      where: { escolaId: professor.escolaId, status: 'ATIVO' },
+      select: {
+        id: true, nome: true, telefone: true,
+        responsavel: { select: { telefone: true } },
+        pagamentos: { select: { status: true, valor: true, vencimento: true, dataPagamento: true }, orderBy: { vencimento: 'desc' }, take: 5 },
+      },
+    });
+
+    const inadimplentes = [];
+    const pagos = [];
+    const emDia = [];
+    for (const aluno of alunos) {
+      const telefone = aluno.telefone || aluno.responsavel?.telefone || null;
+      const item = { id: aluno.id, nome: aluno.nome, telefone };
+      if (aluno.pagamentos.some((p) => p.status === 'ATRASADO')) {
+        inadimplentes.push(item);
+      } else if (aluno.pagamentos.some((p) => p.status === 'PAGO' && p.dataPagamento && new Date(p.dataPagamento) >= inicioMes && new Date(p.dataPagamento) <= fimMes)) {
+        pagos.push(item);
+      } else if (aluno.pagamentos.length > 0) {
+        emDia.push(item);
+      }
+    }
+
+    res.json({ inadimplentes, pagos, emDia });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar status de pagamentos.');
+  }
+});
+
+// ─── FINANCEIRO I (INSTITUTION Sprint 7, briefing 08/09/2026) ────────────
+
+// GET /api/escola/faturamento-atual — "valor em caixa daquele mês,
+// contabilizado via API da Stripe". Decisão de escopo: em vez de chamar a
+// API do Stripe ao vivo a cada carregamento do Painel, somamos Pagamento
+// com status PAGO no mês corrente — é a mesma fonte de verdade que o DRE
+// acima já usa, e que já é sincronizada pelo webhook/cron de cobrança
+// automática do Stripe Connect (S3.1). Evita depender de uma chamada de
+// rede externa toda vez que a tela abre, sem perder a exatidão do número.
+app.get('/api/escola/faturamento-atual', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const agora = new Date();
+    const inicio = new Date(agora.getFullYear(), agora.getMonth(), 1, 0, 0, 0, 0);
+    const fim = new Date(agora.getFullYear(), agora.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const pagos = await prisma.pagamento.findMany({
+      where: { professor: { escolaId: professor.escolaId }, status: 'PAGO', dataPagamento: { gte: inicio, lte: fim } },
+      select: { valor: true },
+    });
+    const total = pagos.reduce((acc, p) => acc + p.valor, 0);
+    res.json({ periodo: { mes: agora.getMonth() + 1, ano: agora.getFullYear() }, total });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao calcular o faturamento atual.');
+  }
+});
+
+// Cálculo automático = nº de aulas com presença confirmada no mês ×
+// Escola.valorPorAula (ou nº de alunos ativos × valorPorAula, se
+// tipoRemuneracaoProfessor=POR_ALUNO_MES). Reposição paga no mês em que a
+// aula efetivamente ocorreu, nunca duplicada: cada Aula tem uma única
+// dataHora (a da ocorrência real), então isso já é automático — não existe
+// um segundo registro "original" pra contar em dobro.
+async function calcularOuAtualizarFolha(professorId, escolaId, mes, ano) {
+  const inicio = new Date(ano, mes - 1, 1, 0, 0, 0, 0);
+  const fim = new Date(ano, mes, 0, 23, 59, 59, 999);
+  const escola = await prisma.escola.findUnique({ where: { id: escolaId }, select: { valorPorAula: true, tipoRemuneracaoProfessor: true } });
+  const valorBase = escola?.valorPorAula || 0;
+
+  let valorCalculado = 0;
+  if (escola?.tipoRemuneracaoProfessor === 'POR_ALUNO_MES') {
+    const totalAlunos = await prisma.aluno.count({ where: { professorId, status: 'ATIVO' } });
+    valorCalculado = totalAlunos * valorBase;
+  } else {
+    const totalAulas = await prisma.aula.count({ where: { professorId, presenca: 'PRESENTE', dataHora: { gte: inicio, lte: fim } } });
+    valorCalculado = totalAulas * valorBase;
+  }
+
+  return prisma.folhaPagamentoProfessor.upsert({
+    where: { professorId_mes_ano: { professorId, mes, ano } },
+    update: { valorCalculado },
+    create: { professorId, escolaId, mes, ano, valorCalculado },
+  });
+}
+
+// GET /api/escola/folha-pagamento?mes=&ano= — recalcula (upsert) a folha de
+// todo professor da Escola pro mês pedido (default mês corrente) e devolve
+// a lista. valorAjustado/comprovantes/status de folhas já existentes são
+// preservados — só valorCalculado é sempre recalculado na leitura.
+app.get('/api/escola/folha-pagamento', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const agora = new Date();
+    const mes = req.query.mes ? parseInt(String(req.query.mes), 10) : agora.getMonth() + 1;
+    const ano = req.query.ano ? parseInt(String(req.query.ano), 10) : agora.getFullYear();
+
+    const professores = await prisma.professor.findMany({ where: { escolaId: professor.escolaId }, select: { id: true, nome: true } });
+    const folhas = await Promise.all(professores.map((p) => calcularOuAtualizarFolha(p.id, professor.escolaId, mes, ano)));
+    res.json(folhas.map((f, i) => ({ ...f, professor: professores[i] })));
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar a folha de pagamento.');
+  }
+});
+
+// PUT /api/escola/folha-pagamento/:id/ajustar — campo de edição manual pela
+// escola, quando necessário (briefing: "campo de edição manual").
+app.put('/api/escola/folha-pagamento/:id/ajustar', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const { valorAjustado } = req.body;
+    if (valorAjustado !== null && (typeof valorAjustado !== 'number' || valorAjustado < 0)) {
+      return res.status(400).json({ erro: 'valorAjustado deve ser um número ≥ 0, ou null pra remover o ajuste.' });
+    }
+    const { count } = await prisma.folhaPagamentoProfessor.updateMany({
+      where: { id: req.params.id, escolaId: professor.escolaId },
+      data: { valorAjustado },
+    });
+    if (!count) return res.status(404).json({ erro: 'Folha não encontrada.' });
+    res.json({ mensagem: 'Valor ajustado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao ajustar valor.');
+  }
+});
+
+// POST /api/escola/folha-pagamento/:id/comprovantes — até 3 URLs (upload de
+// arquivo continua sendo campo de texto, mesma decisão já registrada em
+// outras sprints por falta de storage integrado).
+app.post('/api/escola/folha-pagamento/:id/comprovantes', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const folha = await prisma.folhaPagamentoProfessor.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!folha) return res.status(404).json({ erro: 'Folha não encontrada.' });
+
+    const { url } = req.body;
+    if (!url?.trim()) return res.status(400).json({ erro: 'url é obrigatória.' });
+    if (folha.comprovantes.length >= 3) return res.status(400).json({ erro: 'Máximo de 3 comprovantes por folha.' });
+
+    const atualizada = await prisma.folhaPagamentoProfessor.update({
+      where: { id: folha.id },
+      data: { comprovantes: [...folha.comprovantes, url.trim()] },
+    });
+    res.json(atualizada);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao anexar comprovante.');
+  }
+});
+
+// PUT /api/escola/folha-pagamento/:id/status — abre/fecha a folha do mês.
+app.put('/api/escola/folha-pagamento/:id/status', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const { status } = req.body;
+    if (!['ABERTA', 'FECHADA'].includes(status)) return res.status(400).json({ erro: 'status deve ser ABERTA ou FECHADA.' });
+    const { count } = await prisma.folhaPagamentoProfessor.updateMany({
+      where: { id: req.params.id, escolaId: professor.escolaId },
+      data: { status },
+    });
+    if (!count) return res.status(404).json({ erro: 'Folha não encontrada.' });
+    res.json({ mensagem: status === 'FECHADA' ? 'Folha fechada.' : 'Folha reaberta.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar status da folha.');
+  }
+});
+
+// GET /api/professor/folha-pagamento?mes=&ano= — réplica no login do
+// professor (briefing: "esses dados também aparecem no login do professor,
+// seção financeiro"). Só a própria folha, sem valorAjustado/comprovantes
+// escondidos — o professor vê exatamente o que a escola vê sobre ele.
+app.get('/api/professor/folha-pagamento', exigirProfessor, async (req, res) => {
+  try {
+    const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+
+    const agora = new Date();
+    const mes = req.query.mes ? parseInt(String(req.query.mes), 10) : agora.getMonth() + 1;
+    const ano = req.query.ano ? parseInt(String(req.query.ano), 10) : agora.getFullYear();
+
+    const folha = await calcularOuAtualizarFolha(req.auth.id, professor.escolaId, mes, ano);
+    res.json(folha);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar sua folha de pagamento.');
+  }
+});
+
+// ─── DESPESAS FIXAS (INSTITUTION Sprint 7, briefing 08/09/2026) ──────────
+app.get('/api/escola/despesas-fixas', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const despesas = await prisma.despesaFixa.findMany({ where: { escolaId: professor.escolaId }, orderBy: { descricao: 'asc' } });
+    res.json(despesas);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao listar despesas fixas.');
+  }
+});
+
+app.post('/api/escola/despesas-fixas', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { descricao, valor } = req.body;
+    if (!descricao?.trim() || typeof valor !== 'number' || valor <= 0) {
+      return res.status(400).json({ erro: 'descricao e valor (número > 0) são obrigatórios.' });
+    }
+    const despesa = await prisma.despesaFixa.create({ data: { descricao: descricao.trim(), valor, escolaId: professor.escolaId } });
+    res.status(201).json(despesa);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao criar despesa fixa.');
+  }
+});
+
+app.put('/api/escola/despesas-fixas/:id', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { descricao, valor, ativa } = req.body;
+    const data = {};
+    if (descricao !== undefined) data.descricao = descricao.trim();
+    if (valor !== undefined) data.valor = valor;
+    if (typeof ativa === 'boolean') data.ativa = ativa;
+    const { count } = await prisma.despesaFixa.updateMany({ where: { id: req.params.id, escolaId: professor.escolaId }, data });
+    if (!count) return res.status(404).json({ erro: 'Despesa fixa não encontrada.' });
+    res.json({ mensagem: 'Despesa fixa atualizada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar despesa fixa.');
+  }
+});
+
+app.delete('/api/escola/despesas-fixas/:id', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+    const { count } = await prisma.despesaFixa.deleteMany({ where: { id: req.params.id, escolaId: professor.escolaId } });
+    if (!count) return res.status(404).json({ erro: 'Despesa fixa não encontrada.' });
+    res.json({ mensagem: 'Despesa fixa removida.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao remover despesa fixa.');
   }
 });
 
@@ -4956,6 +5766,11 @@ app.get('/api/aulas-experimentais', exigirProfessor, carregarEscolaDoProfessor, 
     const escolaId = req.auth.escolaId;
     const where = { escolaId };
     if (req.query.status) where.status = req.query.status;
+    // apenasMeu=1 (INSTITUTION Sprint 11, briefing 08/09/2026): usado pelo
+    // app mobile do professor (checkin-presenca.tsx) pra ver só as próprias
+    // experimentais — o painel da escola (captacao.tsx) continua vendo
+    // todas, sem esse filtro, comportamento inalterado.
+    if (req.query.apenasMeu === '1') where.professorId = req.auth.id;
     const aulas = await prisma.aulaExperimental.findMany({
       where,
       include: {
@@ -4986,6 +5801,25 @@ app.put('/api/aulas-experimentais/:id/status', exigirProfessor, carregarEscolaDo
     res.json({ mensagem: 'Status atualizado.' });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar status.');
+  }
+});
+
+// PUT /api/aulas-experimentais/:id/checkin-biometrico — presença da
+// experimental via biometria no app do professor (INSTITUTION Sprint 11,
+// briefing 08/09/2026). AulaExperimental não é uma Aula (Lead ainda não é
+// Aluno), por isso não reusa POST /api/aulas/:id/checkin-professor —
+// mesma ideia (biometria já validada no app antes de chamar), rota própria
+// porque o model é outro.
+app.put('/api/aulas-experimentais/:id/checkin-biometrico', exigirProfessor, async (req, res) => {
+  try {
+    const { count } = await prisma.aulaExperimental.updateMany({
+      where: { id: req.params.id, professorId: req.auth.id },
+      data: { status: 'REALIZADA' },
+    });
+    if (!count) return res.status(404).json({ erro: 'Aula experimental não encontrada.' });
+    res.json({ mensagem: 'Presença da experimental confirmada!' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao confirmar presença da experimental.');
   }
 });
 
@@ -5200,6 +6034,7 @@ app.get('/api/escola/calendario', exigirProfessor, carregarEscolaDoProfessor, as
   try {
     const dias = await prisma.diaNaoLetivo.findMany({
       where: { escolaId: req.auth.escolaId },
+      include: { cursos: { include: { curso: { select: { id: true, nome: true } } } } },
       orderBy: { data: 'asc' },
     });
     res.json(dias);
@@ -5209,21 +6044,44 @@ app.get('/api/escola/calendario', exigirProfessor, carregarEscolaDoProfessor, as
   }
 });
 
+const TIPOS_DIA_NAO_LETIVO = ['FERIADO', 'RECESSO', 'PALESTRA', 'PASSEIO', 'FESTIVAL', 'APRESENTACAO', 'FERIAS'];
+
 // POST /api/escola/calendario — só DONO/GESTOR: é uma configuração da
-// Escola como um todo, não de um professor específico.
+// Escola como um todo, não de um professor específico. Estendida
+// (INSTITUTION Sprint 10, briefing 08/09/2026) com dataFim (evento em
+// intervalo, ex.: "Férias de julho") e cursosIds (quais cursos o evento
+// afeta — vazio/omitido = escola inteira, igual ao comportamento de antes).
 app.post('/api/escola/calendario', async (req, res) => {
   try {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
     if (!professor) return;
-    const { data, descricao, tipo } = req.body;
+    const { data, dataFim, descricao, tipo, cursosIds } = req.body;
     if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data) || !descricao?.trim()) {
       return res.status(400).json({ erro: 'data (YYYY-MM-DD) e descricao são obrigatórios.' });
     }
-    if (tipo && !['FERIADO', 'RECESSO'].includes(tipo)) {
-      return res.status(400).json({ erro: 'tipo deve ser FERIADO ou RECESSO.' });
+    if (tipo && !TIPOS_DIA_NAO_LETIVO.includes(tipo)) {
+      return res.status(400).json({ erro: `tipo deve ser um de: ${TIPOS_DIA_NAO_LETIVO.join(', ')}.` });
     }
+    if (dataFim && !/^\d{4}-\d{2}-\d{2}$/.test(dataFim)) {
+      return res.status(400).json({ erro: 'dataFim, se enviada, deve ser YYYY-MM-DD.' });
+    }
+    if (Array.isArray(cursosIds) && cursosIds.length > 0) {
+      const cursosValidos = await prisma.curso.count({ where: { id: { in: cursosIds }, escolaId: professor.escolaId } });
+      if (cursosValidos !== cursosIds.length) return res.status(400).json({ erro: 'Um ou mais cursos não pertencem a esta Escola.' });
+    }
+
     const dia = await prisma.diaNaoLetivo.create({
-      data: { data: ancorarNoDia(data), descricao: descricao.trim(), tipo: tipo || 'FERIADO', escolaId: professor.escolaId },
+      data: {
+        data: ancorarNoDia(data),
+        dataFim: dataFim ? ancorarNoDia(dataFim) : null,
+        descricao: descricao.trim(),
+        tipo: tipo || 'FERIADO',
+        escolaId: professor.escolaId,
+        cursos: Array.isArray(cursosIds) && cursosIds.length > 0
+          ? { create: cursosIds.map((cursoId) => ({ cursoId })) }
+          : undefined,
+      },
+      include: { cursos: { include: { curso: { select: { id: true, nome: true } } } } },
     });
     res.status(201).json(dia);
   } catch (err) {
@@ -5397,10 +6255,13 @@ async function coletarDestinatariosComunicado(escolaId, publico) {
   if (publico === 'ALUNOS' || publico === 'TODOS') {
     const alunos = await prisma.aluno.findMany({
       where: { escolaId },
-      select: { nome: true, email: true, responsavel: { select: { nome: true, email: true } } },
+      select: { id: true, nome: true, email: true, expoPushToken: true, responsavel: { select: { nome: true, email: true } } },
     });
     for (const a of alunos) {
-      destinatarios.push({ nome: a.responsavel?.nome || a.nome, email: a.responsavel?.email || a.email, tipo: 'ALUNO' });
+      destinatarios.push({
+        nome: a.responsavel?.nome || a.nome, email: a.responsavel?.email || a.email, tipo: 'ALUNO',
+        alunoId: a.id, expoPushToken: a.expoPushToken,
+      });
     }
   }
   if (publico === 'PROFESSORES' || publico === 'TODOS') {
@@ -5526,9 +6387,17 @@ app.post('/api/comunicados/:id/enviar', async (req, res) => {
     for (const dest of destinatarios) {
       try {
         await enviarEmailComunicado(dest.email, comunicado.titulo, comunicado.corpo, professor.escola.nome);
-        envios.push({ destinatarioNome: dest.nome, destinatarioEmail: dest.email, destinatarioTipo: dest.tipo, sucesso: true, comunicadoId: comunicado.id });
+        envios.push({ destinatarioNome: dest.nome, destinatarioEmail: dest.email, destinatarioTipo: dest.tipo, sucesso: true, comunicadoId: comunicado.id, alunoId: dest.alunoId || null });
       } catch (err) {
-        envios.push({ destinatarioNome: dest.nome, destinatarioEmail: dest.email, destinatarioTipo: dest.tipo, sucesso: false, erro: err.message, comunicadoId: comunicado.id });
+        envios.push({ destinatarioNome: dest.nome, destinatarioEmail: dest.email, destinatarioTipo: dest.tipo, sucesso: false, erro: err.message, comunicadoId: comunicado.id, alunoId: dest.alunoId || null });
+      }
+
+      // Push pro app do aluno (INSTITUTION Sprint 11, briefing 08/09/2026) —
+      // além do e-mail já disparado acima. Silencioso se o aluno não tiver
+      // token (nunca abriu o app) — não afeta o resultado do e-mail.
+      if (dest.tipo === 'ALUNO' && dest.expoPushToken) {
+        enviarPushNotificacao(dest.expoPushToken, comunicado.titulo, comunicado.corpo, { tipo: 'COMUNICADO', comunicadoId: comunicado.id })
+          .catch((err) => console.error('[Comunicado] Falha ao enviar push (e-mail segue independente):', err.message));
       }
     }
 
@@ -5556,6 +6425,35 @@ app.get('/api/comunicados/:id/envios', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// GET /api/aluno/comunicados — comunicados recebidos pelo próprio aluno,
+// mais recentes primeiro (INSTITUTION Sprint 11, briefing 08/09/2026). É a
+// tela/consulta que falta pro aluno "ver" o comunicado, além do push.
+app.get('/api/aluno/comunicados', exigirAluno, async (req, res) => {
+  try {
+    const envios = await prisma.envioComunicado.findMany({
+      where: { alunoId: req.auth.id },
+      include: { comunicado: { select: { id: true, titulo: true, corpo: true, enviadoEm: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(envios);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar comunicados.');
+  }
+});
+
+// PUT /api/aluno/comunicados/:envioId/lido — marca como lido ao abrir.
+app.put('/api/aluno/comunicados/:envioId/lido', exigirAluno, async (req, res) => {
+  try {
+    const { count } = await prisma.envioComunicado.updateMany({
+      where: { id: req.params.envioId, alunoId: req.auth.id, lidoEm: null },
+      data: { lidoEm: new Date() },
+    });
+    res.json({ mensagem: count ? 'Marcado como lido.' : 'Já estava lido.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao marcar como lido.');
   }
 });
 
@@ -5703,7 +6601,7 @@ app.get('/api/renovacoes/vencendo', async (req, res) => {
 
     const alunos = await prisma.aluno.findMany({
       where: { escolaId: professor.escolaId, status: 'ATIVO', dataInicioContrato: { not: null }, tempoContrato: { not: null } },
-      select: { id: true, nome: true, valorMensalidade: true, tempoContrato: true, dataInicioContrato: true },
+      select: { id: true, nome: true, valorMensalidade: true, tempoContrato: true, dataInicioContrato: true, expoPushToken: true },
     });
 
     const hoje = new Date();
@@ -5814,16 +6712,38 @@ app.post('/api/aulas', exigirProfessor, async (req, res) => {
     // usa pra decidir "que dia é esse" — sem herdar (nem criar de novo) a
     // conversão de fuso que essa rota já faz, que é só pro horário, não
     // pro dia calendário.
+    // Cronograma (ex-Calendário, INSTITUTION Sprint 10, briefing 08/09/2026):
+    // estendido de "data única" pra intervalo (dataFim) e de "escola
+    // inteira" pra "cursos afetados". Limitação registrada, não escondida:
+    // Aluno.curso é campo de texto livre (legado, pré-Matricula/Curso
+    // estruturado — ver comentário no model Curso), então o cruzamento
+    // curso-do-aluno × curso-do-evento é por nome (case-insensitive), não
+    // por relação de banco. Evento sem curso vinculado continua bloqueando
+    // a escola inteira, como sempre foi.
+    const dataAlvo = new Date(dataAula.getFullYear(), dataAula.getMonth(), dataAula.getDate());
     const professorEscola = await prisma.professor.findUnique({ where: { id: professorId }, select: { escolaId: true } });
-    const diaNaoLetivo = await prisma.diaNaoLetivo.findFirst({
+    const eventosDoDia = await prisma.diaNaoLetivo.findMany({
       where: {
         escolaId: professorEscola.escolaId,
-        data: new Date(dataAula.getFullYear(), dataAula.getMonth(), dataAula.getDate()),
+        data: { lte: dataAlvo },
+        OR: [{ dataFim: null, data: dataAlvo }, { dataFim: { gte: dataAlvo } }],
       },
+      include: { cursos: { include: { curso: { select: { nome: true } } } } },
     });
-    if (diaNaoLetivo) {
-      const rotulo = diaNaoLetivo.tipo === 'FERIADO' ? 'feriado' : 'recesso';
-      return res.status(400).json({ erro: `${dataAula.toLocaleDateString('pt-BR')} é ${rotulo} (${diaNaoLetivo.descricao}) — escolha outra data.` });
+
+    if (eventosDoDia.length > 0) {
+      const alunosDoLote = await prisma.aluno.findMany({ where: { id: { in: alunosIds } }, select: { curso: true } });
+      const cursosDosAlunos = new Set(alunosDoLote.map((a) => (a.curso || '').trim().toLowerCase()).filter(Boolean));
+
+      const eventoBloqueando = eventosDoDia.find((evento) => {
+        if (evento.cursos.length === 0) return true; // escola inteira
+        return evento.cursos.some((c) => cursosDosAlunos.has(c.curso.nome.trim().toLowerCase()));
+      });
+
+      if (eventoBloqueando) {
+        const nomeTipo = { FERIADO: 'feriado', RECESSO: 'recesso', PALESTRA: 'palestra', PASSEIO: 'passeio', FESTIVAL: 'festival', APRESENTACAO: 'apresentação', FERIAS: 'férias' }[eventoBloqueando.tipo] || 'evento';
+        return res.status(400).json({ erro: `${dataAula.toLocaleDateString('pt-BR')} é ${nomeTipo} (${eventoBloqueando.descricao}) — escolha outra data.` });
+      }
     }
 
     dataAula.setUTCHours(horas + 3, minutos, 0, 0);
@@ -6252,7 +7172,11 @@ async function exigirPapelNaEscola(req, res, papeisPermitidos) {
       nome: true,
       papel: true,
       escolaId: true,
-      escola: { select: { id: true, nome: true, pacote: true, codigoConvite: true } },
+      // Sprint 1 (INSTITUTION, briefing 08/09/2026): logoUrl/email/horarioFuncionamento/
+      // valorPorAula/tipoRemuneracaoProfessor/diaFechamento adicionados aqui —
+      // sem isso, GET /api/escola/perfil (que lê professor.escola.*) sempre
+      // devolvia esses campos undefined, mesmo já gravados no banco pelo PUT.
+      escola: { select: { id: true, nome: true, pacote: true, codigoConvite: true, logoUrl: true, email: true, horarioFuncionamento: true, valorPorAula: true, tipoRemuneracaoProfessor: true, diaFechamento: true } },
     },
   });
   if (!professor) {
@@ -6400,7 +7324,7 @@ app.get('/api/escola/professores', async (req, res) => {
 
     const professores = await prisma.professor.findMany({
       where: { escolaId: professor.escolaId },
-      select: { id: true, nome: true, email: true, papel: true, fotoUrl: true, telefone: true, createdAt: true },
+      select: { id: true, nome: true, email: true, papel: true, fotoUrl: true, telefone: true, dataNascimento: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
     res.json(professores);
@@ -6422,7 +7346,20 @@ app.get('/api/escola/alunos', async (req, res) => {
       where: { escolaId: professor.escolaId },
       select: {
         id: true, nome: true, email: true, status: true, curso: true, fotoUrl: true,
+        telefone: true, dataNascimento: true, tempoContrato: true, dataInicioContrato: true,
+        contratoUrl: true, vinculoResponsavel: true,
+        responsavel: { select: { id: true, nome: true, cpf: true, email: true, telefone: true } },
         professor: { select: { id: true, nome: true } },
+        matriculas: {
+          select: {
+            id: true, valorMensalidade: true, diaVencimento: true, status: true,
+            planoPersonalizadoDescricao: true,
+            professor: { select: { id: true, nome: true } },
+            turma: { select: { id: true, nome: true, curso: { select: { id: true, nome: true } } } },
+            planoPagamento: { select: { id: true, nome: true } },
+            contratos: { select: { id: true, status: true, token: true, nomeAssinanteResponsavel: true, nomeRepresentanteEscola: true }, orderBy: { createdAt: 'desc' }, take: 1 },
+          },
+        },
       },
       orderBy: { nome: 'asc' },
     });
@@ -6448,10 +7385,59 @@ app.get('/api/escola/perfil', async (req, res) => {
       await prisma.escola.update({ where: { id: professor.escolaId }, data: { codigoConvite } });
     }
 
-    res.json({ id: professor.escola.id, nome: professor.escola.nome, pacote: professor.escola.pacote, codigoConvite });
+    res.json({
+      id: professor.escola.id,
+      nome: professor.escola.nome,
+      pacote: professor.escola.pacote,
+      codigoConvite,
+      logoUrl: professor.escola.logoUrl,
+      email: professor.escola.email,
+      horarioFuncionamento: professor.escola.horarioFuncionamento,
+      valorPorAula: professor.escola.valorPorAula,
+      tipoRemuneracaoProfessor: professor.escola.tipoRemuneracaoProfessor,
+      diaFechamento: professor.escola.diaFechamento,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao carregar perfil da Escola.' });
+  }
+});
+
+// PUT /api/escola/perfil — Perfil da Instituição (INSTITUTION Sprint 1,
+// briefing 08/09/2026): DONO/GESTOR edita os dados da própria Escola.
+// tipoRemuneracaoProfessor + valorPorAula são a base do cálculo de
+// pagamento de professor (Sprint 7) — v1 global por Escola, sem regra por
+// professor individual (isso fica pra RegraPagamentoProfessor de S8.3,
+// quando a Fase 7/RBAC estiver pronta).
+app.put('/api/escola/perfil', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const { nome, logoUrl, email, horarioFuncionamento, valorPorAula, tipoRemuneracaoProfessor, diaFechamento } = req.body;
+
+    const data = {};
+    if (nome !== undefined) {
+      if (!nome?.trim()) return res.status(400).json({ erro: 'nome não pode ficar vazio.' });
+      data.nome = nome.trim();
+    }
+    if (logoUrl !== undefined) data.logoUrl = logoUrl || null;
+    if (email !== undefined) data.email = email?.trim() || null;
+    if (horarioFuncionamento !== undefined) data.horarioFuncionamento = horarioFuncionamento;
+    if (valorPorAula !== undefined) data.valorPorAula = valorPorAula === null ? null : Number(valorPorAula);
+    if (tipoRemuneracaoProfessor !== undefined) {
+      if (!['POR_AULA', 'POR_ALUNO_MES'].includes(tipoRemuneracaoProfessor)) {
+        return res.status(400).json({ erro: 'tipoRemuneracaoProfessor inválido.' });
+      }
+      data.tipoRemuneracaoProfessor = tipoRemuneracaoProfessor;
+    }
+    if (diaFechamento !== undefined) data.diaFechamento = diaFechamento === null ? null : Number(diaFechamento);
+
+    const atualizada = await prisma.escola.update({ where: { id: professor.escolaId }, data });
+    res.json({ mensagem: 'Perfil da Instituição atualizado!', escola: atualizada });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao atualizar perfil da Escola.' });
   }
 });
 
@@ -6500,7 +7486,10 @@ app.post('/api/escola/professores/criar', async (req, res) => {
       return res.status(403).json({ erro: 'Criar professores é um recurso do Pacote Escola.' });
     }
 
-    const { nome, email, senha, papel } = req.body;
+    const {
+      nome, email, senha, papel, telefone, contatoEmergencia,
+      dataNascimento, dataPagamento, contratoUrl, cursos, fotoUrl,
+    } = req.body;
     if (!nome?.trim() || !email?.trim() || !senha) {
       return res.status(400).json({ erro: 'nome, email e senha são obrigatórios.' });
     }
@@ -6519,18 +7508,233 @@ app.post('/api/escola/professores/criar', async (req, res) => {
         nome: nome.trim(),
         email: emailNorm,
         senha: senhaHash,
+        telefone: telefone?.trim() || null,
+        contatoEmergencia: contatoEmergencia?.trim() || null,
+        dataNascimento: dataNascimento ? new Date(dataNascimento) : null,
+        dataPagamento: dataPagamento === undefined || dataPagamento === null ? null : Number(dataPagamento),
+        contratoUrl: contratoUrl || null,
+        cursos: Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []),
+        fotoUrl: fotoUrl || null,
         codigoConvite: gerarCodigoConvite(),
         assinaturaStatus: 'ATIVO', // parte de uma Escola já paga
         escolaId: professor.escolaId,
         papel: papelNovo,
       },
-      select: { id: true, nome: true, email: true, papel: true, createdAt: true },
+      select: {
+        id: true, nome: true, email: true, papel: true, telefone: true,
+        contatoEmergencia: true, dataNascimento: true, dataPagamento: true,
+        contratoUrl: true, cursos: true, fotoUrl: true, createdAt: true,
+      },
     });
 
     res.status(201).json({ mensagem: 'Professor criado!', professor: novoProfessor });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao criar professor.' });
+  }
+});
+
+// PUT /api/escola/professores/:id — DONO/GESTOR edita o cadastro completo
+// de um professor da própria Escola (INSTITUTION Sprint 1, briefing
+// 08/09/2026). Sem troca de e-mail/senha aqui de propósito — segue o
+// mesmo padrão de PUT /api/professor/perfil (autoatendimento), que já
+// cuida da própria senha do professor.
+app.put('/api/escola/professores/:id', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!alvo) return res.status(404).json({ erro: 'Professor não encontrado nesta Escola.' });
+
+    const {
+      nome, telefone, contatoEmergencia, dataNascimento,
+      dataPagamento, contratoUrl, cursos, fotoUrl,
+    } = req.body;
+
+    const data = {};
+    if (nome !== undefined) {
+      if (!nome?.trim()) return res.status(400).json({ erro: 'nome não pode ficar vazio.' });
+      data.nome = nome.trim();
+    }
+    if (telefone !== undefined) data.telefone = telefone?.trim() || null;
+    if (contatoEmergencia !== undefined) data.contatoEmergencia = contatoEmergencia?.trim() || null;
+    if (dataNascimento !== undefined) data.dataNascimento = dataNascimento ? new Date(dataNascimento) : null;
+    if (dataPagamento !== undefined) data.dataPagamento = dataPagamento === null ? null : Number(dataPagamento);
+    if (contratoUrl !== undefined) data.contratoUrl = contratoUrl || null;
+    if (cursos !== undefined) data.cursos = Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []);
+    if (fotoUrl !== undefined) data.fotoUrl = fotoUrl || null;
+
+    const atualizado = await prisma.professor.update({
+      where: { id: alvo.id },
+      data,
+      select: {
+        id: true, nome: true, email: true, papel: true, telefone: true,
+        contatoEmergencia: true, dataNascimento: true, dataPagamento: true,
+        contratoUrl: true, cursos: true, fotoUrl: true,
+      },
+    });
+
+    res.json({ mensagem: 'Professor atualizado!', professor: atualizado });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao atualizar professor.' });
+  }
+});
+
+// ─── DISPONIBILIDADE DO PROFESSOR (INSTITUTION Sprint 1, briefing 08/09/2026) ───
+// Grade semanal recorrente: DONO/GESTOR marca em quais dias/horas o
+// professor pode dar aula (mais 1-2 pausas de café/almoço). É a regra
+// global que, a partir daqui, restringe quais horários ficam clicáveis
+// pra marcar aula desse professor (aplicado no frontend de Equipe/Logística
+// — não faz sentido travar isso a nível de banco).
+app.get('/api/escola/professores/:id/disponibilidade', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!alvo) return res.status(404).json({ erro: 'Professor não encontrado nesta Escola.' });
+
+    const slots = await prisma.disponibilidadeProfessor.findMany({
+      where: { professorId: alvo.id },
+      orderBy: [{ diaSemana: 'asc' }, { horaInicio: 'asc' }],
+    });
+    res.json(slots);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar disponibilidade.' });
+  }
+});
+
+// PUT /api/escola/professores/:id/disponibilidade — substitui a grade
+// inteira do professor de uma vez (o formulário de equipe.tsx manda o
+// estado completo da planilha 7×24 a cada salvamento, mesmo padrão já
+// usado em outras telas do painel pra listas pequenas e editadas em bloco).
+app.put('/api/escola/professores/:id/disponibilidade', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!alvo) return res.status(404).json({ erro: 'Professor não encontrado nesta Escola.' });
+
+    const { slots } = req.body;
+    if (!Array.isArray(slots)) return res.status(400).json({ erro: 'slots deve ser uma lista.' });
+    for (const s of slots) {
+      if (
+        typeof s.diaSemana !== 'number' || s.diaSemana < 0 || s.diaSemana > 6 ||
+        !s.horaInicio || !s.horaFim || !['DISPONIVEL', 'PAUSA'].includes(s.tipo)
+      ) {
+        return res.status(400).json({ erro: 'Cada slot precisa de diaSemana (0-6), horaInicio, horaFim e tipo válidos.' });
+      }
+    }
+
+    await prisma.$transaction([
+      prisma.disponibilidadeProfessor.deleteMany({ where: { professorId: alvo.id } }),
+      prisma.disponibilidadeProfessor.createMany({
+        data: slots.map((s) => ({
+          professorId: alvo.id,
+          diaSemana: s.diaSemana,
+          horaInicio: s.horaInicio,
+          horaFim: s.horaFim,
+          tipo: s.tipo,
+        })),
+      }),
+    ]);
+
+    const atualizado = await prisma.disponibilidadeProfessor.findMany({
+      where: { professorId: alvo.id },
+      orderBy: [{ diaSemana: 'asc' }, { horaInicio: 'asc' }],
+    });
+    res.json(atualizado);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao salvar disponibilidade.' });
+  }
+});
+
+// ─── CHAT DA TURMA (INSTITUTION Sprint 4, briefing 08/09/2026) ───────────
+// Quem pode ler/postar: o próprio professor, um aluno ATIVO dele sem
+// mensalidade ATRASADO (mesma fonte de verdade do KPI "Inadimplentes" do
+// Painel, ver Sprint 3), ou DONO/GESTOR da mesma Escola (só leitura — a
+// escola acompanha a conversa, não participa como terceira voz).
+async function resolverAcessoChatTurma(req, res, professorId) {
+  const payload = _decodificarToken(req, res);
+  if (!payload) return null;
+
+  const professorDaTurma = await prisma.professor.findUnique({ where: { id: professorId } });
+  if (!professorDaTurma) { res.status(404).json({ erro: 'Professor não encontrado.' }); return null; }
+
+  if (payload.papel === 'professor' && payload.id === professorId) {
+    return { podePostar: true, comoAutorTipo: 'PROFESSOR', comoAutorId: payload.id };
+  }
+
+  if (payload.papel === 'professor') {
+    // Não é o dono da turma — só pode ser DONO/GESTOR da mesma Escola, olhando.
+    const solicitante = await prisma.professor.findUnique({ where: { id: payload.id } });
+    if (solicitante && solicitante.escolaId === professorDaTurma.escolaId && ['DONO', 'GESTOR'].includes(solicitante.papel)) {
+      return { podePostar: false, comoAutorTipo: null, comoAutorId: null };
+    }
+    res.status(403).json({ erro: 'Você não faz parte desta turma.' });
+    return null;
+  }
+
+  if (payload.papel === 'aluno') {
+    const aluno = await prisma.aluno.findUnique({ where: { id: payload.id } });
+    if (!aluno || aluno.professorId !== professorId || aluno.status !== 'ATIVO') {
+      res.status(403).json({ erro: 'Você não faz parte desta turma.' });
+      return null;
+    }
+    const temAtraso = await prisma.pagamento.findFirst({ where: { alunoId: aluno.id, status: 'ATRASADO' } });
+    if (temAtraso) {
+      res.status(403).json({ erro: 'Regularize sua mensalidade pra acessar o chat da turma.' });
+      return null;
+    }
+    return { podePostar: true, comoAutorTipo: 'ALUNO', comoAutorId: aluno.id };
+  }
+
+  res.status(403).json({ erro: 'Acesso negado.' });
+  return null;
+}
+
+app.get('/api/professores/:id/chat-turma', async (req, res) => {
+  try {
+    const acesso = await resolverAcessoChatTurma(req, res, req.params.id);
+    if (!acesso) return;
+
+    const mensagens = await prisma.mensagemTurma.findMany({
+      where: { professorId: req.params.id },
+      orderBy: { createdAt: 'asc' },
+    });
+    res.json(mensagens);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar o chat da turma.');
+  }
+});
+
+// Só texto e links — de propósito, sem upload de mídia (regra explícita do
+// briefing: "só texto e links, nada de mídia").
+app.post('/api/professores/:id/chat-turma', async (req, res) => {
+  try {
+    const acesso = await resolverAcessoChatTurma(req, res, req.params.id);
+    if (!acesso) return;
+    if (!acesso.podePostar) return res.status(403).json({ erro: 'A Escola só acompanha esta conversa — quem participa é o professor e os alunos dele.' });
+
+    const { texto } = req.body;
+    if (!texto?.trim()) return res.status(400).json({ erro: 'texto é obrigatório.' });
+
+    const mensagem = await prisma.mensagemTurma.create({
+      data: {
+        texto: texto.trim(),
+        autorTipo: acesso.comoAutorTipo,
+        autorId: acesso.comoAutorId,
+        professorId: req.params.id,
+      },
+    });
+    res.status(201).json(mensagem);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao enviar mensagem.');
   }
 });
 
@@ -6543,7 +7747,10 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
     const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
     if (!professorLogado) return;
 
-    const { nome, email, senha, professorId, telefone } = req.body;
+    const {
+      nome, email, senha, professorId, telefone, curso,
+      dataNascimento, tempoContrato, dataInicioContrato, contratoUrl, responsavel,
+    } = req.body;
     if (!nome?.trim() || !email?.trim() || !senha || !professorId) {
       return res.status(400).json({ erro: 'nome, email, senha e professorId são obrigatórios.' });
     }
@@ -6560,23 +7767,139 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
     }
 
     const senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
-    const novoAluno = await prisma.aluno.create({
-      data: {
-        nome: nome.trim(),
-        email: emailNorm,
-        senha: senhaHash,
-        telefone: telefone?.trim() || null,
-        professorId: professorDaTurma.id,
-        escolaId: professorLogado.escolaId,
-        status: 'PENDENTE',
-      },
-      select: { id: true, nome: true, email: true, status: true, createdAt: true },
+    const novoAluno = await prisma.$transaction(async (tx) => {
+      const aluno = await tx.aluno.create({
+        data: {
+          nome: nome.trim(),
+          email: emailNorm,
+          senha: senhaHash,
+          telefone: telefone?.trim() || null,
+          curso: curso?.trim() || null,
+          dataNascimento: dataNascimento ? new Date(dataNascimento) : null,
+          tempoContrato: tempoContrato != null ? Number(tempoContrato) : null,
+          dataInicioContrato: dataInicioContrato ? new Date(dataInicioContrato) : null,
+          contratoUrl: contratoUrl || null,
+          professorId: professorDaTurma.id,
+          escolaId: professorLogado.escolaId,
+          status: 'PENDENTE',
+        },
+      });
+      if (responsavel?.nome?.trim()) {
+        const resp = await tx.responsavelFinanceiro.create({
+          data: {
+            nome: responsavel.nome.trim(),
+            cpf: responsavel.cpf?.trim() || null,
+            email: responsavel.email?.toLowerCase().trim() || null,
+            telefone: responsavel.telefone?.trim() || null,
+            escolaId: professorLogado.escolaId,
+          },
+        });
+        await tx.aluno.update({
+          where: { id: aluno.id },
+          data: { responsavelId: resp.id, vinculoResponsavel: responsavel.vinculo === 'DEPENDENTE' ? 'DEPENDENTE' : 'CONTRATANTE' },
+        });
+      }
+      return tx.aluno.findUnique({ where: { id: aluno.id }, select: { id: true, nome: true, email: true, status: true, createdAt: true } });
     });
 
     res.status(201).json({ mensagem: 'Aluno criado!', aluno: novoAluno });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao criar aluno.' });
+  }
+});
+
+// PUT /api/escola/alunos/:id — ficha 100% editável (INSTITUTION Sprint 5,
+// briefing 08/09/2026). Cobre os dados "de sempre" do aluno; os vínculos de
+// curso/professor adicionais (multi-curso/multi-professor) são geridos à
+// parte via POST/PATCH/DELETE /api/matriculas — Aluno.professorId/curso
+// continuam sendo o vínculo principal (decisão de arquitetura já validada:
+// menor risco, reaproveita Matricula que já existe pra isso).
+app.put('/api/escola/alunos/:id', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const alunoAlvo = await prisma.aluno.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!alunoAlvo) return res.status(404).json({ erro: 'Aluno não encontrado nesta Escola.' });
+
+    const {
+      nome, email, novaSenha, telefone, curso, professorId,
+      dataNascimento, tempoContrato, dataInicioContrato, contratoUrl, responsavel,
+    } = req.body;
+
+    const data = {};
+    if (nome !== undefined) {
+      if (!nome?.trim()) return res.status(400).json({ erro: 'nome não pode ficar vazio.' });
+      data.nome = nome.trim();
+    }
+    if (email !== undefined && email?.trim()) {
+      const emailNorm = email.toLowerCase().trim();
+      if (emailNorm !== alunoAlvo.email) {
+        const existente = await prisma.aluno.findUnique({ where: { email: emailNorm } });
+        if (existente) return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
+      }
+      data.email = emailNorm;
+    }
+    if (novaSenha) {
+      if (novaSenha.length < 6) return res.status(400).json({ erro: 'novaSenha: mínimo 6 caracteres.' });
+      data.senha = await bcrypt.hash(novaSenha, await bcrypt.genSalt(10));
+    }
+    if (telefone !== undefined) data.telefone = telefone?.trim() || null;
+    if (curso !== undefined) data.curso = curso?.trim() || null;
+    if (dataNascimento !== undefined) data.dataNascimento = dataNascimento ? new Date(dataNascimento) : null;
+    if (tempoContrato !== undefined) data.tempoContrato = tempoContrato === null ? null : Number(tempoContrato);
+    if (dataInicioContrato !== undefined) data.dataInicioContrato = dataInicioContrato ? new Date(dataInicioContrato) : null;
+    if (contratoUrl !== undefined) data.contratoUrl = contratoUrl || null;
+    if (professorId !== undefined) {
+      if (professorId) {
+        const professorAlvo = await prisma.professor.findFirst({ where: { id: professorId, escolaId: professorLogado.escolaId } });
+        if (!professorAlvo) return res.status(400).json({ erro: 'Professor não encontrado nesta Escola.' });
+      }
+      data.professorId = professorId || null;
+    }
+
+    const atualizado = await prisma.$transaction(async (tx) => {
+      if (responsavel) {
+        if (alunoAlvo.responsavelId) {
+          await tx.responsavelFinanceiro.update({
+            where: { id: alunoAlvo.responsavelId },
+            data: {
+              nome: responsavel.nome?.trim() || undefined,
+              cpf: responsavel.cpf?.trim() || null,
+              email: responsavel.email?.toLowerCase().trim() || null,
+              telefone: responsavel.telefone?.trim() || null,
+            },
+          });
+          data.vinculoResponsavel = responsavel.vinculo === 'DEPENDENTE' ? 'DEPENDENTE' : 'CONTRATANTE';
+        } else if (responsavel.nome?.trim()) {
+          const resp = await tx.responsavelFinanceiro.create({
+            data: {
+              nome: responsavel.nome.trim(),
+              cpf: responsavel.cpf?.trim() || null,
+              email: responsavel.email?.toLowerCase().trim() || null,
+              telefone: responsavel.telefone?.trim() || null,
+              escolaId: professorLogado.escolaId,
+            },
+          });
+          data.responsavelId = resp.id;
+          data.vinculoResponsavel = responsavel.vinculo === 'DEPENDENTE' ? 'DEPENDENTE' : 'CONTRATANTE';
+        }
+      }
+      return tx.aluno.update({
+        where: { id: alunoAlvo.id },
+        data,
+        select: {
+          id: true, nome: true, email: true, telefone: true, curso: true, status: true,
+          dataNascimento: true, tempoContrato: true, dataInicioContrato: true, contratoUrl: true,
+          vinculoResponsavel: true, responsavel: true, professor: { select: { id: true, nome: true } },
+        },
+      });
+    });
+
+    res.json({ mensagem: 'Aluno atualizado!', aluno: atualizado });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar aluno.');
   }
 });
 
@@ -6596,6 +7919,192 @@ app.get('/api/escola/reposicoes', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao listar reposições.' });
+  }
+});
+
+// ─── PAINEL — Grade de hoje + KPIs reformulados (INSTITUTION Sprint 3, briefing 08/09/2026) ───
+
+// GET /api/escola/grade-hoje — professores com aula hoje, cada um com a
+// lista de aulas do dia (aluno, horário, status de presença dupla e
+// decisão de reposição — Sprint 2). A grade de disponibilidade em si
+// continua vindo de GET /api/escola/professores/:id/disponibilidade
+// (Sprint 1), buscada sob demanda quando a escola abre o modal de um
+// professor específico — não duplicada aqui.
+app.get('/api/escola/grade-hoje', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const inicioDia = new Date(); inicioDia.setHours(0, 0, 0, 0);
+    const fimDia = new Date(); fimDia.setHours(23, 59, 59, 999);
+
+    const [aulasHoje, experimentaisHoje] = await Promise.all([
+      prisma.aula.findMany({
+        where: {
+          dataHora: { gte: inicioDia, lte: fimDia },
+          professor: { escolaId: professor.escolaId },
+        },
+        include: { aluno: { select: { id: true, nome: true } }, professor: { select: { id: true, nome: true } } },
+        orderBy: { dataHora: 'asc' },
+      }),
+      // Experimentais aparecem na Grade de hoje (INSTITUTION Sprint 11,
+      // briefing 08/09/2026) por já terem professorId+dataHora — ajuste de
+      // leitura, sem schema novo. Só as com professor já atribuído entram
+      // (Lead sem professor não tem "onde" aparecer na grade de ninguém).
+      prisma.aulaExperimental.findMany({
+        where: {
+          dataHora: { gte: inicioDia, lte: fimDia },
+          escolaId: professor.escolaId,
+          professorId: { not: null },
+        },
+        include: { lead: { select: { id: true, nome: true } }, professor: { select: { id: true, nome: true } } },
+        orderBy: { dataHora: 'asc' },
+      }),
+    ]);
+
+    const porProfessor = new Map();
+    for (const aula of aulasHoje) {
+      if (!porProfessor.has(aula.professorId)) {
+        porProfessor.set(aula.professorId, { professorId: aula.professorId, nome: aula.professor.nome, aulas: [] });
+      }
+      porProfessor.get(aula.professorId).aulas.push({
+        id: aula.id,
+        dataHora: aula.dataHora,
+        aluno: aula.aluno,
+        presenca: aula.presenca,
+        presencaProfessorEm: aula.presencaProfessorEm,
+        presencaAlunoEm: aula.presencaAlunoEm,
+        decisaoReposicao: aula.decisaoReposicao,
+      });
+    }
+    for (const exp of experimentaisHoje) {
+      if (!porProfessor.has(exp.professorId)) {
+        porProfessor.set(exp.professorId, { professorId: exp.professorId, nome: exp.professor.nome, aulas: [] });
+      }
+      porProfessor.get(exp.professorId).aulas.push({
+        id: exp.id,
+        dataHora: exp.dataHora,
+        aluno: { id: exp.lead.id, nome: `${exp.lead.nome} (experimental)` },
+        presenca: exp.status === 'REALIZADA' ? 'PRESENTE' : null,
+        presencaProfessorEm: exp.status === 'REALIZADA' ? exp.updatedAt : null,
+        presencaAlunoEm: null,
+        decisaoReposicao: null,
+        experimental: true,
+      });
+    }
+
+    const resultado = Array.from(porProfessor.values());
+    for (const p of resultado) p.aulas.sort((a, b) => new Date(a.dataHora).getTime() - new Date(b.dataHora).getTime());
+    res.json(resultado);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar a grade de hoje.');
+  }
+});
+
+// GET /api/escola/inadimplentes — alunos da Escola com pelo menos uma
+// mensalidade ATRASADO. Fonte única de verdade pro KPI "Inadimplentes" do
+// Painel e pra sub-aba Pagamentos do Financeiro (Sprint 8) — evita duas
+// definições diferentes de "inadimplente" convivendo no mesmo produto.
+app.get('/api/escola/inadimplentes', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const pagamentosAtrasados = await prisma.pagamento.findMany({
+      where: { status: 'ATRASADO', aluno: { escolaId: professor.escolaId } },
+      select: { aluno: { select: { id: true, nome: true, telefone: true, responsavel: { select: { telefone: true } } } } },
+      distinct: ['alunoId'],
+    });
+
+    res.json(pagamentosAtrasados.map((p) => p.aluno));
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar inadimplentes.');
+  }
+});
+
+// GET /api/escola/aulas-para-reposicao — aulas marcadas como pendentes de
+// reposição (enum PresencaAula.PENDENTE_REPOSICAO, já existente) ou com
+// decisaoReposicao=true (Sprint 2), últimos 60 dias. É a lista que
+// substitui o antigo KPI numérico "Acompanhamentos pendentes".
+app.get('/api/escola/aulas-para-reposicao', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const desde = new Date(); desde.setDate(desde.getDate() - 60);
+
+    const aulas = await prisma.aula.findMany({
+      where: {
+        professor: { escolaId: professor.escolaId },
+        dataHora: { gte: desde },
+        OR: [{ presenca: 'PENDENTE_REPOSICAO' }, { decisaoReposicao: true }],
+      },
+      include: { aluno: { select: { nome: true } }, professor: { select: { nome: true } } },
+      orderBy: { dataHora: 'desc' },
+    });
+    res.json(aulas);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar aulas pendentes de reposição.');
+  }
+});
+
+// POST /api/escola/alunos/:id/notificar-vencimento — botão "notificar" da
+// lista de Matrículas vencendo do Painel.
+app.post('/api/escola/alunos/:id/notificar-vencimento', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const aluno = await prisma.aluno.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado nesta Escola.' });
+    if (!aluno.expoPushToken) return res.status(400).json({ erro: 'Este aluno não tem notificações habilitadas no app.' });
+
+    await enviarPushNotificacao(
+      aluno.expoPushToken,
+      'Seu contrato está vencendo',
+      'Fale com a secretaria da sua escola pra renovar sua matrícula.',
+      { tipo: 'CONTRATO_EXPIRANDO' }
+    );
+    res.json({ mensagem: `Notificação enviada pra ${aluno.nome}.` });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao notificar aluno.');
+  }
+});
+
+// ─── LOGÍSTICA (INSTITUTION Sprint 6, briefing 08/09/2026) ───────────────
+// Grade diária sala×horário×turma. Não é motor de recorrência novo: reusa
+// exatamente o que já existe — Turma.salaId é o "padrão" (mudar ele via
+// PATCH /api/turmas/:id, rota já existente do Catálogo, é o que o briefing
+// chama de "fica salva pras próximas semanas"); Aula.salaId por aula
+// individual é o que já existe também (PUT /api/aulas/:id/trocar-sala,
+// S1.4) e cobre o "só hoje". Esta rota é só leitura agregada, agrupável por
+// sala, pra dar a visão de grade que faltava.
+app.get('/api/escola/logistica/grade', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const dataBase = req.query.data ? new Date(`${req.query.data}T00:00:00`) : new Date();
+    const inicioDia = new Date(dataBase); inicioDia.setHours(0, 0, 0, 0);
+    const fimDia = new Date(dataBase); fimDia.setHours(23, 59, 59, 999);
+
+    const [aulas, salas] = await Promise.all([
+      prisma.aula.findMany({
+        where: { dataHora: { gte: inicioDia, lte: fimDia }, professor: { escolaId: professor.escolaId } },
+        include: {
+          aluno: { select: { nome: true } },
+          professor: { select: { nome: true } },
+          turma: { select: { id: true, nome: true, curso: { select: { nome: true } } } },
+          sala: { select: { id: true, nome: true } },
+        },
+        orderBy: { dataHora: 'asc' },
+      }),
+      prisma.sala.findMany({ where: { escolaId: professor.escolaId, ativa: true }, orderBy: { nome: 'asc' } }),
+    ]);
+
+    res.json({ salas, aulas });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar a grade de logística.');
   }
 });
 

@@ -1,12 +1,129 @@
 import { router, useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
 import { useEscolaContexto } from './_contexto';
-import { Botao, ErpShell, EstadoVazio, Kpi, PageHeader, SectionCard, Tabela, useEhDesktop } from './_ui';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, Kpi, Modal, PageHeader, SectionCard, Tabela, useEhDesktop } from './_ui';
+
+type AulaGrade = {
+  id: string;
+  dataHora: string;
+  aluno: { id: string; nome: string };
+  presenca: string | null;
+  presencaProfessorEm: string | null;
+  presencaAlunoEm: string | null;
+  decisaoReposicao: boolean | null;
+  // Experimentais aparecem na mesma grade (INSTITUTION Sprint 11, briefing
+  // 08/09/2026) — ações de reposição/override manual não fazem sentido
+  // pra elas (Lead ainda não é Aluno, não tem Matricula/senha), por isso
+  // ficam escondidas quando esse flag vem true.
+  experimental?: boolean;
+};
+type ProfessorGrade = { professorId: string; nome: string; aulas: AulaGrade[] };
+
+function horaCurta(iso: string) {
+  return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Modal da grade em horas de um professor específico — a escola marca
+// "é reposição ou não" por aula (Sprint 2: decisaoReposicao, à parte do
+// fluxo de aprovação de Reposicao) e pode intervir manualmente na presença
+// quando professor ou aluno não conseguiram usar o celular (exige a senha
+// de quem está sendo marcado).
+function ModalGradeProfessor({ professor, onFechar, aoAtualizar }: {
+  professor: ProfessorGrade | null; onFechar: () => void; aoAtualizar: () => void;
+}) {
+  const [overrideAulaId, setOverrideAulaId] = useState<string | null>(null);
+  const [overrideAlvo, setOverrideAlvo] = useState<'PROFESSOR' | 'ALUNO'>('ALUNO');
+  const [senha, setSenha] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [enviando, setEnviando] = useState(false);
+
+  const chamarApi = async (path: string, body: any) => {
+    const token = await SecureStore.getItemAsync('kav_token');
+    return fetchComRetry(`${BASE_URL}${path}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  };
+
+  const alternarReposicao = async (aula: AulaGrade) => {
+    const res = await chamarApi(`/api/aulas/${aula.id}/reposicao`, { decisaoReposicao: !aula.decisaoReposicao });
+    if (res.ok) aoAtualizar();
+    else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível atualizar.');
+  };
+
+  const abrirOverride = (aula: AulaGrade) => {
+    setOverrideAulaId(aula.id);
+    setOverrideAlvo(!aula.presencaAlunoEm ? 'ALUNO' : 'PROFESSOR');
+    setSenha(''); setMotivo('');
+  };
+
+  const confirmarOverride = async () => {
+    if (!overrideAulaId || !senha) { Alert.alert('Atenção', 'Informe a senha de quem está sendo marcado.'); return; }
+    setEnviando(true);
+    try {
+      const res = await chamarApi(`/api/aulas/${overrideAulaId}/override-manual`, { alvo: overrideAlvo, senha, motivo });
+      const dados = await res.json();
+      if (res.ok) { setOverrideAulaId(null); aoAtualizar(); }
+      else Alert.alert('Erro', dados.erro || 'Não foi possível marcar presença.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  if (!professor) return null;
+
+  return (
+    <Modal visivel={!!professor} titulo={`Grade de hoje · ${professor.nome}`} onFechar={onFechar} largura={560}>
+      {professor.aulas.length === 0 ? (
+        <EstadoVazio icone="calendar-outline" texto="Nenhuma aula hoje pra este professor." />
+      ) : (
+        professor.aulas.map((aula) => (
+          <View key={aula.id} style={estilos.linhaAula}>
+            <View style={{ flex: 1 }}>
+              <Text style={estilos.linhaTitulo}>{horaCurta(aula.dataHora)} · {aula.aluno.nome}</Text>
+              <View style={{ flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                <Badge texto={aula.presencaProfessorEm ? 'Professor ok' : 'Professor pendente'} tom={aula.presencaProfessorEm ? 'sucesso' : 'aviso'} />
+                <Badge texto={aula.presencaAlunoEm ? 'Aluno ok' : 'Aluno pendente'} tom={aula.presencaAlunoEm ? 'sucesso' : 'aviso'} />
+                {aula.decisaoReposicao ? <Badge texto="Reposição" tom="info" /> : null}
+                {aula.experimental ? <Badge texto="Experimental" tom="aviso" /> : null}
+              </View>
+              {!aula.experimental && overrideAulaId === aula.id && (
+                <View style={estilos.overrideBox}>
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+                    <Botao texto="Aluno" variante={overrideAlvo === 'ALUNO' ? 'primario' : 'secundario'} onPress={() => setOverrideAlvo('ALUNO')} />
+                    <Botao texto="Professor" variante={overrideAlvo === 'PROFESSOR' ? 'primario' : 'secundario'} onPress={() => setOverrideAlvo('PROFESSOR')} />
+                  </View>
+                  <Campo label={`Senha do ${overrideAlvo === 'ALUNO' ? 'aluno' : 'professor'}`} value={senha} onChangeText={setSenha} secureTextEntry />
+                  <Campo label="Motivo (opcional)" value={motivo} onChangeText={setMotivo} placeholder="Ex.: esqueceu o celular" />
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <Botao texto="Confirmar" onPress={confirmarOverride} carregando={enviando} />
+                    <Botao texto="Cancelar" variante="secundario" onPress={() => setOverrideAulaId(null)} />
+                  </View>
+                </View>
+              )}
+            </View>
+            {!aula.experimental && (
+              <View style={{ gap: 6, alignItems: 'flex-end' }}>
+                <Botao texto={aula.decisaoReposicao ? 'Desmarcar reposição' : 'Marcar reposição'} variante="secundario" onPress={() => alternarReposicao(aula)} />
+                {(!aula.presencaProfessorEm || !aula.presencaAlunoEm) && overrideAulaId !== aula.id && (
+                  <Botao texto="Marcar presença manual" variante="secundario" onPress={() => abrirOverride(aula)} />
+                )}
+              </View>
+            )}
+          </View>
+        ))
+      )}
+    </Modal>
+  );
+}
 
 export default function PainelEscola() {
   const { nomeEscola, pacote } = useEscolaContexto();
@@ -15,42 +132,52 @@ export default function PainelEscola() {
 
   const [totalProfessores, setTotalProfessores] = useState(0);
   const [totalAlunos, setTotalAlunos] = useState(0);
-  const [totalLeads, setTotalLeads] = useState(0);
-  const [conversao, setConversao] = useState<{ taxaConversao: number } | null>(null);
+  const [inadimplentes, setInadimplentes] = useState<any[]>([]);
   const [tarefasPendentes, setTarefasPendentes] = useState<any[]>([]);
   const [reposicoesParaFinalizar, setReposicoesParaFinalizar] = useState<any[]>([]);
-  const [precisamDeAcao, setPrecisamDeAcao] = useState(0);
-  const [vencendo, setVencendo] = useState(0);
+  const [vencendo, setVencendo] = useState<any[]>([]);
+  const [aulasParaReposicao, setAulasParaReposicao] = useState<any[]>([]);
+  const [gradeHoje, setGradeHoje] = useState<ProfessorGrade[]>([]);
+  const [professorSelecionado, setProfessorSelecionado] = useState<ProfessorGrade | null>(null);
+  const [aniversariantes, setAniversariantes] = useState<any[]>([]);
 
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const headers = { Authorization: `Bearer ${token}` };
-      const hoje = new Date();
-      const trintaDiasAtras = new Date();
-      trintaDiasAtras.setDate(hoje.getDate() - 30);
-      const paraYYYYMMDD = (d: Date) => d.toISOString().slice(0, 10);
 
-      const [resProfessores, resAlunos, resFunil, resConversao, resTarefas, resReposicoes, resResumoCobranca, resVencendo] = await Promise.all([
+      const [resProfessores, resAlunos, resTarefas, resReposicoes, resVencendo, resInadimplentes, resAulasReposicao, resGradeHoje] = await Promise.all([
         fetchComRetry(`${BASE_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/alunos`, { headers }),
-        fetchComRetry(`${BASE_URL}/api/funil/resumo`, { headers }),
-        fetchComRetry(`${BASE_URL}/api/relatorios/conversao-experimental?de=${paraYYYYMMDD(trintaDiasAtras)}&ate=${paraYYYYMMDD(hoje)}`, { headers }),
         fetchComRetry(`${BASE_URL}/api/tarefas-lead`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/reposicoes`, { headers }),
-        fetchComRetry(`${BASE_URL}/api/escola/cobranca-automatica/resumo`, { headers }),
         fetchComRetry(`${BASE_URL}/api/renovacoes/vencendo?dias=30`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/inadimplentes`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/aulas-para-reposicao`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/grade-hoje`, { headers }),
       ]);
 
-      if (resProfessores.ok) setTotalProfessores((await resProfessores.json()).length);
+      if (resProfessores.ok) {
+        const professores = await resProfessores.json();
+        setTotalProfessores(professores.length);
+        const hoje = new Date();
+        setAniversariantes(professores.filter((p: any) => {
+          if (!p.dataNascimento) return false;
+          const n = new Date(p.dataNascimento);
+          const prox = new Date(hoje.getFullYear(), n.getMonth(), n.getDate());
+          if (prox < new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate())) prox.setFullYear(hoje.getFullYear() + 1);
+          const dias = Math.round((prox.getTime() - hoje.getTime()) / 86400000);
+          return dias >= 0 && dias <= 7;
+        }));
+      }
       if (resAlunos.ok) setTotalAlunos((await resAlunos.json()).length);
-      if (resFunil.ok) setTotalLeads(((await resFunil.json()).estagios || []).reduce((s: number, e: any) => s + e.totalLeads, 0));
-      if (resConversao.ok) setConversao(await resConversao.json());
       if (resTarefas.ok) setTarefasPendentes(await resTarefas.json());
       if (resReposicoes.ok) setReposicoesParaFinalizar(await resReposicoes.json());
-      if (resResumoCobranca.ok) setPrecisamDeAcao((await resResumoCobranca.json()).precisamDeAcao?.length || 0);
-      if (resVencendo.ok) setVencendo((await resVencendo.json()).length || 0);
+      if (resVencendo.ok) setVencendo(await resVencendo.json());
+      if (resInadimplentes.ok) setInadimplentes(await resInadimplentes.json());
+      if (resAulasReposicao.ok) setAulasParaReposicao(await resAulasReposicao.json());
+      if (resGradeHoje.ok) setGradeHoje(await resGradeHoje.json());
     } catch (err) {
       console.error('Erro ao carregar Painel:', err);
     } finally {
@@ -79,6 +206,16 @@ export default function PainelEscola() {
     else Alert.alert('Erro', dados.erro || 'Não foi possível finalizar.');
   };
 
+  const notificarVencimento = async (id: string, nome: string) => {
+    const token = await SecureStore.getItemAsync('kav_token');
+    const res = await fetchComRetry(`${BASE_URL}/api/escola/alunos/${id}/notificar-vencimento`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` },
+    });
+    const dados = await res.json();
+    if (res.ok) Alert.alert('Enviado!', dados.mensagem);
+    else Alert.alert('Erro', dados.erro || `Não foi possível notificar ${nome}.`);
+  };
+
   if (carregando) {
     return (
       <ErpShell titulo="Painel">
@@ -99,13 +236,74 @@ export default function PainelEscola() {
         </SectionCard>
       )}
 
+      {aniversariantes.length > 0 && (
+        <SectionCard style={{ backgroundColor: ERP.infoSoft, borderColor: '#BFDBFE' }}>
+          <Text style={{ color: ERP.info, fontSize: 13.5, fontWeight: '700' }}>
+            🎂 Aniversário próximo: {aniversariantes.map((p) => p.nome).join(', ')}
+          </Text>
+        </SectionCard>
+      )}
+
       <View style={estilos.kpiGrade}>
         <Kpi label="Professores" valor={totalProfessores} icone="people-outline" onPress={() => router.push('/(escola)/equipe')} />
         <Kpi label="Alunos matriculados" valor={totalAlunos} icone="school-outline" onPress={() => router.push('/(escola)/alunos')} />
-        <Kpi label="Leads no funil" valor={totalLeads} icone="megaphone-outline" onPress={() => router.push('/(escola)/captacao')} />
-        <Kpi label="Conversão (30d)" valor={`${conversao?.taxaConversao ?? 0}%`} icone="trending-up-outline" onPress={() => router.push('/(escola)/captacao')} />
-        <Kpi label="Cobranças com erro" valor={precisamDeAcao} icone="alert-circle-outline" tom={precisamDeAcao > 0 ? 'alerta' : 'default'} onPress={() => router.push('/(escola)/financeiro')} />
-        <Kpi label="Matrículas vencendo" valor={vencendo} icone="time-outline" onPress={() => router.push('/(escola)/financeiro')} />
+        <Kpi label="Inadimplentes" valor={inadimplentes.length} icone="alert-circle-outline" tom={inadimplentes.length > 0 ? 'alerta' : 'default'} onPress={() => router.push('/(escola)/financeiro')} />
+      </View>
+
+      <SectionCard titulo="Grade de hoje" subtitulo="Toque num professor pra ver a grade em horas do dia">
+        {gradeHoje.length === 0 ? (
+          <EstadoVazio icone="calendar-outline" texto="Nenhuma aula agendada pra hoje." />
+        ) : (
+          gradeHoje.map((p) => (
+            <Pressable key={p.professorId} style={({ hovered }: any) => [estilos.linhaProfessor, hovered && { backgroundColor: ERP.hover }]} onPress={() => setProfessorSelecionado(p)}>
+              <Text style={estilos.linhaTitulo}>{p.nome}</Text>
+              <Text style={estilos.linhaSub}>{p.aulas.length} {p.aulas.length === 1 ? 'aula hoje' : 'aulas hoje'}</Text>
+            </Pressable>
+          ))
+        )}
+      </SectionCard>
+
+      <View style={estilos.duasColunas}>
+        <SectionCard titulo="Matrículas vencendo" style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
+          {vencendo.length === 0 ? (
+            <EstadoVazio icone="checkmark-circle-outline" texto="Nenhuma matrícula vencendo nos próximos 30 dias." />
+          ) : (
+            <Tabela
+              vazioTexto=""
+              dados={vencendo}
+              colunas={[
+                { chave: 'nome', titulo: 'Aluno', flex: 2, render: (a: any) => (
+                  <View>
+                    <Text style={estilos.linhaTitulo}>{a.nome}</Text>
+                    <Text style={estilos.linhaSub}>{a.diasRestantes <= 0 ? 'Vencido' : `${a.diasRestantes} dias restantes`}</Text>
+                  </View>
+                )},
+                { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (a: any) => (
+                  <Botao texto="Notificar" variante="secundario" onPress={() => notificarVencimento(a.id, a.nome)} />
+                )},
+              ]}
+            />
+          )}
+        </SectionCard>
+
+        <SectionCard titulo="Aulas que devem ter reposição" style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
+          {aulasParaReposicao.length === 0 ? (
+            <EstadoVazio icone="checkmark-circle-outline" texto="Nenhuma aula pendente de reposição." />
+          ) : (
+            <Tabela
+              vazioTexto=""
+              dados={aulasParaReposicao}
+              colunas={[
+                { chave: 'aluno', titulo: 'Aluno', flex: 2, render: (a: any) => (
+                  <View>
+                    <Text style={estilos.linhaTitulo}>{a.aluno?.nome} · com {a.professor?.nome}</Text>
+                    <Text style={estilos.linhaSub}>{new Date(a.dataHora).toLocaleDateString('pt-BR')}</Text>
+                  </View>
+                )},
+              ]}
+            />
+          )}
+        </SectionCard>
       </View>
 
       <View style={estilos.duasColunas}>
@@ -153,6 +351,12 @@ export default function PainelEscola() {
           )}
         </SectionCard>
       </View>
+
+      <ModalGradeProfessor
+        professor={professorSelecionado}
+        onFechar={() => setProfessorSelecionado(null)}
+        aoAtualizar={() => { carregarDados(); setProfessorSelecionado(null); }}
+      />
     </ErpShell>
   );
 }
@@ -162,4 +366,7 @@ const estilos = StyleSheet.create({
   duasColunas: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
   linhaTitulo: { fontSize: 13.5, fontWeight: '700', color: ERP.texto },
   linhaSub: { fontSize: 12, color: ERP.textoSecundario, marginTop: 2 },
+  linhaProfessor: { paddingVertical: 12, paddingHorizontal: 4, borderBottomWidth: 1, borderBottomColor: ERP.bordaSuave },
+  linhaAula: { flexDirection: 'row', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: ERP.bordaSuave },
+  overrideBox: { marginTop: 10, padding: 12, backgroundColor: ERP.fundo, borderRadius: ERP.raio.sm, borderWidth: 1, borderColor: ERP.borda },
 });

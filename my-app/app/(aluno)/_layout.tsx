@@ -40,6 +40,7 @@ export default function AlunoLayout() {
         <Drawer.Screen name="reposicoes" options={{ drawerLabel: 'Reposições',      drawerIcon: ({ color }) => <Ionicons name="repeat-outline"     size={22} color={color} /> }} />
         <Drawer.Screen name="chat"      options={{ drawerLabel: 'Mensagens',   drawerIcon: ({ color }) => <Ionicons name="chatbubbles-outline" size={22} color={color} /> }} />
         <Drawer.Screen name="escanear-presenca" options={{ drawerLabel: 'Escanear Presença', drawerIcon: ({ color }) => <Ionicons name="qr-code-outline" size={22} color={color} /> }} />
+        <Drawer.Screen name="checkin-presenca" options={{ drawerLabel: 'Confirmar Presença', drawerIcon: ({ color }) => <Ionicons name="finger-print-outline" size={22} color={color} /> }} />
         <Drawer.Screen name="perfil"    options={{ drawerItemStyle: { display: 'none' } }} />
       </Drawer>
     </GestureHandlerRootView>

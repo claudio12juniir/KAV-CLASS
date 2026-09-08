@@ -35,18 +35,21 @@ export const NAV_ESCOLA: GrupoNav[] = [
   { titulo: 'Gestão', itens: [
     { chave: 'equipe', rota: '/(escola)/equipe', rotulo: 'Equipe', icone: 'people-outline' },
     { chave: 'alunos', rota: '/(escola)/alunos', rotulo: 'Alunos', icone: 'school-outline' },
-    { chave: 'catalogo', rota: '/(escola)/catalogo', rotulo: 'Catálogo', icone: 'library-outline' },
-    { chave: 'matriculas', rota: '/(escola)/matriculas', rotulo: 'Matrículas', icone: 'document-text-outline' },
-    { chave: 'calendario', rota: '/(escola)/calendario', rotulo: 'Calendário', icone: 'calendar-outline' },
+    { chave: 'logistica', rota: '/(escola)/logistica', rotulo: 'Logística', icone: 'apps-outline' },
+    { chave: 'coordenacao', rota: '/(escola)/coordenacao', rotulo: 'Coordenação', icone: 'ribbon-outline' },
+    { chave: 'calendario', rota: '/(escola)/calendario', rotulo: 'Cronograma', icone: 'calendar-outline' },
   ]},
   { titulo: 'Crescimento', itens: [
-    { chave: 'captacao', rota: '/(escola)/captacao', rotulo: 'Captação', icone: 'megaphone-outline' },
+    { chave: 'captacao', rota: '/(escola)/captacao', rotulo: 'Experimentais', icone: 'megaphone-outline' },
     { chave: 'comunicados', rota: '/(escola)/comunicados', rotulo: 'Comunicados', icone: 'mail-outline' },
   ]},
   { titulo: 'Operação', itens: [
     { chave: 'recursos', rota: '/(escola)/recursos', rotulo: 'Recursos', icone: 'business-outline' },
     { chave: 'financeiro', rota: '/(escola)/financeiro', rotulo: 'Financeiro', icone: 'cash-outline' },
     { chave: 'relatorios', rota: '/(escola)/relatorios', rotulo: 'Relatórios', icone: 'bar-chart-outline' },
+  ]},
+  { titulo: 'Instituição', itens: [
+    { chave: 'perfil-instituicao', rota: '/(escola)/perfil-instituicao', rotulo: 'Perfil da Instituição', icone: 'options-outline' },
   ]},
 ];
 
