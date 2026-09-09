@@ -5080,7 +5080,30 @@ app.get('/api/professor/folha-pagamento', exigirProfessor, async (req, res) => {
     const ano = req.query.ano ? parseInt(String(req.query.ano), 10) : agora.getFullYear();
 
     const folha = await calcularOuAtualizarFolha(req.auth.id, professor.escolaId, mes, ano);
-    res.json(folha);
+
+    // estimativaRestanteMes (briefing INSTITUTION: "estimativa de valor a
+    // receber com base na grade de alunos e valor por aluno") — só faz
+    // sentido no modo POR_AULA e só pro mês corrente (projeção de aulas já
+    // agendadas e ainda não ocorridas). No modo POR_ALUNO_MES,
+    // valorCalculado já É a estimativa (nº de alunos ativos × valor), sem
+    // nada "a mais" pra projetar; em meses passados/futuros não há "restante".
+    let estimativaRestanteMes = null;
+    const ehMesAtual = ano === agora.getFullYear() && mes === agora.getMonth() + 1;
+    if (ehMesAtual) {
+      const escola = await prisma.escola.findUnique({
+        where: { id: professor.escolaId },
+        select: { valorPorAula: true, tipoRemuneracaoProfessor: true },
+      });
+      if (escola?.tipoRemuneracaoProfessor === 'POR_AULA') {
+        const fimMes = new Date(ano, mes, 0, 23, 59, 59, 999);
+        const aulasRestantes = await prisma.aula.count({
+          where: { professorId: req.auth.id, status: 'AGENDADA', dataHora: { gte: agora, lte: fimMes } },
+        });
+        estimativaRestanteMes = aulasRestantes * (escola.valorPorAula || 0);
+      }
+    }
+
+    res.json({ ...folha, estimativaRestanteMes });
   } catch (err) {
     tratarErro(err, res, 'Erro ao carregar sua folha de pagamento.');
   }
