@@ -86,6 +86,16 @@ function RedirecionadorEscola({ children }: { children: React.ReactNode }) {
             router.replace('/(escola)');
             return;
           }
+
+          // Professor raso (não DONO/GESTOR) de uma Escola de verdade também
+          // não usa mais o app do professor autônomo — tem shell próprio,
+          // tema escuro, em app/(professor-escola)/. Ver plano INSTITUTION.
+          const ehProfessorDeEscola = perfil.papel === 'PROFESSOR' && perfil.escola?.pacote === 'PACOTE_ESCOLA';
+          if (ehProfessorDeEscola) {
+            setVaiRedirecionar(true);
+            router.replace('/(professor-escola)' as any);
+            return;
+          }
         }
       } catch {
         // Sem conexão: segue pro app mobile normal, que já tem seu próprio tratamento de erro por tela.

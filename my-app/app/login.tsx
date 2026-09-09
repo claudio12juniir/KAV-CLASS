@@ -192,6 +192,10 @@ export default function LoginScreen() {
         <Text style={styles.textoEsqueceu}>Esqueceu a senha?</Text>
       </TouchableOpacity>
 
+      <Text style={styles.avisoInstitucional}>
+        Já tem login passado pela sua escola? Use o mesmo e-mail e senha que ela te deu — não precisa se cadastrar.
+      </Text>
+
       <TouchableOpacity onPress={() => router.push('/aceitar-convite-professor')} style={styles.linkEsqueceu}>
         <Text style={styles.textoEsqueceu}>Entrar com convite de escola</Text>
       </TouchableOpacity>
@@ -223,6 +227,7 @@ export default function LoginScreen() {
             Não tem uma conta?{' '}
             <Text style={styles.linkHighlight}>Cadastre-se</Text>
           </Text>
+          <Text style={styles.linkSubtexto}>(se sua escola já te deu um login, não precisa cadastrar — é só entrar acima)</Text>
         </TouchableOpacity>
       </Link>
     </View>
@@ -266,6 +271,14 @@ const styles = StyleSheet.create({
     color: '#555',
     fontSize: 13,
   },
+  avisoInstitucional: {
+    color: '#777',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 17,
+    marginBottom: 10,
+    paddingHorizontal: 8,
+  },
   button: {
     width: '100%',
     height: 50,
@@ -308,5 +321,11 @@ const styles = StyleSheet.create({
   linkHighlight: {
     color: '#000000',
     fontWeight: 'bold',
+  },
+  linkSubtexto: {
+    color: '#999',
+    fontSize: 11,
+    marginTop: 2,
+    textAlign: 'center',
   },
 });

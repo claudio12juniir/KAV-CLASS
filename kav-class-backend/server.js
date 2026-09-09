@@ -1859,6 +1859,7 @@ app.get('/api/aluno/perfil', exigirAluno, async (req, res) => {
         vinculoResponsavel: true,
         responsavel: { select: { nome: true, cpf: true, email: true, telefone: true } },
         professor: { select: { id: true, nome: true, telefone: true, fotoUrl: true, chavePix: true } },
+        escola: { select: { id: true, nome: true, pacote: true } },
       },
     });
     if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });

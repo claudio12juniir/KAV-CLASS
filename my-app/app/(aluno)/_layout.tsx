@@ -1,10 +1,14 @@
 import { Ionicons } from '@expo/vector-icons';
 import { DrawerContentScrollView, DrawerItemList } from '@react-navigation/drawer';
 import { Drawer } from 'expo-router/drawer';
-import React from 'react';
+import { router } from 'expo-router';
+import * as SecureStore from 'expo-secure-store';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import SyncLoader from '../../components/SyncLoader';
 import { usePushToken } from '../../hooks/usePushToken';
+import { BASE_URL, fetchComRetry } from '../api';
 
 function CustomDrawerContent(props: any) {
   return (
@@ -19,8 +23,58 @@ function CustomDrawerContent(props: any) {
   );
 }
 
+// Aluno de uma Escola de verdade (PACOTE_ESCOLA) não usa mais o app do
+// aluno SELF — tem shell próprio, tema escuro, em app/(aluno-escola)/. Esse
+// gate decide isso uma vez, com dado fresco, antes de montar o Drawer, no
+// mesmo espírito de RedirecionadorEscola em (professor)/_layout.tsx. Falha
+// de rede não bloqueia ninguém (fail-open): segue pro app normal.
+function RedirecionadorEscolaAluno({ children }: { children: React.ReactNode }) {
+  const [decidido, setDecidido] = useState(false);
+  const [vaiRedirecionar, setVaiRedirecionar] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const token = await SecureStore.getItemAsync('kav_token');
+        const res = await fetchComRetry(`${BASE_URL}/api/aluno/perfil`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const perfil = await res.json();
+          if (perfil.escola?.pacote === 'PACOTE_ESCOLA') {
+            setVaiRedirecionar(true);
+            router.replace('/(aluno-escola)' as any);
+            return;
+          }
+        }
+      } catch {
+        // Sem conexão: segue pro app mobile normal, que já tem seu próprio tratamento de erro por tela.
+      }
+      setDecidido(true);
+    })();
+  }, []);
+
+  if (!decidido || vaiRedirecionar) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#ffffff' }}>
+        <SyncLoader size="large" color="#000000" />
+      </View>
+    );
+  }
+
+  return <>{children}</>;
+}
+
 export default function AlunoLayout() {
   usePushToken();
+  return (
+    <RedirecionadorEscolaAluno>
+      <AlunoDrawer />
+    </RedirecionadorEscolaAluno>
+  );
+}
+
+function AlunoDrawer() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <Drawer
