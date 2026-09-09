@@ -192,6 +192,10 @@ export default function LoginScreen() {
         <Text style={styles.textoEsqueceu}>Esqueceu a senha?</Text>
       </TouchableOpacity>
 
+      <TouchableOpacity onPress={() => router.push('/aceitar-convite-professor')} style={styles.linkEsqueceu}>
+        <Text style={styles.textoEsqueceu}>Entrar com convite de escola</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity style={styles.button} onPress={fazerLogin}>
         <Text style={styles.buttonText}>Entrar</Text>
       </TouchableOpacity>

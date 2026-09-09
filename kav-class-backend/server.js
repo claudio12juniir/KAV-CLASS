@@ -674,7 +674,7 @@ const DIAS_TESTE_GRATIS = 15;
 
 app.post('/api/professores/cadastro', async (req, res) => {
   try {
-    const { nome, email, senha, telefone, cursos, fotoUrl } = req.body;
+    const { nome, email, senha, telefone, dataNascimento, cursos, fotoUrl } = req.body;
     if (!nome || !email || !senha) return res.status(400).json({ erro: 'nome, email e senha são obrigatórios.' });
 
     const emailNorm = email.toLowerCase().trim();
@@ -687,6 +687,7 @@ app.post('/api/professores/cadastro', async (req, res) => {
         nome,
         email: emailNorm,
         telefone: telefone || null,
+        dataNascimento: parseDataNascimento(dataNascimento),
         senha: await bcrypt.hash(senha, salt),
         cursos: Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []),
         codigoConvite: gerarCodigoConvite(),

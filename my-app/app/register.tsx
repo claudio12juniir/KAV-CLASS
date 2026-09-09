@@ -307,6 +307,7 @@ export default function RegisterScreen() {
             email: email.toLowerCase().trim(),
             senha,
             telefone,
+            dataNascimento,
             cursos: cursosSelecionados,
             fotoUrl: fotoUrl || undefined,
           }),
@@ -440,9 +441,14 @@ export default function RegisterScreen() {
         </TouchableOpacity>
       </View>
       {papel === 'professor' && (
-        <Text style={[styles.ajudaTexto, { marginTop: -12, marginBottom: 16 }]}>
-          Este cadastro é para quem dá aula por conta própria, sem equipe — você é dono do seu próprio espaço no Kav Class. Professor que trabalha numa escola já cadastrada deve entrar pelo convite que a escola enviar, não por aqui.
-        </Text>
+        <>
+          <Text style={[styles.ajudaTexto, { marginTop: -12, marginBottom: 16 }]}>
+            Este cadastro é para quem dá aula por conta própria, sem equipe — você é dono do seu próprio espaço no Kav Class. Professor que trabalha numa escola já cadastrada deve entrar pelo convite que a escola enviar, não por aqui.
+          </Text>
+          <TouchableOpacity onPress={() => router.push('/aceitar-convite-professor')} style={{ marginTop: -12, marginBottom: 16 }}>
+            <Text style={[styles.ajudaTexto, { textDecorationLine: 'underline' }]}>Entrar com convite de escola</Text>
+          </TouchableOpacity>
+        </>
       )}
       {papel === 'escola' && (
         <Text style={[styles.ajudaTexto, { marginTop: -12, marginBottom: 16 }]}>
@@ -450,7 +456,7 @@ export default function RegisterScreen() {
         </Text>
       )}
 
-      {googleDisponivel && (
+      {googleDisponivel && papel !== 'escola' && (
         <GoogleButton onPress={entrarComGoogle} carregando={carregandoGoogle} texto="Cadastrar com Google" />
       )}
 
