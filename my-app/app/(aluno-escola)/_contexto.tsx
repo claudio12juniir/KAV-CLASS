@@ -1,7 +1,7 @@
 // Espelha app/(professor-escola)/_contexto.tsx, do lado do aluno — um único
 // fetch de /api/aluno/perfil compartilhado entre o gate e todas as telas.
 import * as SecureStore from 'expo-secure-store';
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { router } from 'expo-router';
 import { BASE_URL, fetchComRetry } from '../api';
 
@@ -35,9 +35,12 @@ export function AlunoEscolaProvider({ children }: { children: React.ReactNode })
   const [escolaNome, setEscolaNome] = useState('');
   const [professorId, setProfessorId] = useState<string | null>(null);
   const [professorNome, setProfessorNome] = useState('');
+  // Só a 1ª carga precisa bloquear a tela com o spinner do AlunoEscolaGate —
+  // ver mesmo comentário em (professor-escola)/_contexto.tsx.
+  const primeiraCarga = useRef(true);
 
   const recarregarPerfil = useCallback(async () => {
-    setCarregando(true);
+    if (primeiraCarga.current) setCarregando(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const id = (await SecureStore.getItemAsync('kav_aluno_id')) || '';
@@ -60,6 +63,7 @@ export function AlunoEscolaProvider({ children }: { children: React.ReactNode })
       console.error('Erro ao carregar perfil do aluno (INSTITUTION):', err);
     } finally {
       setCarregando(false);
+      primeiraCarga.current = false;
     }
   }, []);
 

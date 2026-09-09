@@ -2,7 +2,7 @@
 // compartilhado entre o gate (_layout.tsx) e todas as telas via contexto, em
 // vez de cada tela buscar o perfil de novo só pra montar o shell.
 import * as SecureStore from 'expo-secure-store';
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { router } from 'expo-router';
 import { BASE_URL, fetchComRetry } from '../api';
 
@@ -35,9 +35,14 @@ export function ProfessorEscolaProvider({ children }: { children: React.ReactNod
   const [pacote, setPacote] = useState<Pacote | null>(null);
   const [escolaNome, setEscolaNome] = useState('');
   const [cursos, setCursos] = useState<string[]>([]);
+  // Só a 1ª carga precisa bloquear a tela com o spinner do ProfessorEscolaGate
+  // — se um recarregarPerfil() depois de salvar algo also alternasse
+  // `carregando`, o gate desmontaria e remontaria <Slot/>, o que reseta a
+  // navegação pro índice do grupo (jogando o usuário de volta pro Painel).
+  const primeiraCarga = useRef(true);
 
   const recarregarPerfil = useCallback(async () => {
-    setCarregando(true);
+    if (primeiraCarga.current) setCarregando(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const id = (await SecureStore.getItemAsync('kav_professor_id')) || '';
@@ -59,6 +64,7 @@ export function ProfessorEscolaProvider({ children }: { children: React.ReactNod
       console.error('Erro ao carregar perfil do professor (INSTITUTION):', err);
     } finally {
       setCarregando(false);
+      primeiraCarga.current = false;
     }
   }, []);
 
