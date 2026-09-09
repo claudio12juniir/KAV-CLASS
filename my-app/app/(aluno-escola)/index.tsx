@@ -1,11 +1,84 @@
-import React from 'react';
-import { EstadoVazio } from '../(escola)/_ui';
+// Painel do aluno INSTITUTION — espelha o dashboard do aluno SELF
+// ((aluno)/index.tsx), mas a responsabilidade é com a ESCOLA, não com um
+// professor específico. Mesmo GET /api/aluno/dashboard (já pronto, sem
+// branch de pacote). Funções de cálculo copiadas (não importadas) do SELF
+// — mesma decisão de isolamento usada nas fases anteriores.
+import { Ionicons } from '@expo/vector-icons';
+import * as SecureStore from 'expo-secure-store';
+import React, { useCallback, useEffect, useState } from 'react';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Badge, EstadoVazio, PageHeader, SectionCard } from '../(escola)/_ui';
+import { ERP } from '../../constants/erpTheme';
 import { MobileErpShell } from '../../components/institution/MobileErpShell';
+import { BASE_URL, fetchComRetry } from '../api';
 import { useAlunoEscolaContexto } from './_contexto';
 import { NAV_ALUNO_ESCOLA } from './_nav';
 
+interface ProximaAula { id: string; dataHora: string; tipo: string; professor: { nome: string } }
+interface DashboardData {
+  pendente?: boolean;
+  inativo?: boolean;
+  proximaAula?: ProximaAula | null;
+  frequencia?: { presencas: number; faltas: number; total: number };
+  pagamento?: { status: string; vencimento?: string | null } | null;
+  plano?: { tempoContrato: number | null; dataInicio: string | null };
+}
+
+function getEmojiFrequencia(presencas: number, total: number) {
+  if (total === 0) return { emoji: '📚', nivel: 'Sem aulas registradas', cor: ERP.textoMuted };
+  const taxa = presencas / total;
+  if (taxa < 0.2) return { emoji: '😱', nivel: 'Péssimo', cor: ERP.perigo };
+  if (taxa < 0.4) return { emoji: '😟', nivel: 'Ruim', cor: '#E07020' };
+  if (taxa < 0.6) return { emoji: '😐', nivel: 'Regular', cor: ERP.aviso };
+  if (taxa < 0.8) return { emoji: '😊', nivel: 'Bom', cor: ERP.acento };
+  return { emoji: '🌟', nivel: 'Ótimo', cor: ERP.sucesso };
+}
+
+function getConfigPagamento(status: string | null) {
+  switch ((status || '').toUpperCase()) {
+    case 'ATRASADO': return { cor: ERP.perigo, fundo: ERP.perigoSoft, texto: 'Pagamento em atraso com a escola', icone: 'alert-circle' as const };
+    case 'PAGO': return { cor: ERP.sucesso, fundo: ERP.sucessoSoft, texto: 'Mensalidade paga!', icone: 'checkmark-circle' as const };
+    case 'EM_ANALISE': return { cor: ERP.info, fundo: ERP.infoSoft, texto: 'Comprovante em análise', icone: 'time' as const };
+    default: return { cor: ERP.info, fundo: ERP.infoSoft, texto: 'Pagamento em dia', icone: 'checkmark-done-circle' as const };
+  }
+}
+
+function calcProgresso(tempoContrato: number | null, dataInicio: string | null): number {
+  if (!tempoContrato || !dataInicio) return 0;
+  const inicio = new Date(dataInicio).getTime();
+  const duracaoMs = tempoContrato * 30 * 24 * 60 * 60 * 1000;
+  return Math.min(Math.max((Date.now() - inicio) / duracaoMs, 0), 1);
+}
+
 export default function PainelAlunoEscola() {
   const { nome, fotoUrl, escolaNome, sair } = useAlunoEscolaContexto();
+
+  const [carregando, setCarregando] = useState(true);
+  const [dados, setDados] = useState<DashboardData>({});
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/aluno/dashboard`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) setDados(await res.json());
+    } catch {
+      // sem conexão — dá pra reabrir a tela pra tentar de novo
+    } finally {
+      setCarregando(false);
+    }
+  }, []);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const { pendente, inativo, proximaAula, frequencia, pagamento, plano } = dados;
+  const progresso = calcProgresso(plano?.tempoContrato ?? null, plano?.dataInicio ?? null);
+  const configPag = getConfigPagamento(pagamento?.status ?? null);
+  const emojiFreq = getEmojiFrequencia(frequencia?.presencas ?? 0, frequencia?.total ?? 0);
+  const pctFreq = (frequencia?.total ?? 0) > 0 ? Math.round(((frequencia?.presencas ?? 0) / frequencia!.total) * 100) : 0;
+
   return (
     <MobileErpShell
       titulo="Painel"
@@ -14,8 +87,118 @@ export default function PainelAlunoEscola() {
       identidade={{ nome, fotoUrl, subtitulo: escolaNome }}
       tag="Aluno"
       aoSair={sair}
+      carregando={carregando}
     >
-      <EstadoVazio icone="construct-outline" texto="Em construção" />
+      <PageHeader titulo={`Olá, ${nome.split(' ')[0] || 'aluno'}!`} subtitulo={`Sua matrícula em ${escolaNome || 'sua escola'}`} />
+
+      {inativo ? (
+        <SectionCard>
+          <EstadoVazio icone="moon-outline" texto="Você está desligado temporariamente. Fale com a secretaria da escola para mais informações." />
+        </SectionCard>
+      ) : pendente ? (
+        <SectionCard>
+          <EstadoVazio icone="time-outline" texto="Cadastro recebido — assim que a escola ativar sua matrícula, suas aulas aparecem aqui." />
+        </SectionCard>
+      ) : (
+        <>
+          <SectionCard titulo="Próxima aula">
+            {!proximaAula ? (
+              <EstadoVazio icone="calendar-clear-outline" texto="Nenhuma aula agendada ainda." />
+            ) : (
+              <View style={estilos.linhaAula}>
+                <View style={estilos.horarioBox}>
+                  <Text style={estilos.horarioTexto}>
+                    {new Date(proximaAula.dataHora).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                  <Text style={estilos.dataTexto}>
+                    {new Date(proximaAula.dataHora).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' })}
+                  </Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={estilos.nomeProfessor}>Prof. {proximaAula.professor?.nome || 'Professor'}</Text>
+                  <Text style={estilos.tipoAula}>{proximaAula.tipo === 'REGULAR' ? 'Aula regular' : 'Reposição'}</Text>
+                </View>
+              </View>
+            )}
+          </SectionCard>
+
+          <SectionCard titulo="Frequência nas aulas">
+            <View style={estilos.frequenciaRow}>
+              <Text style={estilos.emoji}>{emojiFreq.emoji}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={[estilos.nivelFrequencia, { color: emojiFreq.cor }]}>{emojiFreq.nivel}</Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 6 }}>
+                  <Badge texto={`${frequencia?.presencas ?? 0} presenças`} tom="sucesso" />
+                  <Badge texto={`${frequencia?.faltas ?? 0} faltas`} tom="alerta" />
+                </View>
+              </View>
+            </View>
+            <View style={estilos.barraContainer}>
+              <View style={[estilos.barraPreenchimento, { width: `${pctFreq}%`, backgroundColor: emojiFreq.cor }]} />
+            </View>
+            <Text style={[estilos.pctTexto, { color: emojiFreq.cor }]}>{pctFreq}% de presença</Text>
+          </SectionCard>
+
+          <SectionCard titulo="Pagamento com a escola">
+            <View style={[estilos.statusPill, { backgroundColor: configPag.cor }]}>
+              <Ionicons name={configPag.icone} size={16} color="#fff" />
+              <Text style={estilos.statusPillTexto}>{configPag.texto}</Text>
+            </View>
+            {pagamento?.vencimento && (
+              <Text style={[estilos.vencimentoTexto, { color: configPag.cor }]}>
+                Vencimento: {new Date(pagamento.vencimento).toLocaleDateString('pt-BR')}
+              </Text>
+            )}
+            {!pagamento && <Text style={estilos.semDados}>Nenhuma cobrança gerada ainda.</Text>}
+          </SectionCard>
+
+          <SectionCard titulo="Evolução do plano">
+            {!plano?.tempoContrato ? (
+              <Text style={estilos.semDados}>Plano ainda não configurado pela escola.</Text>
+            ) : (
+              <>
+                <View style={estilos.planoBarraContainer}>
+                  <View style={[estilos.planoBarraPreenchimento, { width: `${Math.round(progresso * 100)}%` }]} />
+                </View>
+                <View style={estilos.planoInfo}>
+                  <Text style={estilos.planoTexto}>{Math.round(progresso * (plano.tempoContrato ?? 0))} de {plano.tempoContrato} meses</Text>
+                  <Text style={estilos.planoPercent}>{Math.round(progresso * 100)}%</Text>
+                </View>
+              </>
+            )}
+          </SectionCard>
+        </>
+      )}
     </MobileErpShell>
   );
 }
+
+const estilos = StyleSheet.create({
+  linhaAula: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  horarioBox: {
+    backgroundColor: ERP.fundo, paddingHorizontal: 12, paddingVertical: 8,
+    borderRadius: ERP.raio.sm, borderWidth: 1, borderColor: ERP.borda, alignItems: 'center', minWidth: 62,
+  },
+  horarioTexto: { color: ERP.acentoForte, fontWeight: '700', fontSize: 14 },
+  dataTexto: { color: ERP.textoMuted, fontSize: 10, textTransform: 'uppercase', marginTop: 2 },
+  nomeProfessor: { color: ERP.texto, fontSize: 14.5, fontWeight: '700' },
+  tipoAula: { color: ERP.textoSecundario, fontSize: 12, marginTop: 2 },
+  frequenciaRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 14 },
+  emoji: { fontSize: 36 },
+  nivelFrequencia: { fontSize: 15, fontWeight: '700' },
+  barraContainer: { height: 8, backgroundColor: ERP.borda, borderRadius: 4, overflow: 'hidden', marginBottom: 6 },
+  barraPreenchimento: { height: '100%', borderRadius: 4 },
+  pctTexto: { fontSize: 12, fontWeight: '700' },
+  statusPill: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10,
+    borderRadius: ERP.raio.sm, alignSelf: 'flex-start', marginBottom: 8,
+  },
+  statusPillTexto: { color: '#fff', fontWeight: '700', fontSize: 13.5 },
+  vencimentoTexto: { fontSize: 12, fontWeight: '600' },
+  semDados: { color: ERP.textoMuted, fontSize: 13 },
+  planoBarraContainer: { height: 12, backgroundColor: ERP.borda, borderRadius: 6, overflow: 'hidden', marginBottom: 10 },
+  planoBarraPreenchimento: { height: '100%', borderRadius: 6, backgroundColor: ERP.acento },
+  planoInfo: { flexDirection: 'row', justifyContent: 'space-between' },
+  planoTexto: { color: ERP.texto, fontSize: 13, fontWeight: '600' },
+  planoPercent: { fontSize: 16, fontWeight: '700', color: ERP.acentoForte },
+});
