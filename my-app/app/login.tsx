@@ -64,10 +64,13 @@ export default function LoginScreen() {
       const temToken = await SecureStore.getItemAsync('kav_token');
       const temPapel = await SecureStore.getItemAsync('kav_papel');
 
+      // Só mostra o botão — NÃO autentica sozinho. Um Face ID/Touch ID
+      // disparado automaticamente ao abrir a tela corre pra dentro da
+      // sessão antiga salva no aparelho antes do usuário conseguir digitar
+      // outra credencial (ex.: trocar de conta pra testar um login
+      // diferente) — precisa ser sempre uma ação explícita do usuário.
       if (temHardware && inscrito && temToken && temPapel) {
         setBioDisponivel(true);
-        // Tenta autenticar automaticamente ao abrir o app
-        autenticarComBiometria(temToken, temPapel);
       }
     } catch {
       // Dispositivo sem suporte a biometria — modo normal
