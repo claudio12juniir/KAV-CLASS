@@ -26,6 +26,14 @@ export default function FinanceiroEscola() {
   const [conectandoStripe, setConectandoStripe] = useState(false);
   const [resumoCobranca, setResumoCobranca] = useState<any>(null);
 
+  // Asaas (Pix/Boleto) — segundo gateway de cobrança, cada Escola traz a
+  // própria conta (API Key própria, sem subconta via plataforma).
+  const [asaasStatus, setAsaasStatus] = useState<{ conectado: boolean; nomeConta?: string; apiKeyUltimos4?: string; erro?: string } | null>(null);
+  const [apiKeyAsaas, setApiKeyAsaas] = useState('');
+  const [conectandoAsaas, setConectandoAsaas] = useState(false);
+  const [desconectandoAsaas, setDesconectandoAsaas] = useState(false);
+  const [instrucoesWebhookAsaas, setInstrucoesWebhookAsaas] = useState<{ webhookUrl: string; webhookToken: string } | null>(null);
+
   const [alunosVencendo, setAlunosVencendo] = useState<any[]>([]);
   const [selecaoRenovacao, setSelecaoRenovacao] = useState<Record<string, string>>({});
   const [renovando, setRenovando] = useState(false);
@@ -73,8 +81,9 @@ export default function FinanceiroEscola() {
       const token = await SecureStore.getItemAsync('kav_token');
       const headers = { Authorization: `Bearer ${token}` };
       const agora = new Date();
-      const [resStripe, resResumo, resVencendo, resLanc, resContas, resFecha, resDre, resFaturamento, resFolha, resDespesasFixas, resPagamentosStatus] = await Promise.all([
+      const [resStripe, resAsaas, resResumo, resVencendo, resLanc, resContas, resFecha, resDre, resFaturamento, resFolha, resDespesasFixas, resPagamentosStatus] = await Promise.all([
         fetchComRetry(`${BASE_URL}/api/escola/stripe-connect/status`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/asaas/status`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/cobranca-automatica/resumo`, { headers }),
         fetchComRetry(`${BASE_URL}/api/renovacoes/vencendo?dias=30`, { headers }),
         fetchComRetry(`${BASE_URL}/api/caixa/lancamentos?data=${dataCaixa}`, { headers }),
@@ -87,6 +96,7 @@ export default function FinanceiroEscola() {
         fetchComRetry(`${BASE_URL}/api/escola/pagamentos-status`, { headers }),
       ]);
       if (resStripe.ok) setStripeConnect(await resStripe.json());
+      if (resAsaas.ok) setAsaasStatus(await resAsaas.json());
       if (resResumo.ok) setResumoCobranca(await resResumo.json());
       if (resVencendo.ok) setAlunosVencendo(await resVencendo.json());
       if (resLanc.ok) setLancamentosDia(await resLanc.json());
@@ -126,6 +136,51 @@ export default function FinanceiroEscola() {
     } finally {
       setConectandoStripe(false);
     }
+  };
+
+  const conectarAsaas = async () => {
+    if (!apiKeyAsaas.trim()) { Alert.alert('Atenção', 'Cole a API Key da sua conta Asaas.'); return; }
+    setConectandoAsaas(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/asaas/conectar`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: apiKeyAsaas.trim() }),
+      });
+      const dados = await res.json();
+      if (!res.ok) { Alert.alert('Erro', dados.erro || 'Não foi possível conectar com o Asaas.'); return; }
+      setApiKeyAsaas('');
+      setInstrucoesWebhookAsaas({ webhookUrl: dados.webhookUrl, webhookToken: dados.webhookToken });
+      await carregarDados();
+      Alert.alert('Conectado!', 'Agora configure o webhook no painel do Asaas com a URL e o token mostrados na tela — sem isso os pagamentos não são confirmados automaticamente aqui.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setConectandoAsaas(false);
+    }
+  };
+
+  const desconectarAsaas = () => {
+    Alert.alert('Desconectar Asaas?', 'Só é possível se nenhuma matrícula estiver com cobrança via Asaas ativa no momento.', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Desconectar', style: 'destructive', onPress: async () => {
+          setDesconectandoAsaas(true);
+          try {
+            const token = await SecureStore.getItemAsync('kav_token');
+            const res = await fetchComRetry(`${BASE_URL}/api/escola/asaas/desconectar`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+            const dados = await res.json();
+            if (!res.ok) { Alert.alert('Erro', dados.erro || 'Não foi possível desconectar.'); return; }
+            setInstrucoesWebhookAsaas(null);
+            await carregarDados();
+          } catch {
+            Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+          } finally {
+            setDesconectandoAsaas(false);
+          }
+        },
+      },
+    ]);
   };
 
   const alternarSelecao = (aluno: any) => {
@@ -424,6 +479,42 @@ export default function FinanceiroEscola() {
               )}
             </View>
           )}
+
+          <SectionCard titulo="Asaas (Pix/Boleto)">
+            {!asaasStatus?.conectado && (
+              <>
+                <Text style={{ color: ERP.texto, fontSize: 14, marginBottom: 12, lineHeight: 20 }}>
+                  Complementa o Stripe acima com Pix e Boleto. Cole a API Key da sua própria conta Asaas (crie uma de graça em asaas.com, se ainda não tiver) — a taxa do Asaas é cobrada direto da sua conta, nunca da KAV Class.
+                </Text>
+                <Campo label="API Key do Asaas" value={apiKeyAsaas} onChangeText={setApiKeyAsaas} placeholder="$aact_..." autoCapitalize="none" secureTextEntry />
+                <View style={{ marginTop: 12 }}>
+                  <Botao texto="Conectar Asaas" onPress={conectarAsaas} carregando={conectandoAsaas} />
+                </View>
+              </>
+            )}
+
+            {asaasStatus?.conectado && (
+              <>
+                <Badge texto={asaasStatus.erro ? 'Chave inválida' : `Conectado${asaasStatus.apiKeyUltimos4 ? ` · •••• ${asaasStatus.apiKeyUltimos4}` : ''}`} tom={asaasStatus.erro ? 'aviso' : 'sucesso'} />
+                {asaasStatus.nomeConta && <Text style={{ color: ERP.textoSecundario, fontSize: 13, marginTop: 8 }}>{asaasStatus.nomeConta}</Text>}
+                {asaasStatus.erro && <Text style={{ color: ERP.perigo, fontSize: 13, marginTop: 8 }}>{asaasStatus.erro}</Text>}
+
+                {instrucoesWebhookAsaas && (
+                  <View style={{ marginTop: 12, padding: 12, borderRadius: 10, backgroundColor: '#f4f4f5' }}>
+                    <Text style={{ fontSize: 12.5, color: ERP.texto, lineHeight: 18 }}>
+                      No painel do Asaas, vá em Configurações → Webhooks e cadastre:{'\n'}
+                      URL: {instrucoesWebhookAsaas.webhookUrl}{'\n'}
+                      Token de autenticação: {instrucoesWebhookAsaas.webhookToken}
+                    </Text>
+                  </View>
+                )}
+
+                <View style={{ marginTop: 12 }}>
+                  <Botao texto="Desconectar" variante="secundario" onPress={desconectarAsaas} carregando={desconectandoAsaas} />
+                </View>
+              </>
+            )}
+          </SectionCard>
         </>
       )}
 

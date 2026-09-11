@@ -67,6 +67,14 @@ enum MetodoPagamento {
   BOLETO
 }
 
+// Cobrança automática Aluno → Escola (S3.1 Stripe Connect, depois somado
+// Asaas): qual dos dois gateways está ativo numa Matricula — mutuamente
+// exclusivo, nunca os dois ao mesmo tempo.
+enum GatewayCobranca {
+  STRIPE
+  ASAAS
+}
+
 // Valores reais enviados pelo app (my-app/app/(professor)/index.tsx),
 // diferentes dos documentados no comentário antigo do schema (PDF/VIDEO/AUDIO/TEXTO).
 enum TipoMaterial {
@@ -186,6 +194,20 @@ model Escola {
   // sincronizado pelo webhook account.updated e por checagem sob demanda.
   stripeConnectAccountId          String?
   stripeConnectOnboardingCompleto Boolean @default(false)
+
+  // Cobrança automática aluno→Escola via Asaas (Pix/Boleto/Cartão), somada
+  // ao Stripe Connect acima. Diferente do stripeConnectAccountId (só um ID
+  // de conta), aqui a Escola traz a própria conta Asaas: guardamos a API Key
+  // dela CIFRADA em repouso (AES-256-GCM, chave mestra em
+  // ASAAS_ENCRYPTION_KEY), nunca em texto puro — é um segredo de verdade,
+  // não um ID. asaasApiKeyUltimos4 é só pra exibir "•••• 8f3a" no painel sem
+  // precisar decifrar. asaasWebhookToken é gerado na conexão e a Escola cola
+  // no próprio painel Asaas dela (não temos como registrar webhook por conta
+  // de terceiro via API) — é como o endpoint único /asaas/webhook descobre
+  // de qual Escola veio o evento.
+  asaasApiKeyCriptografada String?
+  asaasApiKeyUltimos4      String?
+  asaasWebhookToken        String? @unique
 
   // ─── Perfil da Instituição (INSTITUTION, Sprint 1 do briefing 08/09/2026) ───
   // Nullable de propósito: escola já existente continua funcionando sem
@@ -515,6 +537,10 @@ model Pagamento {
   // do PaymentIntent.
   viaCobrancaAutomatica Boolean @default(false)
   stripePaymentIntentId String?
+  // Espelha o papel de stripePaymentIntentId acima, pro gateway Asaas — é o
+  // que o webhook /asaas/webhook usa pra achar esta fatura (PAYMENT_CREATED
+  // cria a linha, os eventos seguintes acham por este id).
+  asaasPaymentId        String?
 
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])
@@ -536,6 +562,7 @@ model Pagamento {
   @@index([alunoId, vencimento])
   @@index([matriculaId])
   @@index([stripePaymentIntentId])
+  @@index([asaasPaymentId])
 }
 
 // ─── 5. MATERIAIS DIDÁTICOS ──────────────────────────────────────
@@ -1002,6 +1029,17 @@ model Matricula {
   cobrancaUltimoErro      String?
   cobrancaUltimaTentativa DateTime?
 
+  // Cobrança automática via Asaas (Pix/Boleto/Cartão) — segundo gateway,
+  // somado ao Stripe acima. gatewayCobranca diz qual dos dois está de fato
+  // ativo nesta Matricula (mutuamente exclusivo); cobrancaAutomaticaAtiva/
+  // cobrancaUltimoErro/cobrancaUltimaTentativa acima são genéricos e servem
+  // pros dois gateways, não duplicados aqui. Diferente do Stripe (cron
+  // próprio gerando+cobrando fatura), o Asaas gera a fatura de cada ciclo
+  // sozinho via Subscription e avisa por webhook — não precisa de cron.
+  gatewayCobranca     GatewayCobranca?
+  asaasCustomerId     String?
+  asaasSubscriptionId String?
+
   pagamentos Pagamento[]
   contratos  Contrato[]
 
@@ -1013,6 +1051,7 @@ model Matricula {
   @@index([escolaId])
   @@index([turmaId])
   @@index([stripeCustomerId])
+  @@index([asaasSubscriptionId])
 }
 
 // ─── 20. AVALIAÇÃO ────────────────────────────────────────────────

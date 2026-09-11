@@ -17,6 +17,75 @@ const stripe = process.env.STRIPE_SECRET_KEY
   ? require('stripe')(process.env.STRIPE_SECRET_KEY)
   : null;
 
+// ─── ASAAS (Pix/Boleto/Cartão) — segundo gateway de cobrança Aluno→Escola,
+// somado ao Stripe Connect acima (seção 10e-2/10e-3 mais abaixo). Diferente
+// do Stripe (a plataforma tem UMA conta e roteia pra sub-contas conectadas
+// das Escolas), aqui cada Escola traz a PRÓPRIA conta Asaas — não existe
+// conceito de conta conectada da plataforma. Isso é o que garante que a
+// taxa do Asaas cai sobre a Escola, nunca sobre o Kav Class: toda chamada
+// usa a API Key da própria Escola (ver asaasFetch), nunca uma key nossa.
+//
+// Consequência: precisamos guardar um SEGREDO de verdade por Escola (a API
+// Key dela), não só um ID como stripeConnectAccountId — por isso cifrado em
+// repouso (AES-256-GCM) com uma chave mestra da plataforma
+// (ASAAS_ENCRYPTION_KEY, uma só, global). Sem essa env var, toda rota Asaas
+// responde 503 — mesmo padrão do guard "if (!stripe)" acima.
+const ASAAS_ENCRYPTION_KEY = process.env.ASAAS_ENCRYPTION_KEY
+  ? Buffer.from(process.env.ASAAS_ENCRYPTION_KEY, 'hex')
+  : null;
+const ASAAS_API_BASE_URL = process.env.ASAAS_API_BASE_URL || 'https://api.asaas.com/v3';
+
+function criptografarAsaasApiKey(texto) {
+  const iv = crypto.randomBytes(12);
+  const cifra = crypto.createCipheriv('aes-256-gcm', ASAAS_ENCRYPTION_KEY, iv);
+  const cifrado = Buffer.concat([cifra.update(texto, 'utf8'), cifra.final()]);
+  const tag = cifra.getAuthTag();
+  // iv (12) + authTag (16) + texto cifrado, tudo num único valor base64 —
+  // simples de guardar numa coluna TEXT só, sem colunas extras pro iv/tag.
+  return Buffer.concat([iv, tag, cifrado]).toString('base64');
+}
+
+function descriptografarAsaasApiKey(valorCifrado) {
+  const dados = Buffer.from(valorCifrado, 'base64');
+  const iv = dados.subarray(0, 12);
+  const tag = dados.subarray(12, 28);
+  const cifrado = dados.subarray(28);
+  const decifra = crypto.createDecipheriv('aes-256-gcm', ASAAS_ENCRYPTION_KEY, iv);
+  decifra.setAuthTag(tag);
+  return Buffer.concat([decifra.update(cifrado), decifra.final()]).toString('utf8');
+}
+
+// Chama a API do Asaas usando a API Key da própria Escola (nunca uma key da
+// plataforma) — isso é o que garante que a taxa do Asaas cai sobre a
+// Escola, não sobre o Kav Class. `escola` precisa ter vindo de uma query
+// com `select: { asaasApiKeyCriptografada: true }` explícito (é um
+// segredo, não entra em select genérico de rota nenhuma).
+async function asaasFetch(escola, path, options = {}) {
+  if (!escola?.asaasApiKeyCriptografada) {
+    const erro = new Error('Escola sem Asaas conectado.');
+    erro.status = 400;
+    throw erro;
+  }
+  const apiKey = descriptografarAsaasApiKey(escola.asaasApiKeyCriptografada);
+  const resposta = await fetch(`${ASAAS_API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'KavClass/1.0',
+      access_token: apiKey,
+      ...(options.headers || {}),
+    },
+  });
+  const corpo = await resposta.json().catch(() => ({}));
+  if (!resposta.ok) {
+    const mensagem = corpo?.errors?.[0]?.description || corpo?.message || 'Erro ao chamar o Asaas.';
+    const erro = new Error(mensagem);
+    erro.status = resposta.status;
+    throw erro;
+  }
+  return corpo;
+}
+
 // Client IDs OAuth do Google (Web/iOS/Android) — login com Google fica desativado
 // (503) até essas variáveis serem configuradas no ambiente.
 const GOOGLE_CLIENT_IDS = [
@@ -217,6 +286,79 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
     }
   } catch (err) {
     console.error('[Webhook] Erro ao processar evento:', err);
+  }
+
+  res.json({ received: true });
+});
+
+// ─── ASAAS WEBHOOK (mesmo lugar do webhook Stripe acima, antes do
+// express.json global) ────────────────────────────────────────────────────
+// Diferente do Stripe, o Asaas não assina o corpo (sem HMAC) — autentica só
+// por um header de token simples que cada Escola configura no PRÓPRIO
+// painel Asaas dela (é conta de terceiro, não dá pra registrar webhook por
+// API como fazemos com account.updated do Stripe Connect). O token é
+// comparado contra QUALQUER Escola cadastrada: como os IDs do Asaas
+// (customer/subscription/payment) são globais na plataforma deles, depois
+// de autenticado o resto do processamento acha a linha certa sem precisar
+// re-filtrar por escola. Usa express.json() local (não raw) porque não há
+// assinatura pra verificar sobre o corpo cru.
+app.post('/asaas/webhook', express.json({ limit: '2mb' }), async (req, res) => {
+  const token = req.headers['asaas-access-token'];
+  if (!token) return res.status(401).json({ erro: 'Token ausente.' });
+
+  const escola = await prisma.escola.findFirst({ where: { asaasWebhookToken: token }, select: { id: true } }).catch(() => null);
+  if (!escola) return res.status(401).json({ erro: 'Token inválido.' });
+
+  try {
+    const evento = req.body?.event;
+    const payment = req.body?.payment;
+    if (payment) {
+      const metodoPorBillingType = { PIX: 'PIX', BOLETO: 'BOLETO', CREDIT_CARD: 'CARTAO' };
+
+      if (evento === 'PAYMENT_CREATED') {
+        // Asaas gerou sozinho a fatura de um novo ciclo da Subscription —
+        // espelha como um Pagamento nosso, pro painel do GESTOR mostrar
+        // igual ao que já mostra pras faturas do Stripe.
+        const matricula = await prisma.matricula.findFirst({ where: { asaasSubscriptionId: payment.subscription } });
+        if (matricula) {
+          const jaExiste = await prisma.pagamento.findFirst({ where: { asaasPaymentId: payment.id } });
+          if (!jaExiste) {
+            await prisma.pagamento.create({
+              data: {
+                valor: payment.value,
+                vencimento: new Date(`${payment.dueDate}T12:00:00`),
+                status: 'PENDENTE',
+                metodo: metodoPorBillingType[payment.billingType] || null,
+                professorId: matricula.professorId,
+                alunoId: matricula.alunoId,
+                matriculaId: matricula.id,
+                viaCobrancaAutomatica: true,
+                asaasPaymentId: payment.id,
+              },
+            });
+          }
+        }
+      } else if (evento === 'PAYMENT_CONFIRMED' || evento === 'PAYMENT_RECEIVED') {
+        await prisma.pagamento.updateMany({
+          where: { asaasPaymentId: payment.id, status: { not: 'PAGO' } },
+          data: { status: 'PAGO', dataPagamento: new Date(), metodo: metodoPorBillingType[payment.billingType] || undefined },
+        });
+        await prisma.matricula.updateMany({
+          where: { asaasSubscriptionId: payment.subscription },
+          data: { cobrancaUltimoErro: null, cobrancaUltimaTentativa: new Date() },
+        });
+      } else if (evento === 'PAYMENT_OVERDUE') {
+        await prisma.pagamento.updateMany({ where: { asaasPaymentId: payment.id }, data: { status: 'ATRASADO' } });
+        await prisma.matricula.updateMany({
+          where: { asaasSubscriptionId: payment.subscription },
+          data: { cobrancaUltimoErro: 'Fatura vencida sem pagamento.', cobrancaUltimaTentativa: new Date() },
+        });
+      } else if (evento === 'PAYMENT_DELETED' || evento === 'PAYMENT_REFUNDED') {
+        await prisma.pagamento.updateMany({ where: { asaasPaymentId: payment.id }, data: { status: 'CANCELADO' } });
+      }
+    }
+  } catch (err) {
+    console.error('[Asaas Webhook] Erro ao processar evento:', err);
   }
 
   res.json({ received: true });
@@ -4161,6 +4303,7 @@ app.get('/api/matriculas/:id/cobranca-automatica', autenticar, async (req, res) 
     if (!matricula) return;
     res.json({
       ativa: matricula.cobrancaAutomaticaAtiva,
+      gateway: matricula.gatewayCobranca,
       temCartao: !!matricula.stripePaymentMethodId,
       ultimoErro: matricula.cobrancaUltimoErro,
       ultimaTentativa: matricula.cobrancaUltimaTentativa,
@@ -4254,13 +4397,28 @@ app.get('/api/matriculas/:id/cobranca-automatica/verificar/:sessionId', autentic
 });
 
 // POST /api/matriculas/:id/cobranca-automatica/desativar — não apaga o
-// cartão salvo no Stripe, só para de cobrar sozinho (reativar depois não
-// precisa recadastrar cartão, a menos que o Customer/PaymentMethod tenha
-// sido removido direto no painel do Stripe).
+// cartão salvo no Stripe (nem cancela o customer no Asaas), só para de
+// cobrar sozinho (reativar depois não precisa recadastrar cartão, a menos
+// que o Customer/PaymentMethod tenha sido removido direto no painel do
+// gateway). Se o gateway ativo era Asaas, cancela a Subscription de lá —
+// sem isso o Asaas continuaria gerando fatura nova a cada ciclo sozinho.
 app.post('/api/matriculas/:id/cobranca-automatica/desativar', autenticar, async (req, res) => {
   try {
     const matricula = await carregarMatriculaDoDono(req, res);
     if (!matricula) return;
+
+    if (matricula.gatewayCobranca === 'ASAAS' && matricula.asaasSubscriptionId) {
+      try {
+        const escola = await prisma.escola.findUnique({
+          where: { id: matricula.escolaId },
+          select: { asaasApiKeyCriptografada: true },
+        });
+        await asaasFetch(escola, `/subscriptions/${matricula.asaasSubscriptionId}`, { method: 'DELETE' });
+      } catch (err) {
+        console.error('[CobrancaAutomatica/Asaas] Erro ao cancelar subscription:', err.message);
+      }
+    }
+
     const atualizada = await prisma.matricula.update({
       where: { id: matricula.id },
       data: { cobrancaAutomaticaAtiva: false },
@@ -4292,10 +4450,10 @@ app.get('/api/escola/cobranca-automatica/resumo', async (req, res) => {
       totalAtivas: matriculas.length,
       precisamDeAcao: precisamDeAcao.map(m => ({
         matriculaId: m.id, alunoNome: m.aluno.nome, valorMensalidade: m.valorMensalidade,
-        erro: m.cobrancaUltimoErro, ultimaTentativa: m.cobrancaUltimaTentativa,
+        erro: m.cobrancaUltimoErro, ultimaTentativa: m.cobrancaUltimaTentativa, gateway: m.gatewayCobranca,
       })),
       emDia: emDia.map(m => ({
-        matriculaId: m.id, alunoNome: m.aluno.nome, valorMensalidade: m.valorMensalidade, diaVencimento: m.diaVencimento,
+        matriculaId: m.id, alunoNome: m.aluno.nome, valorMensalidade: m.valorMensalidade, diaVencimento: m.diaVencimento, gateway: m.gatewayCobranca,
       })),
     });
   } catch (err) {
@@ -4313,13 +4471,223 @@ app.get('/api/escola/cobranca-automatica/historico', async (req, res) => {
 
     const pagamentos = await prisma.pagamento.findMany({
       where: { viaCobrancaAutomatica: true, aluno: { escolaId: professor.escolaId } },
-      include: { aluno: { select: { nome: true } } },
+      include: { aluno: { select: { nome: true } }, matricula: { select: { gatewayCobranca: true } } },
       orderBy: { createdAt: 'desc' },
       take: 200,
     });
     res.json(pagamentos);
   } catch (err) {
     tratarErro(err, res, 'Erro ao carregar histórico de cobrança automática.');
+  }
+});
+
+// ============================================================================
+// 10e-3. COBRANÇA AUTOMÁTICA VIA ASAAS (Pix/Boleto/Cartão), somando ao
+// Stripe Connect acima (10e-2). Cada Escola traz a própria conta Asaas (API
+// Key própria) — sem subconta/split via plataforma, é a taxa do Asaas caindo
+// direto sobre a Escola. Diferente do Stripe, aqui não temos cron próprio
+// pra gerar/cobrar fatura: a Subscription do Asaas faz isso sozinha e avisa
+// por webhook (ver POST /asaas/webhook, registrado perto do webhook Stripe,
+// antes do express.json() global).
+// ============================================================================
+
+// GET /api/escola/asaas/status — GESTOR/DONO. Revalida contra o Asaas (não
+// só a coluna local) chamando /myAccount, mesmo espírito do status Stripe.
+app.get('/api/escola/asaas/status', async (req, res) => {
+  if (!ASAAS_ENCRYPTION_KEY) return res.status(503).json({ erro: 'Serviço de pagamento (Asaas) não configurado.' });
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const escola = await prisma.escola.findUnique({
+      where: { id: professor.escolaId },
+      select: { asaasApiKeyCriptografada: true, asaasApiKeyUltimos4: true },
+    });
+
+    if (!escola.asaasApiKeyCriptografada) {
+      return res.json({ conectado: false });
+    }
+
+    try {
+      const conta = await asaasFetch(escola, '/myAccount');
+      res.json({ conectado: true, nomeConta: conta.name || conta.email || null, apiKeyUltimos4: escola.asaasApiKeyUltimos4 });
+    } catch (err) {
+      res.json({ conectado: true, erro: 'Não foi possível validar a chave com o Asaas: ' + err.message, apiKeyUltimos4: escola.asaasApiKeyUltimos4 });
+    }
+  } catch (err) {
+    console.error('[Asaas] Erro ao consultar status:', err.message);
+    res.status(500).json({ erro: 'Erro ao consultar status da conta Asaas.' });
+  }
+});
+
+// POST /api/escola/asaas/conectar — GESTOR/DONO cola a própria API Key do
+// Asaas. Valida contra /myAccount ANTES de salvar (não confia sem checar).
+// Gera o asaasWebhookToken na primeira conexão — a Escola cola esse valor
+// no próprio painel Asaas dela (Configurações → Webhooks → token de
+// autenticação), porque não temos como registrar webhook por conta de
+// terceiro via API.
+app.post('/api/escola/asaas/conectar', async (req, res) => {
+  if (!ASAAS_ENCRYPTION_KEY) return res.status(503).json({ erro: 'Serviço de pagamento (Asaas) não configurado.' });
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const { apiKey } = req.body;
+    if (!apiKey?.trim()) return res.status(400).json({ erro: 'apiKey é obrigatória.' });
+    const apiKeyLimpa = apiKey.trim();
+
+    let conta;
+    try {
+      conta = await asaasFetch({ asaasApiKeyCriptografada: criptografarAsaasApiKey(apiKeyLimpa) }, '/myAccount');
+    } catch (err) {
+      return res.status(400).json({ erro: 'Não foi possível validar essa chave com o Asaas: ' + err.message });
+    }
+
+    const escolaAtual = await prisma.escola.findUnique({ where: { id: professor.escolaId }, select: { asaasWebhookToken: true } });
+    const webhookToken = escolaAtual.asaasWebhookToken || crypto.randomBytes(24).toString('hex');
+
+    await prisma.escola.update({
+      where: { id: professor.escolaId },
+      data: {
+        asaasApiKeyCriptografada: criptografarAsaasApiKey(apiKeyLimpa),
+        asaasApiKeyUltimos4: apiKeyLimpa.slice(-4),
+        asaasWebhookToken: webhookToken,
+      },
+    });
+
+    res.json({
+      ok: true,
+      nomeConta: conta.name || conta.email || null,
+      webhookUrl: 'https://kav-class-1.onrender.com/asaas/webhook',
+      webhookToken,
+    });
+  } catch (err) {
+    console.error('[Asaas] Erro ao conectar:', err.message);
+    res.status(500).json({ erro: 'Erro ao conectar com o Asaas.' });
+  }
+});
+
+// POST /api/escola/asaas/desconectar — bloqueia se ainda existir matrícula
+// com cobrança Asaas ativa (mesmo espírito de outros gates do arquivo, ex:
+// contrato pendente bloqueando fatura) — pede pra desativar as matrículas
+// primeiro, senão a Subscription continuaria cobrando lá no Asaas sem
+// ninguém acompanhando por aqui.
+app.post('/api/escola/asaas/desconectar', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const ativas = await prisma.matricula.count({
+      where: { escolaId: professor.escolaId, gatewayCobranca: 'ASAAS', cobrancaAutomaticaAtiva: true },
+    });
+    if (ativas > 0) {
+      return res.status(400).json({ erro: `Existem ${ativas} matrícula(s) com cobrança via Asaas ativa. Desative-as antes de desconectar.` });
+    }
+
+    await prisma.escola.update({
+      where: { id: professor.escolaId },
+      data: { asaasApiKeyCriptografada: null, asaasApiKeyUltimos4: null },
+    });
+    res.json({ mensagem: 'Asaas desconectado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao desconectar o Asaas.');
+  }
+});
+
+// POST /api/matriculas/:id/cobranca-automatica/asaas/iniciar — dono da
+// matrícula (professor/GESTOR/DONO ou o próprio aluno) ativa cobrança
+// recorrente via Asaas. Cria (ou reaproveita) o Customer e a Subscription
+// no Asaas — o próprio Asaas passa a gerar a fatura de cada ciclo sozinho,
+// sem cron nosso (diferente do Stripe, ver 10e-2 acima).
+app.post('/api/matriculas/:id/cobranca-automatica/asaas/iniciar', autenticar, async (req, res) => {
+  if (!ASAAS_ENCRYPTION_KEY) return res.status(503).json({ erro: 'Serviço de pagamento (Asaas) não configurado.' });
+  try {
+    const matricula = await carregarMatriculaDoDono(req, res);
+    if (!matricula) return;
+
+    const billingType = ['PIX', 'BOLETO', 'CREDIT_CARD', 'UNDEFINED'].includes(req.body?.billingType)
+      ? req.body.billingType
+      : 'UNDEFINED';
+
+    const escola = await prisma.escola.findUnique({
+      where: { id: matricula.escolaId },
+      select: { asaasApiKeyCriptografada: true },
+    });
+    if (!escola?.asaasApiKeyCriptografada) {
+      return res.status(400).json({ erro: 'A Escola ainda não conectou uma conta Asaas.' });
+    }
+
+    const aluno = await prisma.aluno.findUnique({
+      where: { id: matricula.alunoId },
+      select: { nome: true, email: true, telefone: true, responsavel: { select: { cpf: true, nome: true, email: true } } },
+    });
+    const cpf = aluno?.responsavel?.cpf?.replace(/\D/g, '');
+    if (!cpf) {
+      return res.status(400).json({ erro: 'Cadastre o CPF do responsável financeiro do aluno antes de ativar a cobrança via Asaas (PUT /api/alunos/:id/responsavel).' });
+    }
+
+    let customerId = matricula.asaasCustomerId;
+    if (!customerId) {
+      const customer = await asaasFetch(escola, '/customers', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: aluno.responsavel?.nome || aluno.nome,
+          cpfCnpj: cpf,
+          email: aluno.responsavel?.email || aluno.email,
+          mobilePhone: aluno.telefone || undefined,
+          externalReference: matricula.id,
+        }),
+      });
+      customerId = customer.id;
+    }
+
+    const hoje = new Date();
+    const ultimoDiaDoMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0).getDate();
+    const diaAlvo = Math.min(matricula.diaVencimento || 10, ultimoDiaDoMes);
+    let proximoVencimento = new Date(hoje.getFullYear(), hoje.getMonth(), diaAlvo);
+    if (proximoVencimento < hoje) proximoVencimento = new Date(hoje.getFullYear(), hoje.getMonth() + 1, diaAlvo);
+    const nextDueDate = proximoVencimento.toISOString().slice(0, 10);
+
+    const subscription = await asaasFetch(escola, '/subscriptions', {
+      method: 'POST',
+      body: JSON.stringify({
+        customer: customerId,
+        billingType,
+        value: matricula.valorMensalidade,
+        nextDueDate,
+        cycle: 'MONTHLY',
+        description: `Mensalidade — matrícula ${matricula.id}`,
+        externalReference: matricula.id,
+      }),
+    });
+
+    await prisma.matricula.update({
+      where: { id: matricula.id },
+      data: {
+        gatewayCobranca: 'ASAAS',
+        asaasCustomerId: customerId,
+        asaasSubscriptionId: subscription.id,
+        cobrancaAutomaticaAtiva: true,
+        cobrancaUltimoErro: null,
+      },
+    });
+
+    let faturaAtual = null;
+    try {
+      const faturas = await asaasFetch(escola, `/payments?subscription=${subscription.id}&limit=1`);
+      faturaAtual = faturas?.data?.[0] || null;
+    } catch (err) {
+      console.error('[CobrancaAutomatica/Asaas] Erro ao buscar 1ª fatura:', err.message);
+    }
+
+    res.json({
+      ativo: true,
+      invoiceUrl: faturaAtual?.invoiceUrl || null,
+    });
+  } catch (err) {
+    const mensagem = err.message || 'Erro ao ativar cobrança via Asaas.';
+    console.error('[CobrancaAutomatica/Asaas] Erro ao iniciar:', mensagem);
+    res.status(err.status && err.status < 500 ? err.status : 500).json({ erro: mensagem });
   }
 });
 

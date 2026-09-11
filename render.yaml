@@ -21,6 +21,10 @@ services:
         sync: false        # Painel Stripe → Developers → API keys → Secret key
       - key: STRIPE_WEBHOOK_SECRET
         sync: false        # Painel Stripe → Developers → Webhooks → Signing secret
+      - key: ASAAS_ENCRYPTION_KEY
+        sync: false        # Chave mestra da plataforma (32 bytes em hex) pra cifrar a API Key Asaas de cada Escola — gerar com `openssl rand -hex 32`
+      - key: ASAAS_API_BASE_URL
+        sync: false        # Opcional: default https://api.asaas.com/v3 (produção). Usar https://sandbox.asaas.com/api/v3 pra testar
       - key: GOOGLE_CLIENT_ID_WEB
         sync: false        # Google Cloud Console → APIs & Services → Credentials → OAuth Client ID (Web)
       - key: GOOGLE_CLIENT_ID_IOS

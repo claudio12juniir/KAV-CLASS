@@ -66,8 +66,9 @@ export default function FinanceiroAlunoEscola() {
 
   const [matriculas, setMatriculas] = useState<any[]>([]);
   const [matriculaSelecionadaId, setMatriculaSelecionadaId] = useState<string | null>(null);
-  const [cobranca, setCobranca] = useState<{ ativa: boolean; temCartao: boolean; ultimoErro: string | null; ultimaTentativa: string | null } | null>(null);
+  const [cobranca, setCobranca] = useState<{ ativa: boolean; gateway?: 'STRIPE' | 'ASAAS' | null; temCartao: boolean; ultimoErro: string | null; ultimaTentativa: string | null } | null>(null);
   const [ativandoCobranca, setAtivandoCobranca] = useState(false);
+  const [ativandoCobrancaAsaas, setAtivandoCobrancaAsaas] = useState(false);
 
   const [parcelaSelecionada, setParcelaSelecionada] = useState<Parcela | null>(null);
   const [metodo, setMetodo] = useState<MetodoPagamento | null>(null);
@@ -218,6 +219,39 @@ export default function FinanceiroAlunoEscola() {
     } finally {
       setAtivandoCobranca(false);
     }
+  };
+
+  const ativarCobrancaAsaas = (billingType: 'PIX' | 'BOLETO' | 'UNDEFINED') => async () => {
+    if (!matriculaSelecionadaId) return;
+    setAtivandoCobrancaAsaas(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/matriculas/${matriculaSelecionadaId}/cobranca-automatica/asaas/iniciar`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ billingType }),
+      });
+      const dados = await res.json();
+      if (!res.ok) {
+        Alert.alert('Não foi possível ativar', dados.erro || 'Tente novamente.');
+        return;
+      }
+      if (dados.invoiceUrl) await WebBrowser.openAuthSessionAsync(dados.invoiceUrl, 'kavclass://cobranca-automatica-sucesso');
+      Alert.alert('Cobrança recorrente ativada!', 'A cada mês, a escola gera uma nova fatura via Asaas (Pix/Boleto) automaticamente.');
+      await carregarFaturasEcobranca(matriculaSelecionadaId);
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setAtivandoCobrancaAsaas(false);
+    }
+  };
+
+  const escolherCobrancaAsaas = () => {
+    Alert.alert('Ativar via Asaas', 'Escolha a forma de pagamento da mensalidade:', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Pix', onPress: ativarCobrancaAsaas('PIX') },
+      { text: 'Boleto', onPress: ativarCobrancaAsaas('BOLETO') },
+    ]);
   };
 
   const desativarCobranca = () => {
@@ -410,7 +444,9 @@ export default function FinanceiroAlunoEscola() {
           {cobranca?.ativa ? (
             <>
               <Text style={estilos.descCobranca}>
-                Sua mensalidade é cobrada automaticamente no cartão cadastrado, sem precisar enviar comprovante.
+                {cobranca.gateway === 'ASAAS'
+                  ? 'A escola gera automaticamente uma nova fatura (Pix/Boleto) a cada mês, via Asaas.'
+                  : 'Sua mensalidade é cobrada automaticamente no cartão cadastrado, sem precisar enviar comprovante.'}
               </Text>
               {cobranca.ultimoErro && (
                 <Text style={[estilos.descCobranca, { color: ERP.perigo }]}>Última cobrança falhou: {cobranca.ultimoErro}</Text>
@@ -422,14 +458,21 @@ export default function FinanceiroAlunoEscola() {
           ) : (
             <>
               <Text style={estilos.descCobranca}>
-                Cadastre um cartão uma vez e nunca mais precise enviar comprovante todo mês.
+                Cadastre um cartão uma vez e nunca mais precise enviar comprovante todo mês — ou ative via Pix/Boleto, gerado automaticamente todo mês.
               </Text>
               <TouchableOpacity
                 style={[estilos.botaoAtivarCobranca, ativandoCobranca && { opacity: 0.6 }]}
                 onPress={ativarCobranca}
                 disabled={ativandoCobranca}
               >
-                {ativandoCobranca ? <SyncLoader color="#fff" /> : <Text style={estilos.textoBotaoAtivarCobranca}>Ativar cobrança automática</Text>}
+                {ativandoCobranca ? <SyncLoader color="#fff" /> : <Text style={estilos.textoBotaoAtivarCobranca}>Ativar cobrança automática (cartão)</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[estilos.botaoAtivarCobranca, { backgroundColor: ERP.texto, marginTop: 8 }, ativandoCobrancaAsaas && { opacity: 0.6 }]}
+                onPress={escolherCobrancaAsaas}
+                disabled={ativandoCobrancaAsaas}
+              >
+                {ativandoCobrancaAsaas ? <SyncLoader color="#fff" /> : <Text style={estilos.textoBotaoAtivarCobranca}>Ativar via Pix/Boleto</Text>}
               </TouchableOpacity>
             </>
           )}
