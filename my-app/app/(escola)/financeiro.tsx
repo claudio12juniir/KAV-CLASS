@@ -486,6 +486,23 @@ export default function FinanceiroEscola() {
                 <Text style={{ color: ERP.texto, fontSize: 14, marginBottom: 12, lineHeight: 20 }}>
                   Complementa o Stripe acima com Pix e Boleto. Cole a API Key da sua própria conta Asaas (crie uma de graça em asaas.com, se ainda não tiver) — a taxa do Asaas é cobrada direto da sua conta, nunca da KAV Class.
                 </Text>
+
+                <View style={{ marginBottom: 16, padding: 14, borderRadius: 10, backgroundColor: '#f4f4f5', gap: 10 }}>
+                  <Text style={{ fontSize: 13, fontWeight: '700', color: ERP.texto }}>Passo a passo</Text>
+                  {[
+                    'Crie uma conta grátis em asaas.com (ou entre na sua, se já tiver).',
+                    'No painel do Asaas, vá em Integrações → API → Gerar nova chave de API.',
+                    'Copie a chave gerada (começa com "$aact_").',
+                    'Cole a chave no campo abaixo e toque em "Conectar Asaas".',
+                    'Depois de conectado, copie a URL e o token mostrados aqui e cadastre em Configurações → Webhooks, dentro do painel do Asaas — sem isso, os pagamentos não são confirmados automaticamente.',
+                  ].map((texto, i) => (
+                    <View key={i} style={{ flexDirection: 'row', gap: 8 }}>
+                      <Text style={{ fontSize: 12.5, fontWeight: '700', color: ERP.textoSecundario }}>{i + 1}.</Text>
+                      <Text style={{ flex: 1, fontSize: 12.5, color: ERP.texto, lineHeight: 18 }}>{texto}</Text>
+                    </View>
+                  ))}
+                </View>
+
                 <Campo label="API Key do Asaas" value={apiKeyAsaas} onChangeText={setApiKeyAsaas} placeholder="$aact_..." autoCapitalize="none" secureTextEntry />
                 <View style={{ marginTop: 12 }}>
                   <Botao texto="Conectar Asaas" onPress={conectarAsaas} carregando={conectandoAsaas} />
