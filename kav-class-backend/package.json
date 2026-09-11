@@ -26,7 +26,7 @@
     "google-auth-library": "^10.9.1",
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.2.1",
-    "nodemailer": "^8.0.5",
+    "nodemailer": "^10.0.3",
     "pdfkit": "^0.20.2",
     "prisma": "^6.19.3",
     "qrcode": "^1.5.4",
@@ -35,5 +35,9 @@
   "devDependencies": {
     "jest": "^30.5.1",
     "supertest": "^7.2.2"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.0",
+    "uuid": "^11.1.1"
   }
 }

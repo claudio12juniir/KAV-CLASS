@@ -242,12 +242,15 @@ function tratarErro(err, res, mensagemPadrao) {
 function gerarCodigoConvite() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let r = '';
-  for (let i = 0; i < 4; i++) r += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < 4; i++) r += chars[crypto.randomInt(chars.length)];
   return `KAV-${r}`;
 }
 
+// crypto.randomInt (CSPRNG) em vez de Math.random(): este código autoriza
+// redefinição de senha — precisa ser imprevisível de verdade, não só
+// "parecer" aleatório (Math.random não dá garantia criptográfica).
 function gerarOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return crypto.randomInt(100000, 1000000).toString();
 }
 
 // Token público imprevisível (48 hex chars) — usado pelas rotas públicas de
