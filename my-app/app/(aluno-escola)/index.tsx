@@ -4,17 +4,21 @@
 // branch de pacote). Funções de cálculo copiadas (não importadas) do SELF
 // — mesma decisão de isolamento usada nas fases anteriores.
 import { Ionicons } from '@expo/vector-icons';
+import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Badge, EstadoVazio, PageHeader, SectionCard } from '../(escola)/_ui';
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Badge, Botao, EstadoVazio, PageHeader, SectionCard } from '../(escola)/_ui';
 import { ERP } from '../../constants/erpTheme';
 import { MobileErpShell } from '../../components/institution/MobileErpShell';
 import { BASE_URL, fetchComRetry } from '../api';
 import { useAlunoEscolaContexto } from './_contexto';
 import { NAV_ALUNO_ESCOLA } from './_nav';
 
-interface ProximaAula { id: string; dataHora: string; tipo: string; professor: { nome: string } }
+interface ProximaAula {
+  id: string; dataHora: string; tipo: string; professor: { nome: string };
+  presencaProfessorEm: string | null; presencaAlunoEm: string | null;
+}
 interface DashboardData {
   pendente?: boolean;
   inativo?: boolean;
@@ -55,6 +59,7 @@ export default function PainelAlunoEscola() {
 
   const [carregando, setCarregando] = useState(true);
   const [dados, setDados] = useState<DashboardData>({});
+  const [confirmando, setConfirmando] = useState(false);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -72,6 +77,40 @@ export default function PainelAlunoEscola() {
   }, []);
 
   useEffect(() => { carregar(); }, [carregar]);
+
+  const confirmarPresenca = async () => {
+    if (!dados.proximaAula) return;
+    try {
+      const temHardware = await LocalAuthentication.hasHardwareAsync();
+      const inscrito = await LocalAuthentication.isEnrolledAsync();
+      if (temHardware && inscrito) {
+        const resultado = await LocalAuthentication.authenticateAsync({
+          promptMessage: 'Confirmar presença',
+          fallbackLabel: 'Usar senha do dispositivo',
+          cancelLabel: 'Cancelar',
+        });
+        if (!resultado.success) return;
+      }
+
+      setConfirmando(true);
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/aulas/${dados.proximaAula.id}/checkin-aluno`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const resposta = await res.json();
+      if (res.ok) {
+        Alert.alert('Presença confirmada!', resposta.mensagem);
+        carregar();
+      } else {
+        Alert.alert('Erro', resposta.erro || 'Não foi possível confirmar.');
+      }
+    } catch {
+      Alert.alert('Sem conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setConfirmando(false);
+    }
+  };
 
   const { pendente, inativo, proximaAula, frequencia, pagamento, plano } = dados;
   const progresso = calcProgresso(plano?.tempoContrato ?? null, plano?.dataInicio ?? null);
@@ -118,6 +157,27 @@ export default function PainelAlunoEscola() {
                   <Text style={estilos.nomeProfessor}>Prof. {proximaAula.professor?.nome || 'Professor'}</Text>
                   <Text style={estilos.tipoAula}>{proximaAula.tipo === 'REGULAR' ? 'Aula regular' : 'Reposição'}</Text>
                 </View>
+              </View>
+            )}
+
+            {proximaAula && (
+              <View style={{ marginTop: 14 }}>
+                {proximaAula.presencaAlunoEm ? (
+                  <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+                    <Badge texto="Você já confirmou presença" tom="sucesso" />
+                    <Badge
+                      texto={proximaAula.presencaProfessorEm ? 'Professor confirmou' : 'Aguardando professor'}
+                      tom={proximaAula.presencaProfessorEm ? 'sucesso' : 'aviso'}
+                    />
+                  </View>
+                ) : (
+                  <Botao
+                    texto="Confirmar presença"
+                    icone="finger-print-outline"
+                    onPress={confirmarPresenca}
+                    carregando={confirmando}
+                  />
+                )}
               </View>
             )}
           </SectionCard>

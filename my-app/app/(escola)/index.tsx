@@ -141,6 +141,11 @@ export default function PainelEscola() {
   const [professorSelecionado, setProfessorSelecionado] = useState<ProfessorGrade | null>(null);
   const [aniversariantes, setAniversariantes] = useState<any[]>([]);
 
+  const [aulaParaCancelar, setAulaParaCancelar] = useState<any | null>(null);
+  const [dataPropostaCancelar, setDataPropostaCancelar] = useState('');
+  const [motivoCancelar, setMotivoCancelar] = useState('');
+  const [enviandoCancelamento, setEnviandoCancelamento] = useState(false);
+
   const carregarDados = useCallback(async () => {
     setCarregando(true);
     try {
@@ -204,6 +209,36 @@ export default function PainelEscola() {
     const dados = await res.json();
     if (res.ok) { Alert.alert('Finalizada!', dados.mensagem); carregarDados(); }
     else Alert.alert('Erro', dados.erro || 'Não foi possível finalizar.');
+  };
+
+  const abrirCancelarComReposicao = (aula: any) => {
+    setAulaParaCancelar(aula);
+    setDataPropostaCancelar('');
+    setMotivoCancelar('');
+  };
+
+  const confirmarCancelarComReposicao = async () => {
+    if (!aulaParaCancelar) return;
+    if (!dataPropostaCancelar.trim() || !motivoCancelar.trim()) {
+      Alert.alert('Atenção', 'Preencha a nova data e o motivo.');
+      return;
+    }
+    setEnviandoCancelamento(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/aulas/${aulaParaCancelar.id}/cancelar`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comReposicao: true, dataProposta: dataPropostaCancelar.trim(), motivo: motivoCancelar.trim() }),
+      });
+      const dados = await res.json();
+      if (res.ok) { Alert.alert('Feito!', dados.mensagem || 'Aula cancelada e reposição proposta.'); setAulaParaCancelar(null); carregarDados(); }
+      else Alert.alert('Erro', dados.erro || 'Não foi possível cancelar a aula.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setEnviandoCancelamento(false);
+    }
   };
 
   const notificarVencimento = async (id: string, nome: string) => {
@@ -300,6 +335,9 @@ export default function PainelEscola() {
                     <Text style={estilos.linhaSub}>{new Date(a.dataHora).toLocaleDateString('pt-BR')}</Text>
                   </View>
                 )},
+                { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (a: any) => (
+                  <Botao texto="Cancelar + repor" variante="secundario" onPress={() => abrirCancelarComReposicao(a)} />
+                )},
               ]}
             />
           )}
@@ -357,6 +395,19 @@ export default function PainelEscola() {
         onFechar={() => setProfessorSelecionado(null)}
         aoAtualizar={() => { carregarDados(); setProfessorSelecionado(null); }}
       />
+
+      <Modal visivel={!!aulaParaCancelar} titulo="Cancelar aula e propor reposição" onFechar={() => setAulaParaCancelar(null)}>
+        {aulaParaCancelar && (
+          <>
+            <Text style={{ color: ERP.texto, fontSize: 13.5, marginBottom: 14, lineHeight: 19 }}>
+              {aulaParaCancelar.aluno?.nome} · com {aulaParaCancelar.professor?.nome} — aula de {new Date(aulaParaCancelar.dataHora).toLocaleDateString('pt-BR')} será marcada como cancelada e uma reposição fica proposta pro aluno confirmar.
+            </Text>
+            <Campo label="Nova data (AAAA-MM-DD)" value={dataPropostaCancelar} onChangeText={setDataPropostaCancelar} placeholder="Ex: 2026-10-05" />
+            <Campo label="Motivo" value={motivoCancelar} onChangeText={setMotivoCancelar} placeholder="Ex: feriado, imprevisto do professor" />
+            <Botao texto="Cancelar aula e propor reposição" onPress={confirmarCancelarComReposicao} carregando={enviandoCancelamento} />
+          </>
+        )}
+      </Modal>
     </ErpShell>
   );
 }
