@@ -4605,6 +4605,15 @@ app.post('/api/matriculas/:id/cobranca-automatica/asaas/iniciar', autenticar, as
     const matricula = await carregarMatriculaDoDono(req, res);
     if (!matricula) return;
 
+    // Mesmo gate de S3.2 usado em POST /api/matriculas/:id/faturas e no cron
+    // do Stripe (server.js ~3662, ~789): sem isso, ativar cobrança via Asaas
+    // cria uma Subscription de verdade — diferente do Stripe, aqui não tem
+    // cron no meio pra pegar esse gate depois, a cobrança sai na hora.
+    const contrato = await prisma.contrato.findFirst({ where: { matriculaId: matricula.id } });
+    if (contrato && contrato.status !== 'ASSINADO') {
+      return res.status(400).json({ erro: `Essa matrícula tem um contrato pendente (status: ${contrato.status}). Cobrança só sai depois do contrato assinado.` });
+    }
+
     const billingType = ['PIX', 'BOLETO', 'CREDIT_CARD', 'UNDEFINED'].includes(req.body?.billingType)
       ? req.body.billingType
       : 'UNDEFINED';
@@ -4623,7 +4632,7 @@ app.post('/api/matriculas/:id/cobranca-automatica/asaas/iniciar', autenticar, as
     });
     const cpf = aluno?.responsavel?.cpf?.replace(/\D/g, '');
     if (!cpf) {
-      return res.status(400).json({ erro: 'Cadastre o CPF do responsável financeiro do aluno antes de ativar a cobrança via Asaas (PUT /api/alunos/:id/responsavel).' });
+      return res.status(400).json({ erro: 'Cadastre o CPF do responsável financeiro do aluno antes de ativar a cobrança via Asaas — peça pro professor ou pra secretaria da escola preencherem na ficha do aluno.' });
     }
 
     let customerId = matricula.asaasCustomerId;
