@@ -297,6 +297,15 @@ model Professor {
   escola   Escola       @relation(fields: [escolaId], references: [id])
   papel    PapelUsuario @default(DONO)
 
+  // Soft delete de "remover professor da Equipe" (auditoria INSTITUTION,
+  // 11/09/2026): professorId é obrigatório (sem `?`) em 11 tabelas (Aula,
+  // Matricula, Pagamento, Avaliacao, FolhaPagamentoProfessor etc) — apagar
+  // a linha de verdade quebraria todo o histórico. Desligar só marca
+  // ativoNaEscola=false: some da lista da Equipe, bloqueia login
+  // (POST /api/login), mas Aula/Matricula/Pagamento/Avaliacao continuam
+  // intactos.
+  ativoNaEscola Boolean @default(true)
+
   alunos              Aluno[]
   aulas               Aula[]
   pagamentos          Pagamento[]
@@ -981,6 +990,15 @@ model Matricula {
   diaVencimento    Int         @default(10)
   status           StatusAluno @default(ATIVO)
   dataInicio       DateTime    @default(now())
+
+  // Espelha o campo legado Aluno.tempoContrato, mas por Matricula (auditoria
+  // INSTITUTION, 11/09/2026) — um Aluno pode ter mais de uma Matricula ativa
+  // (Sprint 5, multi-professor), então "duração do contrato" também precisa
+  // ser por matrícula, não mais um dado único do Aluno. Usado por
+  // GET /api/renovacoes/vencendo (fimContrato = dataInicio + tempoContrato
+  // meses) e POST /api/renovacoes/lote. Nullable: matrícula sem prazo
+  // definido simplesmente não entra na fila de renovação.
+  tempoContrato Int?
 
   alunoId String
   aluno   Aluno  @relation(fields: [alunoId], references: [id])

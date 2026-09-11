@@ -183,25 +183,29 @@ export default function FinanceiroEscola() {
     ]);
   };
 
-  const alternarSelecao = (aluno: any) => {
+  // Chave de seleção é a Matricula (id), não o Aluno — desde a Sprint 5 um
+  // Aluno pode ter mais de uma Matricula ativa (multi-professor), então uma
+  // renovação em lote precisa distinguir qual matrícula, não só quem é o
+  // aluno (auditoria INSTITUTION, 11/09/2026).
+  const alternarSelecao = (matricula: any) => {
     setSelecaoRenovacao((atual) => {
       const novo = { ...atual };
-      if (novo[aluno.id] !== undefined) delete novo[aluno.id];
-      else novo[aluno.id] = String(aluno.valorMensalidade || '');
+      if (novo[matricula.id] !== undefined) delete novo[matricula.id];
+      else novo[matricula.id] = String(matricula.valorMensalidade || '');
       return novo;
     });
   };
 
   const confirmarRenovacaoLote = () => {
     const ids = Object.keys(selecaoRenovacao);
-    if (!ids.length) { Alert.alert('Atenção', 'Selecione ao menos um aluno.'); return; }
-    Alert.alert('Renovar matrículas?', `${ids.length} aluno(s) selecionado(s) — o contrato de cada um reinicia a partir de hoje com o valor informado.`,
+    if (!ids.length) { Alert.alert('Atenção', 'Selecione ao menos uma matrícula.'); return; }
+    Alert.alert('Renovar matrículas?', `${ids.length} matrícula(s) selecionada(s) — o contrato de cada uma reinicia a partir de hoje com o valor informado.`,
       [{ text: 'Cancelar', style: 'cancel' }, { text: 'Renovar', onPress: renovarLote }]);
   };
 
   const renovarLote = async () => {
-    const renovacoes = Object.entries(selecaoRenovacao).map(([alunoId, valor]) => ({ alunoId, novoValorMensalidade: parseFloat(valor.replace(',', '.')) }));
-    if (renovacoes.some((r) => !r.novoValorMensalidade || r.novoValorMensalidade <= 0)) { Alert.alert('Atenção', 'Todo aluno selecionado precisa de um valor válido.'); return; }
+    const renovacoes = Object.entries(selecaoRenovacao).map(([matriculaId, valor]) => ({ matriculaId, novoValorMensalidade: parseFloat(valor.replace(',', '.')) }));
+    if (renovacoes.some((r) => !r.novoValorMensalidade || r.novoValorMensalidade <= 0)) { Alert.alert('Atenção', 'Toda matrícula selecionada precisa de um valor válido.'); return; }
     setRenovando(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
@@ -550,7 +554,7 @@ export default function FinanceiroEscola() {
                       <Ionicons name={selecionado ? 'checkbox' : 'square-outline'} size={22} color={selecionado ? ERP.texto : '#999'} />
                     </TouchableOpacity>
                     <View style={{ flex: 1, marginLeft: 12 }}>
-                      <Text style={{ fontSize: 13.5, fontWeight: '600', color: ERP.texto }}>{a.nome}</Text>
+                      <Text style={{ fontSize: 13.5, fontWeight: '600', color: ERP.texto }}>{a.aluno?.nome} · com {a.professor?.nome}</Text>
                       <Text style={{ fontSize: 12, color: ERP.textoSecundario, marginTop: 2 }}>
                         {a.diasRestantes < 0 ? `Venceu há ${Math.abs(a.diasRestantes)} dia(s)` : `Vence em ${a.diasRestantes} dia(s)`}
                       </Text>

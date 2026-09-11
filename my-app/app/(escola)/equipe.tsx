@@ -83,7 +83,7 @@ function GradeDisponibilidade({ slots, onMudar }: { slots: Slot[]; onMudar: (s: 
 }
 
 export default function EquipeEscola() {
-  const { pacote } = useEscolaContexto();
+  const { pacote, professorId: professorLogadoId } = useEscolaContexto();
   const [carregando, setCarregando] = useState(true);
   const [professores, setProfessores] = useState<any[]>([]);
 
@@ -120,6 +120,11 @@ export default function EquipeEscola() {
   const [modalChat, setModalChat] = useState<any | null>(null);
   const [mensagensChat, setMensagensChat] = useState<any[]>([]);
   const [carregandoChat, setCarregandoChat] = useState(false);
+
+  const [modalPapel, setModalPapel] = useState<any | null>(null);
+  const [papelEditando, setPapelEditando] = useState<'PROFESSOR' | 'GESTOR'>('PROFESSOR');
+  const [salvandoPapel, setSalvandoPapel] = useState(false);
+  const [removendoId, setRemovendoId] = useState<string | null>(null);
 
   const carregarDados = useCallback(async () => {
     setCarregando(true);
@@ -307,6 +312,60 @@ export default function EquipeEscola() {
     }
   };
 
+  const abrirModalPapel = (professor: any) => {
+    setModalPapel(professor);
+    setPapelEditando(professor.papel === 'GESTOR' ? 'GESTOR' : 'PROFESSOR');
+  };
+
+  const salvarPapel = async () => {
+    if (!modalPapel) return;
+    setSalvandoPapel(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/professores/${modalPapel.id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ papel: papelEditando }),
+      });
+      const dados = await res.json();
+      if (res.ok) { setModalPapel(null); carregarDados(); }
+      else Alert.alert('Não foi possível salvar', dados.erro || 'Tente novamente.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setSalvandoPapel(false);
+    }
+  };
+
+  const removerProfessor = (professor: any) => {
+    Alert.alert(
+      'Remover da equipe?',
+      `${professor.nome} some da lista, mas o histórico (aulas, matrículas, avaliações) continua intacto. Dá pra reverter depois falando com o suporte.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Remover', style: 'destructive', onPress: async () => {
+            setRemovendoId(professor.id);
+            try {
+              const token = await SecureStore.getItemAsync('kav_token');
+              const res = await fetchComRetry(`${BASE_URL}/api/escola/professores/${professor.id}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              const dados = await res.json();
+              if (res.ok) carregarDados();
+              else Alert.alert('Não foi possível remover', dados.erro || 'Tente novamente.');
+            } catch {
+              Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+            } finally {
+              setRemovendoId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <ErpShell
       titulo="Equipe"
@@ -352,6 +411,12 @@ export default function EquipeEscola() {
                   <Botao texto="Alunos" variante="secundario" icone="people-outline" onPress={() => abrirModalAlunos(p)} />
                   <Botao texto="Grade" variante="secundario" icone="calendar-outline" onPress={() => abrirModalGrade(p)} />
                   <Botao texto="Chat" variante="secundario" icone="chatbubbles-outline" onPress={() => abrirModalChat(p)} />
+                  {p.papel !== 'DONO' && p.id !== professorLogadoId && (
+                    <>
+                      <Botao texto="Papel" variante="secundario" icone="swap-vertical-outline" onPress={() => abrirModalPapel(p)} />
+                      <Botao texto="Remover" variante="perigo" icone="person-remove-outline" onPress={() => removerProfessor(p)} carregando={removendoId === p.id} />
+                    </>
+                  )}
                 </View>
               )},
             ]}
@@ -407,6 +472,20 @@ export default function EquipeEscola() {
             </View>
           ))
         )}
+      </Modal>
+
+      <Modal visivel={!!modalPapel} titulo={`Editar papel · ${modalPapel?.nome || ''}`} onFechar={() => setModalPapel(null)}>
+        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 18 }}>
+          {(['PROFESSOR', 'GESTOR'] as const).map((p) => (
+            <Botao
+              key={p}
+              texto={p === 'PROFESSOR' ? 'Professor' : 'Gestor'}
+              variante={papelEditando === p ? 'primario' : 'secundario'}
+              onPress={() => setPapelEditando(p)}
+            />
+          ))}
+        </View>
+        <Botao texto="Salvar" onPress={salvarPapel} carregando={salvandoPapel} />
       </Modal>
 
       <Modal

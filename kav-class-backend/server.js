@@ -1004,6 +1004,22 @@ app.post('/api/alunos/cadastro', async (req, res) => {
         },
       });
     });
+
+    // Sem professor definido (código da Escola, S6.1) — avisa DONO/GESTOR
+    // que tem gente esperando atribuição, senão só descobrem abrindo a tela
+    // manualmente (auditoria INSTITUTION, 11/09/2026). Tolerante a falha
+    // por item, mesmo padrão já usado no mural/comunicados.
+    if (!professor) {
+      prisma.professor.findMany({
+        where: { escolaId: escolaIdAlvo, papel: { in: ['DONO', 'GESTOR'] }, ativoNaEscola: true },
+        select: { expoPushToken: true },
+      }).then((gestores) => Promise.all(
+        gestores.filter((g) => g.expoPushToken).map((g) => enviarPushNotificacao(
+          g.expoPushToken, 'Novo aluno pendente', `${nome} se cadastrou e está esperando atribuição de professor.`, { tipo: 'NOVO_ALUNO' }
+        ))
+      )).catch((err) => console.error('[Push] Falha ao notificar novo aluno pendente:', err.message));
+    }
+
     res.status(201).json({ mensagem: 'Aluno cadastrado!', aluno: { id: novoAluno.id, nome: novoAluno.nome } });
   } catch (err) {
     console.error(err);
@@ -1043,6 +1059,18 @@ async function checarBloqueioAssinaturaProfessor(professor) {
   return null;
 }
 
+// Professor desligado da Equipe (soft delete, auditoria INSTITUTION,
+// 11/09/2026) não consegue logar — mensagem separada de
+// checarBloqueioAssinaturaProfessor de propósito, pra não confundir com
+// "precisa escolher um plano" (o frontend trata esses dois bloqueios de
+// forma diferente).
+function checarProfessorAtivoNaEscola(professor) {
+  if (professor.ativoNaEscola === false) {
+    return { erro: 'Você foi desligado desta escola. Fale com a administração.' };
+  }
+  return null;
+}
+
 app.post('/api/login', async (req, res) => {
   try {
     const { email, senha } = req.body;
@@ -1056,6 +1084,8 @@ app.post('/api/login', async (req, res) => {
     if (!await bcrypt.compare(senha, usuario.senha)) return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
 
     if (papel === 'professor') {
+      const desligado = checarProfessorAtivoNaEscola(usuario);
+      if (desligado) return res.status(403).json(desligado);
       const bloqueio = await checarBloqueioAssinaturaProfessor(usuario);
       if (bloqueio) return res.status(403).json(bloqueio);
     }
@@ -1110,6 +1140,8 @@ app.post('/api/auth/google/verificar', async (req, res) => {
     }
 
     if (papel === 'professor') {
+      const desligado = checarProfessorAtivoNaEscola(usuario);
+      if (desligado) return res.status(403).json(desligado);
       const bloqueio = await checarBloqueioAssinaturaProfessor(usuario);
       if (bloqueio) return res.status(403).json(bloqueio);
     }
@@ -1926,7 +1958,7 @@ app.get('/api/aluno/dashboard', exigirAluno, async (req, res) => {
 
     const aluno = await prisma.aluno.findUnique({
       where: { id: alunoId },
-      select: { status: true, tempoContrato: true, dataInicioContrato: true },
+      select: { status: true, tempoContrato: true, dataInicioContrato: true, professorId: true },
     });
     if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
 
@@ -1934,6 +1966,18 @@ app.get('/api/aluno/dashboard', exigirAluno, async (req, res) => {
     if (aluno.status === 'INATIVO') return res.json({ inativo: true });
 
     const agora = new Date();
+
+    // avaliacaoMensalPendente (auditoria INSTITUTION, 11/09/2026): mesma
+    // checagem de duplicata que POST /api/aluno/avaliacao-mensal já faz
+    // (server.js ~3856), só que exposta aqui como leitura — antes disso não
+    // existia nenhuma rota que dissesse ao app "tem avaliação pendente".
+    // Sem professor atribuído não tem quem avaliar, então nunca fica pendente.
+    let avaliacaoMensalPendente = false;
+    if (aluno.professorId) {
+      const mesReferencia = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`;
+      const jaAvaliou = await prisma.avaliacao.findFirst({ where: { alunoId, mesReferencia } });
+      avaliacaoMensalPendente = !jaAvaliou;
+    }
 
     const [proximaAula, aulasHistorico, pagamentos] = await Promise.all([
       prisma.aula.findFirst({
@@ -1984,6 +2028,7 @@ app.get('/api/aluno/dashboard', exigirAluno, async (req, res) => {
         tempoContrato: aluno.tempoContrato || null,
         dataInicio: aluno.dataInicioContrato || null,
       },
+      avaliacaoMensalPendente,
     });
   } catch (err) {
     console.error(err);
@@ -4746,7 +4791,7 @@ app.post('/api/matriculas/:id/contrato', exigirProfessor, async (req, res) => {
     const [aluno, escola] = await Promise.all([
       prisma.aluno.findUnique({
         where: { id: matricula.alunoId },
-        select: { nome: true, email: true, responsavel: { select: { nome: true, email: true } } },
+        select: { nome: true, email: true, expoPushToken: true, responsavel: { select: { nome: true, email: true } } },
       }),
       prisma.escola.findUnique({ where: { id: matricula.escolaId }, select: { nome: true } }),
     ]);
@@ -4770,6 +4815,14 @@ app.post('/api/matriculas/:id/contrato', exigirProfessor, async (req, res) => {
     } catch (err) {
       emailEnviado = false;
       console.error('[Contrato] Falha ao enviar e-mail (código segue válido):', err.message);
+    }
+
+    // Push além do e-mail, se o aluno já tiver conta no app (o contrato em
+    // si é assinado por token público, sem exigir login — auditoria
+    // INSTITUTION, 11/09/2026).
+    if (aluno?.expoPushToken) {
+      enviarPushNotificacao(aluno.expoPushToken, 'Contrato pra assinar', `${escola?.nome || 'A escola'} te enviou um contrato de matrícula.`, { tipo: 'CONTRATO_NOVO' })
+        .catch((err) => console.error('[Push] Falha ao notificar contrato novo:', err.message));
     }
 
     res.status(201).json({
@@ -6994,30 +7047,37 @@ app.get('/api/estoque/emprestimos-ativos', exigirProfessor, carregarEscolaDoProf
 });
 
 // GET /api/renovacoes/vencendo?dias=30 — mesma fórmula de "fim de contrato"
-// já usada pelo cron verificarContratosExpirados (dataInicioContrato +
-// tempoContrato meses), reaproveitada aqui pra alimentar a renovação em
-// lote. Inclui quem já venceu (diasRestantes negativo), não só o futuro —
-// é quem mais precisa de ação do GESTOR.
+// de sempre (dataInicio + tempoContrato meses), mas migrada de Aluno pra
+// Matricula (auditoria INSTITUTION, 11/09/2026): a fonte real do financeiro
+// institution (cobrança automática, faturas, contrato digital) já é
+// Matricula desde a Sprint 5, e um Aluno pode ter mais de uma Matricula
+// ativa (multi-professor) — "renovar o Aluno" não fazia mais sentido como
+// conceito único. Inclui quem já venceu (diasRestantes negativo), não só o
+// futuro — é quem mais precisa de ação do GESTOR.
 app.get('/api/renovacoes/vencendo', async (req, res) => {
   try {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
     if (!professor) return;
     const dias = Number.isInteger(parseInt(req.query.dias, 10)) ? parseInt(req.query.dias, 10) : 30;
 
-    const alunos = await prisma.aluno.findMany({
-      where: { escolaId: professor.escolaId, status: 'ATIVO', dataInicioContrato: { not: null }, tempoContrato: { not: null } },
-      select: { id: true, nome: true, valorMensalidade: true, tempoContrato: true, dataInicioContrato: true, expoPushToken: true },
+    const matriculas = await prisma.matricula.findMany({
+      where: { escolaId: professor.escolaId, status: 'ATIVO', tempoContrato: { not: null } },
+      select: {
+        id: true, valorMensalidade: true, tempoContrato: true, dataInicio: true,
+        aluno: { select: { id: true, nome: true, expoPushToken: true } },
+        professor: { select: { id: true, nome: true } },
+      },
     });
 
     const hoje = new Date();
-    const vencendo = alunos
-      .map((a) => {
-        const fimContrato = new Date(a.dataInicioContrato);
-        fimContrato.setMonth(fimContrato.getMonth() + a.tempoContrato);
+    const vencendo = matriculas
+      .map((m) => {
+        const fimContrato = new Date(m.dataInicio);
+        fimContrato.setMonth(fimContrato.getMonth() + m.tempoContrato);
         const diasRestantes = Math.ceil((fimContrato - hoje) / 86400000);
-        return { ...a, fimContrato, diasRestantes };
+        return { ...m, fimContrato, diasRestantes };
       })
-      .filter((a) => a.diasRestantes <= dias)
+      .filter((m) => m.diasRestantes <= dias)
       .sort((a, b) => a.diasRestantes - b.diasRestantes);
 
     res.json(vencendo);
@@ -7028,16 +7088,18 @@ app.get('/api/renovacoes/vencendo', async (req, res) => {
 });
 
 // POST /api/renovacoes/lote — critério de pronto do roadmap: GESTOR renova
-// vários alunos de uma vez, ajustando o valor (já com desconto aplicado,
-// se houver) individualmente antes de confirmar. Renovar = reiniciar a
-// contagem do contrato a partir de hoje. Tolerante a falha por item — um
-// aluno com dado inconsistente não derruba a renovação dos outros (mesmo
-// padrão de resiliência já usado no envio de Comunicados, S5.1).
+// várias matrículas de uma vez, ajustando o valor (já com desconto
+// aplicado, se houver) individualmente antes de confirmar. Renovar =
+// reiniciar a contagem do contrato a partir de hoje. Tolerante a falha por
+// item — uma matrícula com dado inconsistente não derruba a renovação das
+// outras (mesmo padrão de resiliência já usado no envio de Comunicados, S5.1).
 //
-// Fora de escopo, de propósito: isto não gera Pagamento/fatura nova — essa
-// continua sendo a rotina de cobrança já existente no app, baseada em
-// Aluno.diaVencimento/valorMensalidade. Renovação aqui só estende a janela
-// do contrato e atualiza o valor.
+// Migrado de Aluno pra Matricula (auditoria INSTITUTION, 11/09/2026) — ver
+// comentário de GET /api/renovacoes/vencendo acima. Continua fora de
+// escopo, de propósito, gerar Pagamento/fatura nova aqui: isso já é
+// responsabilidade da cobrança automática/manual existente, baseada em
+// Matricula.diaVencimento/valorMensalidade. Renovação aqui só estende a
+// janela do contrato e atualiza o valor.
 app.post('/api/renovacoes/lote', async (req, res) => {
   try {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
@@ -7050,27 +7112,27 @@ app.post('/api/renovacoes/lote', async (req, res) => {
     const resultados = [];
     for (const item of renovacoes) {
       try {
-        const { alunoId, novoValorMensalidade, novoTempoContrato } = item;
+        const { matriculaId, novoValorMensalidade, novoTempoContrato } = item;
         if (typeof novoValorMensalidade !== 'number' || novoValorMensalidade <= 0) {
-          resultados.push({ alunoId, sucesso: false, erro: 'novoValorMensalidade inválido.' });
+          resultados.push({ matriculaId, sucesso: false, erro: 'novoValorMensalidade inválido.' });
           continue;
         }
-        const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, escolaId: professor.escolaId } });
-        if (!aluno) {
-          resultados.push({ alunoId, sucesso: false, erro: 'Aluno não encontrado.' });
+        const matricula = await prisma.matricula.findFirst({ where: { id: matriculaId, escolaId: professor.escolaId } });
+        if (!matricula) {
+          resultados.push({ matriculaId, sucesso: false, erro: 'Matrícula não encontrada.' });
           continue;
         }
-        await prisma.aluno.update({
-          where: { id: alunoId },
+        await prisma.matricula.update({
+          where: { id: matriculaId },
           data: {
             valorMensalidade: novoValorMensalidade,
-            tempoContrato: Number.isInteger(novoTempoContrato) && novoTempoContrato > 0 ? novoTempoContrato : aluno.tempoContrato,
-            dataInicioContrato: new Date(),
+            tempoContrato: Number.isInteger(novoTempoContrato) && novoTempoContrato > 0 ? novoTempoContrato : matricula.tempoContrato,
+            dataInicio: new Date(),
           },
         });
-        resultados.push({ alunoId, sucesso: true });
+        resultados.push({ matriculaId, sucesso: true });
       } catch (err) {
-        resultados.push({ alunoId: item?.alunoId, sucesso: false, erro: 'Erro interno.' });
+        resultados.push({ matriculaId: item?.matriculaId, sucesso: false, erro: 'Erro interno.' });
       }
     }
 
@@ -7728,7 +7790,10 @@ app.get('/api/escola/professores', async (req, res) => {
     if (!professor) return;
 
     const professores = await prisma.professor.findMany({
-      where: { escolaId: professor.escolaId },
+      // ativoNaEscola: true — professor desligado (soft delete) some da
+      // lista da Equipe, mas continua intacto no banco (auditoria
+      // INSTITUTION, 11/09/2026).
+      where: { escolaId: professor.escolaId, ativoNaEscola: true },
       select: { id: true, nome: true, email: true, papel: true, fotoUrl: true, telefone: true, dataNascimento: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -7871,6 +7936,13 @@ app.patch('/api/escola/alunos/:id/atribuir-professor', async (req, res) => {
       select: { id: true, nome: true, professor: { select: { id: true, nome: true } } },
     });
 
+    // Avisa o professor recém-atribuído (auditoria INSTITUTION, 11/09/2026)
+    // — antes disso só descobria abrindo a lista de alunos manualmente.
+    if (professorAlvo.expoPushToken) {
+      enviarPushNotificacao(professorAlvo.expoPushToken, 'Novo aluno atribuído', `${aluno.nome} foi atribuído a você.`, { tipo: 'NOVO_ALUNO' })
+        .catch((err) => console.error('[Push] Falha ao notificar professor atribuído:', err.message));
+    }
+
     res.json({ mensagem: 'Professor atribuído! Ele já pode configurar horário e cobrança deste aluno.', aluno: atualizado });
   } catch (err) {
     console.error(err);
@@ -7939,11 +8011,28 @@ app.post('/api/escola/professores/criar', async (req, res) => {
   }
 });
 
+// Quantos DONO/GESTOR ativos sobram na Escola, sem contar um professor
+// específico (quem está sendo rebaixado/removido) — usado pra impedir que a
+// escola fique sem ninguém com acesso de gestão (auditoria INSTITUTION,
+// 11/09/2026).
+async function contarGestaoAtiva(escolaId, excluindoProfessorId) {
+  return prisma.professor.count({
+    where: { escolaId, ativoNaEscola: true, papel: { in: ['DONO', 'GESTOR'] }, NOT: { id: excluindoProfessorId } },
+  });
+}
+
 // PUT /api/escola/professores/:id — DONO/GESTOR edita o cadastro completo
 // de um professor da própria Escola (INSTITUTION Sprint 1, briefing
 // 08/09/2026). Sem troca de e-mail/senha aqui de propósito — segue o
 // mesmo padrão de PUT /api/professor/perfil (autoatendimento), que já
 // cuida da própria senha do professor.
+//
+// `papel` (auditoria INSTITUTION, 11/09/2026): só alterna PROFESSOR↔GESTOR
+// — nunca promove a DONO por aqui (DONO só nasce na criação da Escola,
+// decisão consciente pra não ter "transferência de titularidade" pela
+// Equipe) nem edita quem já é DONO. Rebaixar o último GESTOR sem sobrar
+// outro DONO/GESTOR ativo é bloqueado — a escola nunca pode ficar sem
+// ninguém com acesso de gestão.
 app.put('/api/escola/professores/:id', async (req, res) => {
   try {
     const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
@@ -7954,7 +8043,7 @@ app.put('/api/escola/professores/:id', async (req, res) => {
 
     const {
       nome, telefone, contatoEmergencia, dataNascimento,
-      dataPagamento, contratoUrl, cursos, fotoUrl,
+      dataPagamento, contratoUrl, cursos, fotoUrl, papel,
     } = req.body;
 
     const data = {};
@@ -7970,6 +8059,22 @@ app.put('/api/escola/professores/:id', async (req, res) => {
     if (cursos !== undefined) data.cursos = Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []);
     if (fotoUrl !== undefined) data.fotoUrl = fotoUrl || null;
 
+    if (papel !== undefined) {
+      if (!['PROFESSOR', 'GESTOR'].includes(papel)) {
+        return res.status(400).json({ erro: 'papel só pode ser PROFESSOR ou GESTOR por aqui.' });
+      }
+      if (alvo.papel === 'DONO') {
+        return res.status(400).json({ erro: 'O papel do DONO não pode ser alterado por aqui.' });
+      }
+      if (alvo.papel === 'GESTOR' && papel === 'PROFESSOR') {
+        const restam = await contarGestaoAtiva(professorLogado.escolaId, alvo.id);
+        if (restam === 0) {
+          return res.status(400).json({ erro: 'Não é possível rebaixar: precisa sobrar pelo menos um DONO/GESTOR ativo na escola.' });
+        }
+      }
+      data.papel = papel;
+    }
+
     const atualizado = await prisma.professor.update({
       where: { id: alvo.id },
       data,
@@ -7984,6 +8089,39 @@ app.put('/api/escola/professores/:id', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao atualizar professor.' });
+  }
+});
+
+// DELETE /api/escola/professores/:id — DONO/GESTOR desliga um professor da
+// Equipe (auditoria INSTITUTION, 11/09/2026). Soft delete só
+// (ativoNaEscola=false): professorId é obrigatório em 11 tabelas (Aula,
+// Matricula, Pagamento, Avaliacao, FolhaPagamentoProfessor etc), apagar a
+// linha de verdade quebraria todo o histórico. Bloqueia auto-remoção e
+// remover o último DONO/GESTOR ativo — mesmas travas do PUT acima.
+app.delete('/api/escola/professores/:id', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    if (req.params.id === professorLogado.id) {
+      return res.status(400).json({ erro: 'Você não pode se remover da equipe.' });
+    }
+
+    const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId, ativoNaEscola: true } });
+    if (!alvo) return res.status(404).json({ erro: 'Professor não encontrado nesta Escola.' });
+
+    if (['DONO', 'GESTOR'].includes(alvo.papel)) {
+      const restam = await contarGestaoAtiva(professorLogado.escolaId, alvo.id);
+      if (restam === 0) {
+        return res.status(400).json({ erro: 'Não é possível remover: precisa sobrar pelo menos um DONO/GESTOR ativo na escola.' });
+      }
+    }
+
+    await prisma.professor.update({ where: { id: alvo.id }, data: { ativoNaEscola: false } });
+    res.json({ mensagem: 'Professor desligado da escola.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao remover professor.' });
   }
 });
 

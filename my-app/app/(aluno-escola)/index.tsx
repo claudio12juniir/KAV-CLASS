@@ -4,6 +4,7 @@
 // branch de pacote). Funções de cálculo copiadas (não importadas) do SELF
 // — mesma decisão de isolamento usada nas fases anteriores.
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useState } from 'react';
@@ -26,6 +27,7 @@ interface DashboardData {
   frequencia?: { presencas: number; faltas: number; total: number };
   pagamento?: { status: string; vencimento?: string | null } | null;
   plano?: { tempoContrato: number | null; dataInicio: string | null };
+  avaliacaoMensalPendente?: boolean;
 }
 
 function getEmojiFrequencia(presencas: number, total: number) {
@@ -112,7 +114,7 @@ export default function PainelAlunoEscola() {
     }
   };
 
-  const { pendente, inativo, proximaAula, frequencia, pagamento, plano } = dados;
+  const { pendente, inativo, proximaAula, frequencia, pagamento, plano, avaliacaoMensalPendente } = dados;
   const progresso = calcProgresso(plano?.tempoContrato ?? null, plano?.dataInicio ?? null);
   const configPag = getConfigPagamento(pagamento?.status ?? null);
   const emojiFreq = getEmojiFrequencia(frequencia?.presencas ?? 0, frequencia?.total ?? 0);
@@ -140,6 +142,20 @@ export default function PainelAlunoEscola() {
         </SectionCard>
       ) : (
         <>
+          {avaliacaoMensalPendente && (
+            <TouchableOpacity onPress={() => router.push('/(aluno-escola)/avaliacao-mensal' as any)}>
+              <SectionCard style={{ backgroundColor: ERP.infoSoft, borderColor: '#BFDBFE' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Ionicons name="star-outline" size={20} color={ERP.info} />
+                  <Text style={{ flex: 1, color: ERP.info, fontSize: 13.5, fontWeight: '700' }}>
+                    Avalie sua experiência deste mês — toque aqui
+                  </Text>
+                  <Ionicons name="chevron-forward" size={18} color={ERP.info} />
+                </View>
+              </SectionCard>
+            </TouchableOpacity>
+          )}
+
           <SectionCard titulo="Próxima aula">
             {!proximaAula ? (
               <EstadoVazio icone="calendar-clear-outline" texto="Nenhuma aula agendada ainda." />

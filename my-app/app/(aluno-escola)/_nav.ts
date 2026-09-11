@@ -6,6 +6,8 @@ export const NAV_ALUNO_ESCOLA: GrupoNav[] = [
     { chave: 'financeiro', rota: '/(aluno-escola)/financeiro', rotulo: 'Financeiro', icone: 'cash-outline' },
     { chave: 'materiais', rota: '/(aluno-escola)/materiais', rotulo: 'Material Didático', icone: 'book-outline' },
     { chave: 'reposicoes', rota: '/(aluno-escola)/reposicoes', rotulo: 'Reposições', icone: 'swap-horizontal-outline' },
+    { chave: 'avaliacao-mensal', rota: '/(aluno-escola)/avaliacao-mensal', rotulo: 'Avaliação Mensal', icone: 'star-outline' },
+    { chave: 'comunicados', rota: '/(aluno-escola)/comunicados', rotulo: 'Comunicados', icone: 'megaphone-outline' },
     { chave: 'chat-turma', rota: '/(aluno-escola)/chat-turma', rotulo: 'Chat da Turma', icone: 'chatbubbles-outline' },
     { chave: 'configuracoes', rota: '/(aluno-escola)/configuracoes', rotulo: 'Configurações', icone: 'settings-outline' },
   ]},
