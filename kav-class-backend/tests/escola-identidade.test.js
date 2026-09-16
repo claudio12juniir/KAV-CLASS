@@ -54,7 +54,7 @@ beforeEach(() => {
 
 describe('POST /api/professores/cadastro — autocadastro público de professor', () => {
   test('sempre cria uma Escola própria nova, ignorando qualquer escolaId enviado no payload', async () => {
-    prismaMock.professor.findUnique.mockResolvedValue(null); // e-mail livre
+    prismaMock.professor.findFirst.mockResolvedValue(null); // e-mail livre
     prismaMock.professor.create.mockResolvedValue({
       id: 'novo-prof-id',
       nome: 'Fulano',
@@ -147,7 +147,7 @@ describe('POST /api/escola/convites/aceitar — professor só entra em Escola ex
       aceitoEm: null,
       expiresAt: new Date(Date.now() + 60_000),
     });
-    prismaMock.professor.findUnique.mockResolvedValue(null);
+    prismaMock.professor.findFirst.mockResolvedValue(null);
     prismaMock.professor.create.mockResolvedValue({ id: 'prof-novo', nome: 'Convidado' });
     prismaMock.conviteProfessor.update.mockResolvedValue({});
 
@@ -191,15 +191,14 @@ describe('POST /api/escola/professores/criar — criação direta exige DONO/GES
   });
 
   test('DONO da Escola cria professor vinculado exatamente à própria escolaId', async () => {
-    prismaMock.professor.findUnique
-      .mockResolvedValueOnce({
-        id: 'dono-1',
-        nome: 'Dona da Escola',
-        papel: 'DONO',
-        escolaId: 'escola-legitima-id',
-        escola: { id: 'escola-legitima-id', nome: 'Escola X', pacote: 'PACOTE_ESCOLA', codigoConvite: null },
-      })
-      .mockResolvedValueOnce(null); // checagem de e-mail já em uso
+    prismaMock.professor.findUnique.mockResolvedValueOnce({
+      id: 'dono-1',
+      nome: 'Dona da Escola',
+      papel: 'DONO',
+      escolaId: 'escola-legitima-id',
+      escola: { id: 'escola-legitima-id', nome: 'Escola X', pacote: 'PACOTE_ESCOLA', codigoConvite: null },
+    });
+    prismaMock.professor.findFirst.mockResolvedValueOnce(null); // checagem de e-mail já em uso
     prismaMock.professor.create.mockResolvedValue({
       id: 'prof-criado', nome: 'Novo Professor', email: 'novo@escola.com', papel: 'PROFESSOR', createdAt: new Date(),
     });

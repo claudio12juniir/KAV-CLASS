@@ -28,6 +28,14 @@ enum StatusAssinaturaProfessor {
   TESTE
 }
 
+// Fase 5 (paywall) — status de AssinaturaPremium, espelha o vocabulário de
+// StatusAssinaturaProfessor de propósito (mesmo domínio: assinatura Stripe).
+enum StatusAssinaturaPremium {
+  PENDENTE
+  ATIVA
+  CANCELADA
+}
+
 enum RecorrenciaAula {
   SEMANAL
   QUINZENAL
@@ -220,6 +228,11 @@ model Escola {
   logoUrl              String?
   email                String?
 
+  // ─── Perfil vitrine (Rede Social Fase 3) ──────────────────────────────
+  bio    String?
+  cidade String?
+  estado String? // UF, ex: "SP"
+
   // valorPorAula é a base do cálculo de pagamento de professor (Sprint 7,
   // "coração do sistema" nas palavras do usuário) — v1 global por Escola,
   // não por professor (ver TipoRemuneracaoProfessor acima).
@@ -258,16 +271,52 @@ model Escola {
   produtos             Produto[]
   movimentacoesEstoque MovimentacaoEstoque[]
 
+  // Feed (Rede Social Fase 4) — postsAutorados: posts feitos EM NOME da
+  // Escola (DONO/GESTOR postando como instituição). posts: todo post
+  // escopado a esta Escola (autoria própria + de todos os professores
+  // dela) — é o que popula o feed de quem tem vínculo aqui.
+  postsAutorados Post[] @relation("PostAutorEscola")
+  posts          Post[] @relation("PostEscopo")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ─── CONTA (fundação de identidade unificada, Rede Social Fase 1) ─────────
+// Camada de login acima de Professor/Aluno: 1 Conta por e-mail, da qual
+// podem pender várias linhas Professor/Aluno (múltiplos vínculos no mesmo
+// login — ver docs/roadmap-escola.md). Nasce só como fonte de verdade do
+// login (Conta.senha); Professor.senha/Aluno.senha continuam preenchidos e
+// sincronizados por enquanto (ver sincronizarConta em server.js), então
+// nenhum comportamento existente muda até a Conta virar o único lugar
+// necessário. contaId é opcional nas duas tabelas de propósito: linhas
+// criadas antes desta sprint só ganham Conta depois do backfill
+// (scripts/backfill-conta.js).
+model Conta {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  senha     String?
+  googleId  String?  @unique
+  nome      String?
+  fotoUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  alunos      Aluno[]
+  professores Professor[]
 }
 
 // ─── 1. PROFESSOR ───────────────────────────────────────────────
 model Professor {
   id                  String    @id @default(uuid())
   nome                String
-  email               String    @unique
-  senha               String
+  // Rede Social Fase 1, Step 2: deixou de ser @unique sozinho — um mesmo
+  // e-mail agora pode ter mais de uma linha Professor (ex.: filiado a uma
+  // Escola + prática SELF própria), desde que em escolas diferentes (ver
+  // @@unique([email, escolaId]) abaixo). Todo lookup por e-mail sozinho no
+  // server.js usa findFirst, nunca findUnique — ver sincronizarConta.
+  email               String
+  senha               String?
   telefone            String?
   dataNascimento      DateTime?
   codigoConvite       String?   @unique
@@ -277,6 +326,23 @@ model Professor {
   chavePix            String?
   linkPagamentoCartao String?
   googleId            String?   @unique
+
+  // ─── Perfil vitrine SELF (Rede Social Fase 3) ─────────────────────────
+  // Só relevante pra busca/descoberta de aula particular — a linha
+  // institucional de um professor filiado a escola não costuma preencher
+  // isso (não aparece em busca sem visivelBuscaSelf=true de qualquer jeito).
+  bio                  String?
+  cidade               String?
+  estado               String? // UF, ex: "SP"
+  videoApresentacaoUrl String?
+
+  // Paywall de conteúdo (Rede Social Fase 5) — preço mensal (BRL) do
+  // conteúdo exclusivo no feed. Null/0 = professor não oferece premium,
+  // POST /api/posts recusa exclusivo:true nesse caso. A cobrança vai pra
+  // conta Stripe Connect da PRÓPRIA Escola do professor (escola.
+  // stripeConnectAccountId) — reaproveita 100% a infra que já existe pra
+  // cobrança automática Aluno→Escola (S3.1), sem conta de pagamento nova.
+  precoAssinaturaPremium Float?
 
   // ─── Cadastro completo de Equipe (INSTITUTION, Sprint 1 do briefing 08/09/2026) ───
   // Nullable de propósito: professor já cadastrado antes desta sprint
@@ -292,6 +358,14 @@ model Professor {
   assinaturaStatus StatusAssinaturaProfessor @default(INATIVO)
   assinaturaFim    DateTime?
   stripeSessionId  String?
+
+  // Fundação de identidade unificada (Rede Social Fase 1) — ver Conta acima.
+  // visivelBuscaSelf fica pronto sem UI ainda: gate de busca de aula
+  // particular (Fase 2) pra professor que ativou o SELF pago, distinto do
+  // acesso institucional gratuito (assinaturaStatus=ATIVO de escola paga).
+  contaId          String?
+  conta            Conta?   @relation(fields: [contaId], references: [id])
+  visivelBuscaSelf Boolean  @default(false)
 
   escolaId String
   escola   Escola       @relation(fields: [escolaId], references: [id])
@@ -326,11 +400,22 @@ model Professor {
   folhasPagamento     FolhaPagamentoProfessor[]
   cronogramas         CronogramaConteudo[]
 
+  // Feed (Rede Social Fase 4)
+  posts       Post[]           @relation("PostAutorProfessor")
+  curtidas    PostCurtida[]
+  comentarios PostComentario[]
+
+  // Paywall (Rede Social Fase 5) — alunos assinantes do conteúdo premium
+  // DESTE professor.
+  assinantesPremium AssinaturaPremium[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([email, escolaId])
   @@index([stripeCustomerId])
   @@index([escolaId])
+  @@index([contaId])
 }
 
 // ─── DISPONIBILIDADE DO PROFESSOR (INSTITUTION, Sprint 1 do briefing 08/09/2026) ───
@@ -362,8 +447,12 @@ model DisponibilidadeProfessor {
 model Aluno {
   id             String    @id @default(uuid())
   nome           String
-  email          String    @unique
-  senha          String
+  // Rede Social Fase 1, Step 2: deixou de ser @unique sozinho — o mesmo
+  // e-mail pode ser aluno em mais de uma Escola/professor, desde que em
+  // escolaId diferentes (ver @@unique([email, escolaId]) abaixo). Todo
+  // lookup por e-mail sozinho no server.js usa findFirst, nunca findUnique.
+  email          String
+  senha          String?
   telefone       String?
   dataNascimento DateTime?
   curso          String?
@@ -415,6 +504,10 @@ model Aluno {
   responsavel        ResponsavelFinanceiro? @relation(fields: [responsavelId], references: [id])
   vinculoResponsavel VinculoResponsavel?
 
+  // Fundação de identidade unificada (Rede Social Fase 1) — ver Conta acima.
+  contaId String?
+  conta   Conta?  @relation(fields: [contaId], references: [id])
+
   aulas                Aula[]
   pagamentos           Pagamento[]
   reposicoes           Reposicao[]
@@ -428,10 +521,20 @@ model Aluno {
   relatorios           RelatorioAluno[]
   envioComunicados     EnvioComunicado[]
 
+  // Feed (Rede Social Fase 4) — aluno só curte/comenta, não posta.
+  curtidas    PostCurtida[]
+  comentarios PostComentario[]
+
+  // Paywall (Rede Social Fase 5) — assinaturas premium que ESTE aluno fez a
+  // professores (pode assinar mais de um).
+  assinaturasPremium AssinaturaPremium[]
+
   @@index([professorId, status])
+  @@unique([email, escolaId])
   @@index([status])
   @@index([escolaId])
   @@index([responsavelId])
+  @@index([contaId])
 }
 
 // ─── 2b. RESPONSÁVEL FINANCEIRO ──────────────────────────────────
@@ -1701,4 +1804,116 @@ model MovimentacaoEstoque {
   @@index([produtoId])
   @@index([escolaId])
   @@index([alunoId])
+}
+
+// ─── FEED / REDE SOCIAL (Fase 4) ───────────────────────────────────────────
+// Comunidade fechada por Escola: o feed de um aluno/professor só mostra
+// posts com o MESMO escolaId do vínculo ativo (nunca um feed global tipo
+// Twitter) — é a "comunidade de turma"/"timeline do professor" descrita no
+// roadmap, não uma rede aberta. Quem posta é sempre Professor ou Escola
+// (DONO/GESTOR postando como a instituição), nunca Aluno diretamente nesta
+// fase — aluno só curte/comenta. autorProfessorId/autorEscolaId são
+// mutuamente exclusivos (validado em server.js, não há CHECK constraint —
+// mesmo estilo do resto do schema).
+model Post {
+  id       String  @id @default(uuid())
+  conteudo String
+  midiaUrl String?
+
+  autorProfessorId String?
+  autorProfessor   Professor? @relation("PostAutorProfessor", fields: [autorProfessorId], references: [id])
+
+  autorEscolaId String?
+  autorEscola   Escola? @relation("PostAutorEscola", fields: [autorEscolaId], references: [id])
+
+  // Escopo do feed — denormalizado do autor (professor.escolaId ou o
+  // próprio autorEscolaId), mesmo padrão de Aluno.escolaId, pra filtrar o
+  // feed sem join. Fonte de verdade continua sendo o autor.
+  escolaId String
+  escola   Escola @relation("PostEscopo", fields: [escolaId], references: [id])
+
+  // Paywall (Rede Social Fase 5) — só Professor autora post exclusivo (ver
+  // Professor.precoAssinaturaPremium); Escola nunca tem post exclusivo
+  // nesta fase. GET /api/feed redige conteudo/midiaUrl pra quem não tem
+  // AssinaturaPremium ATIVA com autorProfessorId (e não é o próprio autor).
+  exclusivo Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  curtidas    PostCurtida[]
+  comentarios PostComentario[]
+
+  @@index([escolaId, createdAt])
+  @@index([autorProfessorId])
+}
+
+model PostCurtida {
+  id     String @id @default(uuid())
+  postId String
+  post   Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  autorProfessorId String?
+  autorProfessor   Professor? @relation(fields: [autorProfessorId], references: [id])
+
+  autorAlunoId String?
+  autorAluno   Aluno? @relation(fields: [autorAlunoId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  // NULL não colide em unique do Postgres — cada linha só preenche um dos
+  // dois, então as duas constraints juntas garantem "no máximo 1 curtida
+  // por pessoa por post" sem precisar de CHECK.
+  @@unique([postId, autorProfessorId])
+  @@unique([postId, autorAlunoId])
+  @@index([postId])
+}
+
+model PostComentario {
+  id       String @id @default(uuid())
+  conteudo String
+
+  postId String
+  post   Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  autorProfessorId String?
+  autorProfessor   Professor? @relation(fields: [autorProfessorId], references: [id])
+
+  autorAlunoId String?
+  autorAluno   Aluno? @relation(fields: [autorAlunoId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([postId])
+}
+
+// ─── PAYWALL / CONTEÚDO PREMIUM (Rede Social Fase 5) ──────────────────────
+// Assinatura recorrente real do Stripe (stripe.subscriptions, não o padrão
+// cron+PaymentIntent avulso usado em Matricula/cobrança automática de
+// mensalidade) — Aluno assina o conteúdo premium de UM Professor. O dinheiro
+// vai direto pra conta Stripe Connect da Escola do professor (destination
+// charge via subscription_data.transfer_data, sem taxa extra da plataforma
+// — mesmo espírito da cobrança automática Aluno→Escola já existente), sem
+// precisar de nenhuma conta de pagamento nova: todo professor já é dono de
+// uma Escola (stub pessoal, se SELF autônomo).
+model AssinaturaPremium {
+  id String @id @default(uuid())
+
+  alunoId String
+  aluno   Aluno @relation(fields: [alunoId], references: [id])
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+
+  status StatusAssinaturaPremium @default(PENDENTE)
+
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([alunoId, professorId])
+  @@index([professorId])
+  @@index([stripeSubscriptionId])
 }

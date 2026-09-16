@@ -132,13 +132,24 @@ export default function LoginScreen() {
       if (resposta.ok) {
         await SecureStore.setItemAsync('kav_token', dados.token);
         await SecureStore.setItemAsync('kav_papel', dados.usuario.papel);
+        // vinculos: campo novo (fundação de identidade unificada) — ausente em
+        // respostas do backend antigo, por isso o fallback pra '[]'. Guardado
+        // pra alimentar o seletor de "Trocar de conta" nos drawers quando a
+        // Conta tiver mais de 1 vínculo (ver _contaContexto.tsx).
+        await SecureStore.setItemAsync('kav_vinculos', JSON.stringify(dados.vinculos || []));
 
         if (dados.usuario.papel === 'professor') {
           await SecureStore.setItemAsync('kav_professor_id', String(dados.usuario.id));
           router.replace('/(professor)');
-        } else {
+        } else if (dados.usuario.papel === 'aluno') {
           await SecureStore.setItemAsync('kav_aluno_id', String(dados.usuario.id));
           router.replace('/(aluno)');
+        } else {
+          // papel 'conta': login neutro, sem vínculo nenhum ainda — a busca/
+          // descoberta que dá sentido a esse estado é a Fase 2 (ainda não
+          // tem tela). Não deveria acontecer hoje (nenhuma tela cria Conta
+          // neutra), mas não custa não deixar cair silenciosamente em (aluno).
+          Alert.alert('Conta sem vínculo', 'Sua conta ainda não está associada a nenhuma escola ou professor.');
         }
       } else if (resposta.status === 403 && dados.assinaturaStatus) {
         Alert.alert(

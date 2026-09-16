@@ -9,6 +9,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import SyncLoader from '../../components/SyncLoader';
 import { usePushToken } from '../../hooks/usePushToken';
 import { BASE_URL, fetchComRetry } from '../api';
+import { useConta } from '../_contaContexto';
 
 function doisPrimeirosNomes(nomeCompleto: string): string {
   const partes = nomeCompleto.trim().split(/\s+/);
@@ -19,6 +20,7 @@ function CustomDrawerContent(props: any) {
   const router = useRouter();
   const [nome, setNome] = useState('');
   const [fotoUrl, setFotoUrl] = useState<string | null>(null);
+  const { vinculos, trocarVinculo } = useConta();
 
   useEffect(() => {
     SecureStore.getItemAsync('kav_cache_prof_nome').then(n => { if (n) setNome(n); });
@@ -57,6 +59,24 @@ function CustomDrawerContent(props: any) {
         ) : null}
       </View>
       <DrawerItemList {...props} />
+
+      {/* Só aparece quando a Conta tem mais de 1 vínculo (fundação de
+          identidade unificada) — hoje isso nunca acontece em produção. */}
+      {vinculos.length > 1 && (
+        <View style={styles.trocarContaBox}>
+          <Text style={styles.trocarContaTitulo}>Trocar de conta</Text>
+          {vinculos.map((v) => (
+            <TouchableOpacity
+              key={`${v.papel}-${v.id}`}
+              style={styles.trocarContaItem}
+              onPress={() => { props.navigation.closeDrawer(); trocarVinculo(v); }}
+            >
+              <Ionicons name="swap-horizontal-outline" size={16} color="#555" />
+              <Text style={styles.trocarContaTexto} numberOfLines={1}>{v.nome}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
     </DrawerContentScrollView>
   );
 }
@@ -140,6 +160,8 @@ function ProfessorDrawer() {
         }}
       >
         <Drawer.Screen name="index"       options={{ drawerLabel: 'Início',         drawerIcon: ({ color }) => <Ionicons name="home-outline"       size={22} color={color} /> }} />
+        <Drawer.Screen name="feed"        options={{ drawerLabel: 'Feed',           drawerIcon: ({ color }) => <Ionicons name="newspaper-outline"  size={22} color={color} /> }} />
+        <Drawer.Screen name="busca"       options={{ drawerLabel: 'Explorar',       drawerIcon: ({ color }) => <Ionicons name="search-outline"     size={22} color={color} /> }} />
         <Drawer.Screen name="alunos"      options={{ drawerLabel: 'Meus Alunos',    drawerIcon: ({ color }) => <Ionicons name="people-outline"     size={22} color={color} /> }} />
         <Drawer.Screen name="calendario"  options={{ drawerLabel: 'Agenda',         drawerIcon: ({ color }) => <Ionicons name="calendar-outline"   size={22} color={color} /> }} />
         <Drawer.Screen name="agendamento" options={{ drawerLabel: 'Agendamentos',   drawerIcon: ({ color }) => <Ionicons name="add-circle-outline" size={22} color={color} /> }} />
@@ -173,4 +195,8 @@ const styles = StyleSheet.create({
   perfilLetra: { color: '#fff', fontSize: 14, fontWeight: '700' },
   perfilNome:  { color: '#000', fontSize: 13, fontWeight: '600' },
   perfilLabel: { color: '#AAAAAA', fontSize: 10, marginTop: 1 },
+  trocarContaBox: { marginTop: 10, paddingHorizontal: 20, paddingTop: 14, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
+  trocarContaTitulo: { fontSize: 11, color: '#AAAAAA', fontWeight: '700', marginBottom: 8, letterSpacing: 0.5 },
+  trocarContaItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  trocarContaTexto: { color: '#333', fontSize: 13, flexShrink: 1 },
 });

@@ -148,7 +148,11 @@ function _decodificarToken(req, res) {
 function autenticar(req, res, next) {
   const payload = _decodificarToken(req, res);
   if (!payload) return;
-  req.auth = { id: payload.id, papel: payload.papel }; // papel: 'professor' | 'aluno' (tipo de conta — não confundir com o papel DONO/GESTOR/PROFESSOR da Escola)
+  // papel: 'professor' | 'aluno' | 'conta' (tipo de conta — não confundir com o
+  // papel DONO/GESTOR/PROFESSOR da Escola). contaId: claim nova (fundação de
+  // identidade unificada), ausente em tokens emitidos antes desta sprint —
+  // sempre tratar como opcional.
+  req.auth = { id: payload.id, papel: payload.papel, contaId: payload.contaId || null };
   next();
 }
 
@@ -218,6 +222,19 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
             console.error('[Webhook] Erro ao confirmar cartão de cobrança automática:', err.message);
           }
         }
+      } else if (session.metadata?.assinaturaPremiumId) {
+        // Fase 5 (paywall): assinatura de conteúdo premium Aluno→Professor.
+        // mode:'subscription' — diferente do "else" abaixo (também
+        // subscription, mas da assinatura Escola→Kav Class), por isso
+        // precisa vir ANTES e checar metadata explicitamente.
+        await prisma.assinaturaPremium.updateMany({
+          where: { id: session.metadata.assinaturaPremiumId },
+          data: {
+            status: 'ATIVA',
+            stripeSubscriptionId: session.subscription ? String(session.subscription) : null,
+            stripeCustomerId: session.customer ? String(session.customer) : null,
+          },
+        });
       } else {
         // Assinatura Escola → Kav Class (fluxo já existente, sem mudança)
         const professorId = session.client_reference_id;
@@ -245,11 +262,23 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
             : null,
         },
       });
+      // Fase 5 (paywall): mesma lógica, tabela diferente — só afeta linhas
+      // se sub.id bater com uma AssinaturaPremium (nunca colide com a
+      // assinatura Escola→Kav Class acima, que não guarda subscriptionId
+      // nenhum nessa tabela).
+      await prisma.assinaturaPremium.updateMany({
+        where: { stripeSubscriptionId: sub.id },
+        data: { status: (sub.status === 'active' || sub.status === 'trialing') ? 'ATIVA' : 'CANCELADA' },
+      });
     } else if (event.type === 'customer.subscription.deleted') {
       const sub = event.data.object;
       await prisma.professor.updateMany({
         where: { stripeCustomerId: sub.customer },
         data: { assinaturaStatus: 'CANCELADO' },
+      });
+      await prisma.assinaturaPremium.updateMany({
+        where: { stripeSubscriptionId: sub.id },
+        data: { status: 'CANCELADA' },
       });
     } else if (event.type === 'account.updated') {
       // S3.1: Stripe Connect Express da Escola — sincroniza o status de
@@ -823,17 +852,23 @@ app.post('/api/professores/cadastro', async (req, res) => {
     if (!nome || !email || !senha) return res.status(400).json({ erro: 'nome, email e senha são obrigatórios.' });
 
     const emailNorm = email.toLowerCase().trim();
-    if (await prisma.professor.findUnique({ where: { email: emailNorm } }))
+    if (await prisma.professor.findFirst({ where: { email: emailNorm } }))
       return res.status(400).json({ erro: 'E-mail já em uso.' });
 
     const salt = await bcrypt.genSalt(10);
+    const senhaHash = await bcrypt.hash(senha, salt);
+    const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome, fotoUrl: fotoUrl || null });
     const novoProfessor = await prisma.professor.create({
       data: {
         nome,
         email: emailNorm,
         telefone: telefone || null,
         dataNascimento: parseDataNascimento(dataNascimento),
-        senha: await bcrypt.hash(senha, salt),
+        senha: senhaHash,
+        // escola:{create} abaixo obriga o create inteiro pro modo "Checked" do
+        // Prisma, que não aceita contaId escalar junto de outra relação
+        // aninhada — precisa ser conta:{connect}.
+        conta: contaId ? { connect: { id: contaId } } : undefined,
         cursos: Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []),
         codigoConvite: gerarCodigoConvite(),
         fotoUrl: fotoUrl || null,
@@ -845,7 +880,7 @@ app.post('/api/professores/cadastro', async (req, res) => {
       },
     });
 
-    const token = jwt.sign({ id: novoProfessor.id, papel: 'professor' }, SEGREDO_JWT, { expiresIn: '7d' });
+    const token = jwt.sign({ id: novoProfessor.id, papel: 'professor', contaId: contaId || undefined }, SEGREDO_JWT, { expiresIn: '7d' });
     res.status(201).json({
       mensagem: 'Professor criado! Teste grátis de 15 dias ativado.',
       token,
@@ -873,16 +908,21 @@ app.post('/api/escola/cadastro', async (req, res) => {
     }
 
     const emailNorm = email.toLowerCase().trim();
-    if (await prisma.professor.findUnique({ where: { email: emailNorm } }))
+    if (await prisma.professor.findFirst({ where: { email: emailNorm } }))
       return res.status(400).json({ erro: 'E-mail já em uso.' });
 
     const salt = await bcrypt.genSalt(10);
+    const senhaHash = await bcrypt.hash(senha, salt);
+    const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome: nome.trim(), fotoUrl: fotoUrl || null });
     const novoDono = await prisma.professor.create({
       data: {
         nome: nome.trim(),
         email: emailNorm,
         telefone: telefone || null,
-        senha: await bcrypt.hash(senha, salt),
+        senha: senhaHash,
+        // conta:{connect}, não contaId escalar — escola:{create} abaixo já
+        // força o modo "Checked" (ver comentário em /api/professores/cadastro).
+        conta: contaId ? { connect: { id: contaId } } : undefined,
         codigoConvite: gerarCodigoConvite(),
         fotoUrl: fotoUrl || null,
         assinaturaStatus: 'TESTE',
@@ -899,7 +939,7 @@ app.post('/api/escola/cadastro', async (req, res) => {
       include: { escola: { select: { codigoConvite: true, nome: true } } },
     });
 
-    const token = jwt.sign({ id: novoDono.id, papel: 'professor' }, SEGREDO_JWT, { expiresIn: '7d' });
+    const token = jwt.sign({ id: novoDono.id, papel: 'professor', contaId: contaId || undefined }, SEGREDO_JWT, { expiresIn: '7d' });
     res.status(201).json({
       mensagem: 'Escola criada! Teste grátis de 15 dias ativado.',
       token,
@@ -938,8 +978,7 @@ app.post('/api/alunos/cadastro', async (req, res) => {
     const { nome, email, senha, telefone, dataNascimento, codigoConvite, fotoUrl, responsavel } = req.body;
     if (!nome || !email || !senha || !codigoConvite) return res.status(400).json({ erro: 'nome, email, senha e codigoConvite são obrigatórios.' });
 
-    if (await prisma.aluno.findUnique({ where: { email: email.toLowerCase().trim() } }))
-      return res.status(400).json({ erro: 'E-mail já em uso.' });
+    const emailNorm = email.toLowerCase().trim();
 
     // O código pode ser de um Professor específico (fluxo de sempre — o
     // aluno já sabe quem vai dar aula) ou de uma Escola (S6.1 — o aluno só
@@ -952,6 +991,31 @@ app.post('/api/alunos/cadastro', async (req, res) => {
 
     const escolaIdAlvo = professor ? professor.escolaId : escolaPorCodigo.id;
 
+    if (await prisma.aluno.findFirst({ where: { email: emailNorm, escolaId: escolaIdAlvo } })) {
+      return res.status(400).json({ erro: 'E-mail já em uso nesta Escola.' });
+    }
+
+    // Rede Social Fase 1, Step 2: e-mail já é aluno em OUTRA escola/professor
+    // — com MULTI_VINCULO_HABILITADO, anexa esta nova matrícula à mesma
+    // Conta, mas só depois de confirmar que quem está cadastrando conhece a
+    // senha de verdade daquela Conta (senão qualquer um matricularia um
+    // estranho sem ele saber, só sabendo o e-mail).
+    let senhaHash;
+    let contaId;
+    const existenteOutraEscola = await prisma.aluno.findFirst({ where: { email: emailNorm } });
+    if (existenteOutraEscola) {
+      if (!MULTI_VINCULO_HABILITADO) return res.status(400).json({ erro: 'E-mail já em uso.' });
+      const conta = await prisma.conta.findUnique({ where: { email: emailNorm } });
+      if (!conta?.senha || !await bcrypt.compare(senha, conta.senha)) {
+        return res.status(400).json({ erro: 'Este e-mail já tem uma conta KAV Class. Informe a senha da conta existente para matricular em mais uma escola.' });
+      }
+      contaId = conta.id;
+      senhaHash = conta.senha;
+    } else {
+      senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
+      contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome, fotoUrl: fotoUrl || null });
+    }
+
     // A idade decide o vínculo do responsável financeiro (Emusys: "nome do
     // aluno e do responsável, se menor de idade"). Sem dataNascimento válida,
     // não dá pra saber a idade — nesse caso o aluno fica sem responsável
@@ -962,8 +1026,6 @@ app.post('/api/alunos/cadastro', async (req, res) => {
     if (menorDeIdade && !responsavel?.nome?.trim()) {
       return res.status(400).json({ erro: 'Aluno menor de idade: informe o nome do responsável financeiro.' });
     }
-
-    const senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
 
     const novoAluno = await prisma.$transaction(async (tx) => {
       let responsavelId = null;
@@ -977,7 +1039,7 @@ app.post('/api/alunos/cadastro', async (req, res) => {
               email: responsavel.email?.toLowerCase().trim() || null,
               telefone: responsavel.telefone?.trim() || null,
             }
-          : { nome, cpf: null, email: email.toLowerCase().trim(), telefone: telefone || null };
+          : { nome, cpf: null, email: emailNorm, telefone: telefone || null };
 
         const respCriado = await tx.responsavelFinanceiro.create({
           data: { ...dadosResponsavel, escolaId: escolaIdAlvo },
@@ -991,8 +1053,9 @@ app.post('/api/alunos/cadastro', async (req, res) => {
           nome,
           telefone: telefone || null,
           dataNascimento: dataNascParsed,
-          email: email.toLowerCase().trim(),
+          email: emailNorm,
           senha: senhaHash,
+          contaId,
           // Sem professor definido quando o código é da Escola (S6.1) — fica
           // pendente de atribuição por um DONO/GESTOR, não de um professor.
           professorId: professor ? professor.id : null,
@@ -1071,15 +1134,120 @@ function checarProfessorAtivoNaEscola(professor) {
   return null;
 }
 
+// ============================================================================
+// CONTA — fundação de identidade unificada (Rede Social Fase 1, Step 1).
+// USAR_CONTA_NO_LOGIN controla se /api/login e /api/auth/google/* já
+// resolvem por Conta (com fallback pra rota antiga em segundos, bastando
+// desligar a env var, sem novo deploy, se o backfill tiver algum problema
+// não previsto). Independente da env var, toda escrita de senha já
+// mantém Conta.senha sincronizada a partir de agora — assim, quando a flag
+// virar padrão, não existe um período onde Conta está desatualizada.
+// ============================================================================
+const USAR_CONTA_NO_LOGIN = process.env.USAR_CONTA_NO_LOGIN === 'true';
+
+// Step 2 (multi-vínculo de verdade): só ligar depois da migration que troca
+// o @unique(email) global por @@unique([email, escolaId]) já ter rodado em
+// produção (ver prisma/migrations/20260915130000.../20260915130001...).
+// Controla exclusivamente a CRIAÇÃO de um segundo vínculo (self/ativar,
+// cadastro de aluno anexando a Conta existente) — não afeta leitura/login,
+// que já usa findFirst/updateMany desde a Step 1 independente desta flag.
+const MULTI_VINCULO_HABILITADO = process.env.MULTI_VINCULO_HABILITADO === 'true';
+
+// Mantém Conta.senha (e opcionalmente nome/fotoUrl/googleId) em sincronia
+// com o que é gravado em Professor/Aluno. Cria a Conta se ainda não existir
+// (upsert por e-mail) e devolve o id, pra já linkar contaId na linha sendo
+// criada/atualizada. Chamada em todo ponto do arquivo que grava senha ou
+// cria uma conta nova — nunca falha o fluxo principal se a própria escrita
+// em Conta der erro (best-effort: o backfill cobre o que ficar pra trás).
+async function sincronizarConta(email, { senha, nome, fotoUrl, googleId } = {}) {
+  const emailNorm = email.toLowerCase().trim();
+  const dados = {};
+  if (senha !== undefined) dados.senha = senha;
+  if (nome !== undefined) dados.nome = nome;
+  if (fotoUrl !== undefined) dados.fotoUrl = fotoUrl;
+  if (googleId !== undefined) dados.googleId = googleId;
+  try {
+    const conta = await prisma.conta.upsert({
+      where: { email: emailNorm },
+      create: { email: emailNorm, ...dados },
+      update: dados,
+    });
+    return conta.id;
+  } catch (err) {
+    console.error('[Conta] Falha ao sincronizar Conta pro e-mail', emailNorm, '-', err.message);
+    return null;
+  }
+}
+
+// Login pela Conta unificada (USAR_CONTA_NO_LOGIN=true). Resolve todos os
+// vínculos (Professor[]/Aluno[]) da Conta pelo e-mail, escolhe um "padrão"
+// com a MESMA prioridade e os MESMOS bloqueios de sempre (professor antes
+// de aluno; desligado/sem assinatura ativa barra o login) — mas só barra de
+// verdade se não houver nenhum outro vínculo utilizável, já que hoje (Step
+// 1) toda Conta tem no máximo 1 vínculo (email ainda é @unique global em
+// Professor/Aluno), então o comportamento observado é idêntico ao de antes.
+async function loginPorConta(req, res) {
+  const { email, senha } = req.body;
+  if (!email || !senha) return res.status(400).json({ erro: 'email e senha são obrigatórios.' });
+
+  const emailNorm = email.toLowerCase().trim();
+  const conta = await prisma.conta.findUnique({
+    where: { email: emailNorm },
+    include: { professores: true, alunos: true },
+  });
+  if (!conta || !conta.senha || !await bcrypt.compare(senha, conta.senha)) {
+    return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
+  }
+
+  const candidatos = [
+    ...conta.professores.map((p) => ({ ...p, papel: 'professor' })),
+    ...conta.alunos.map((a) => ({ ...a, papel: 'aluno' })),
+  ];
+
+  if (candidatos.length === 0) {
+    const token = jwt.sign({ id: conta.id, papel: 'conta', contaId: conta.id }, SEGREDO_JWT, { expiresIn: '7d' });
+    return res.json({ mensagem: 'Login realizado!', token, usuario: { id: conta.id, nome: conta.nome || '', papel: 'conta' }, vinculos: [] });
+  }
+
+  const bloqueioDe = async (c) => {
+    if (c.papel !== 'professor') return null;
+    return checarProfessorAtivoNaEscola(c) || await checarBloqueioAssinaturaProfessor(c);
+  };
+
+  let padrao = candidatos[0];
+  let bloqueioPadrao = await bloqueioDe(padrao);
+  for (let i = 1; i < candidatos.length && bloqueioPadrao; i++) {
+    const b = await bloqueioDe(candidatos[i]);
+    if (!b) { padrao = candidatos[i]; bloqueioPadrao = null; }
+  }
+  if (bloqueioPadrao) return res.status(403).json(bloqueioPadrao);
+
+  const token = jwt.sign({ id: padrao.id, papel: padrao.papel, contaId: conta.id }, SEGREDO_JWT, { expiresIn: '7d' });
+  res.json({
+    mensagem: 'Login realizado!',
+    token,
+    usuario: { id: padrao.id, nome: padrao.nome, papel: padrao.papel },
+    vinculos: candidatos.map((c) => ({ id: c.id, papel: c.papel, nome: c.nome, escolaId: c.escolaId })),
+  });
+}
+
 app.post('/api/login', async (req, res) => {
   try {
+    if (USAR_CONTA_NO_LOGIN) return await loginPorConta(req, res);
+
     const { email, senha } = req.body;
     if (!email || !senha) return res.status(400).json({ erro: 'email e senha são obrigatórios.' });
 
     const emailNorm = email.toLowerCase().trim();
-    let usuario = await prisma.professor.findUnique({ where: { email: emailNorm } });
+    // findFirst, não findUnique: email deixou de ser único sozinho (Rede
+    // Social Fase 1, Step 2) — pode haver mais de uma linha por e-mail
+    // (ex.: professor institucional + SELF). Este login legado (sem
+    // USAR_CONTA_NO_LOGIN) sempre pega a primeira encontrada, igual ao
+    // comportamento de sempre pra quem só tem 1 vínculo; quem tem mais de 1
+    // deve estar usando o login por Conta.
+    let usuario = await prisma.professor.findFirst({ where: { email: emailNorm }, orderBy: { createdAt: 'asc' } });
     let papel = 'professor';
-    if (!usuario) { usuario = await prisma.aluno.findUnique({ where: { email: emailNorm } }); papel = 'aluno'; }
+    if (!usuario) { usuario = await prisma.aluno.findFirst({ where: { email: emailNorm }, orderBy: { createdAt: 'asc' } }); papel = 'aluno'; }
     if (!usuario) return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
     if (!await bcrypt.compare(senha, usuario.senha)) return res.status(401).json({ erro: 'E-mail ou senha incorretos.' });
 
@@ -1090,11 +1258,451 @@ app.post('/api/login', async (req, res) => {
       if (bloqueio) return res.status(403).json(bloqueio);
     }
 
-    const token = jwt.sign({ id: usuario.id, papel }, SEGREDO_JWT, { expiresIn: '7d' });
+    const token = jwt.sign({ id: usuario.id, papel, contaId: usuario.contaId || undefined }, SEGREDO_JWT, { expiresIn: '7d' });
     res.json({ mensagem: 'Login realizado!', token, usuario: { id: usuario.id, nome: usuario.nome, papel } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// Troca de vínculo dentro da mesma Conta já autenticada — token novo pra
+// outra linha Professor/Aluno, sem pedir senha de novo. Nenhuma rota de
+// negócio existente muda: trocar de vínculo é só isso, "pedir outro token".
+app.post('/api/contas/trocar-vinculo', autenticar, async (req, res) => {
+  try {
+    if (!req.auth.contaId) return res.status(400).json({ erro: 'Conta não migrada para o novo login.' });
+    const { vinculoId, papel } = req.body;
+    if (!vinculoId || (papel !== 'professor' && papel !== 'aluno')) {
+      return res.status(400).json({ erro: 'vinculoId e papel (professor|aluno) são obrigatórios.' });
+    }
+
+    const modelo = papel === 'professor' ? prisma.professor : prisma.aluno;
+    const alvo = await modelo.findFirst({ where: { id: vinculoId, contaId: req.auth.contaId } });
+    if (!alvo) return res.status(403).json({ erro: 'Vínculo não pertence a esta conta.' });
+
+    if (papel === 'professor') {
+      const desligado = checarProfessorAtivoNaEscola(alvo);
+      if (desligado) return res.status(403).json(desligado);
+      const bloqueio = await checarBloqueioAssinaturaProfessor(alvo);
+      if (bloqueio) return res.status(403).json(bloqueio);
+    }
+
+    const token = jwt.sign({ id: alvo.id, papel, contaId: req.auth.contaId }, SEGREDO_JWT, { expiresIn: '7d' });
+    res.json({ token, usuario: { id: alvo.id, nome: alvo.nome, papel } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// Cadastro de Conta "neutra" — sem vínculo nenhum ainda. Dark launch: sem
+// tela conectada até a busca/descoberta (Fase 2) existir. papel:'conta' no
+// token não bate com 'professor'/'aluno', então exigirProfessor/exigirAluno
+// já rejeitam automaticamente, sem precisar tocar nessas funções.
+app.post('/api/contas/cadastro', async (req, res) => {
+  try {
+    const { nome, email, senha } = req.body;
+    if (!email || !senha) return res.status(400).json({ erro: 'email e senha são obrigatórios.' });
+    if (senha.length < 6) return res.status(400).json({ erro: 'senha: mínimo 6 caracteres.' });
+
+    const emailNorm = email.toLowerCase().trim();
+    if (await prisma.conta.findUnique({ where: { email: emailNorm } })) {
+      return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
+    }
+
+    const hash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
+    const conta = await prisma.conta.create({ data: { email: emailNorm, senha: hash, nome: nome?.trim() || null } });
+
+    const token = jwt.sign({ id: conta.id, papel: 'conta', contaId: conta.id }, SEGREDO_JWT, { expiresIn: '7d' });
+    res.status(201).json({ mensagem: 'Conta criada!', token, usuario: { id: conta.id, nome: conta.nome || '', papel: 'conta' }, vinculos: [] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// ============================================================================
+// BUSCA/DESCOBERTA — Rede Social Fase 3. Protegido só por `autenticar`
+// (qualquer papel serve: 'conta' neutra, 'professor' ou 'aluno') — é a rede
+// "fechada" descrita no roadmap: precisa estar logado pra navegar, mas não
+// precisa ter vínculo nenhum ainda. Nunca usar exigirProfessor/exigirAluno
+// aqui de propósito.
+//
+// Professor só aparece com visivelBuscaSelf=true (mensalidade SELF paga —
+// ver POST /api/professor/self/ativar) E assinatura utilizável: é o gate de
+// monetização descrito no roadmap, professor filiado a Escola sem SELF
+// simplesmente não existe pra quem busca aula particular. Escola aparece
+// sempre que for PACOTE_ESCOLA (a instituição já paga pela plataforma, sem
+// gate adicional de visibilidade).
+// ============================================================================
+
+const RESULTADOS_BUSCA_MAX = 30;
+
+app.get('/api/busca/professores', autenticar, async (req, res) => {
+  try {
+    const { curso, cidade, estado, q } = req.query;
+
+    const professores = await prisma.professor.findMany({
+      where: {
+        visivelBuscaSelf: true,
+        ativoNaEscola: true,
+        assinaturaStatus: { in: ['ATIVO', 'VITALICIO', 'TESTE'] },
+        ...(curso ? { cursos: { has: String(curso) } } : {}),
+        ...(cidade ? { cidade: { equals: String(cidade), mode: 'insensitive' } } : {}),
+        ...(estado ? { estado: { equals: String(estado).toUpperCase() } } : {}),
+        ...(q ? { nome: { contains: String(q), mode: 'insensitive' } } : {}),
+      },
+      select: { id: true, nome: true, fotoUrl: true, bio: true, cidade: true, estado: true, cursos: true },
+      orderBy: { createdAt: 'desc' },
+      take: RESULTADOS_BUSCA_MAX,
+    });
+
+    res.json({ professores });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao buscar professores.' });
+  }
+});
+
+app.get('/api/busca/escolas', autenticar, async (req, res) => {
+  try {
+    const { curso, cidade, estado, q } = req.query;
+
+    const escolas = await prisma.escola.findMany({
+      where: {
+        pacote: 'PACOTE_ESCOLA',
+        ...(cidade ? { cidade: { equals: String(cidade), mode: 'insensitive' } } : {}),
+        ...(estado ? { estado: { equals: String(estado).toUpperCase() } } : {}),
+        ...(q ? { nome: { contains: String(q), mode: 'insensitive' } } : {}),
+        ...(curso ? { cursos: { some: { nome: { equals: String(curso), mode: 'insensitive' }, ativo: true } } } : {}),
+      },
+      select: { id: true, nome: true, logoUrl: true, bio: true, cidade: true, estado: true },
+      orderBy: { createdAt: 'desc' },
+      take: RESULTADOS_BUSCA_MAX,
+    });
+
+    res.json({ escolas });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao buscar escolas.' });
+  }
+});
+
+// Perfil público "vitrine" — só os campos que fazem sentido pra um
+// desconhecido ver (nunca email/telefone/chavePix). 404 (não 403) quando o
+// professor não está com SELF ativo, de propósito: não revela se aquele id
+// existe ou não pra quem só está de passagem.
+app.get('/api/professores/:id/perfil-publico', autenticar, async (req, res) => {
+  try {
+    const professor = await prisma.professor.findFirst({
+      where: { id: req.params.id, visivelBuscaSelf: true, ativoNaEscola: true },
+      select: { id: true, nome: true, fotoUrl: true, bio: true, cidade: true, estado: true, cursos: true, videoApresentacaoUrl: true, precoAssinaturaPremium: true },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+
+    const avaliacao = await prisma.avaliacao.aggregate({
+      where: { professorId: professor.id },
+      _avg: { nota: true },
+      _count: { nota: true },
+    });
+
+    res.json({ ...professor, notaMedia: avaliacao._avg.nota, totalAvaliacoes: avaliacao._count.nota });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar perfil.' });
+  }
+});
+
+app.get('/api/escolas/:id/perfil-publico', autenticar, async (req, res) => {
+  try {
+    const escola = await prisma.escola.findFirst({
+      where: { id: req.params.id, pacote: 'PACOTE_ESCOLA' },
+      select: { id: true, nome: true, logoUrl: true, bio: true, cidade: true, estado: true },
+    });
+    if (!escola) return res.status(404).json({ erro: 'Escola não encontrada.' });
+
+    const avaliacao = await prisma.avaliacao.aggregate({
+      where: { professor: { escolaId: escola.id } },
+      _avg: { notaEscola: true },
+      _count: { notaEscola: true },
+    });
+
+    const cursos = await prisma.curso.findMany({
+      where: { escolaId: escola.id, ativo: true },
+      select: { nome: true },
+      take: 50,
+    });
+
+    res.json({ ...escola, cursos: cursos.map((c) => c.nome), notaMedia: avaliacao._avg.notaEscola, totalAvaliacoes: avaliacao._count.notaEscola });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar perfil.' });
+  }
+});
+
+// ============================================================================
+// FEED / POSTS — Rede Social Fase 4. Comunidade fechada por Escola: o feed
+// só mostra posts com o MESMO escolaId do vínculo ativo de quem está
+// olhando (nunca um feed global) — "timeline do professor"/"comunidade de
+// turma" do roadmap, não uma rede aberta tipo Twitter. Só Professor/Escola
+// publicam; Aluno só curte/comenta (ver comentário no schema.prisma).
+// ============================================================================
+
+app.post('/api/posts', exigirProfessor, async (req, res) => {
+  try {
+    const { conteudo, midiaUrl, exclusivo } = req.body;
+    if (!conteudo?.trim()) return res.status(400).json({ erro: 'conteudo é obrigatório.' });
+
+    const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true, precoAssinaturaPremium: true } });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    if (exclusivo && !professor.precoAssinaturaPremium) {
+      return res.status(400).json({ erro: 'Configure um preço de assinatura premium antes de publicar conteúdo exclusivo.' });
+    }
+
+    const post = await prisma.post.create({
+      data: {
+        conteudo: conteudo.trim(),
+        midiaUrl: midiaUrl || null,
+        exclusivo: !!exclusivo,
+        autorProfessorId: req.auth.id,
+        escolaId: professor.escolaId,
+      },
+    });
+    res.status(201).json({ mensagem: 'Post publicado!', post });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao publicar post.' });
+  }
+});
+
+// POST /api/escola/posts — DONO/GESTOR posta EM NOME da instituição (não
+// como professor individual). Reaproveita exigirPapelNaEscola, mesmo padrão
+// de toda rota administrativa do painel Escola.
+app.post('/api/escola/posts', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const { conteudo, midiaUrl } = req.body;
+    if (!conteudo?.trim()) return res.status(400).json({ erro: 'conteudo é obrigatório.' });
+
+    const post = await prisma.post.create({
+      data: {
+        conteudo: conteudo.trim(),
+        midiaUrl: midiaUrl || null,
+        autorEscolaId: professor.escolaId,
+        escolaId: professor.escolaId,
+      },
+    });
+    res.status(201).json({ mensagem: 'Post publicado!', post });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao publicar post.' });
+  }
+});
+
+// DELETE /api/posts/:id — o próprio autor sempre pode apagar; DONO/GESTOR
+// da Escola também pode apagar QUALQUER post escopado a ela (moderação),
+// mesmo um que não tenha publicado (ex.: post de um professor da equipe).
+app.delete('/api/posts/:id', autenticar, async (req, res) => {
+  try {
+    const post = await prisma.post.findUnique({ where: { id: req.params.id } });
+    if (!post) return res.status(404).json({ erro: 'Post não encontrado.' });
+
+    let autorizado = false;
+    if (req.auth.papel === 'professor') {
+      if (post.autorProfessorId === req.auth.id) {
+        autorizado = true;
+      } else {
+        const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { papel: true, escolaId: true } });
+        if (professor && ['DONO', 'GESTOR'].includes(professor.papel) && professor.escolaId === post.escolaId) {
+          autorizado = true;
+        }
+      }
+    }
+    if (!autorizado) return res.status(403).json({ erro: 'Você não pode apagar este post.' });
+
+    await prisma.post.delete({ where: { id: post.id } });
+    res.json({ mensagem: 'Post removido.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao remover post.' });
+  }
+});
+
+// GET /api/feed — escopado pelo escolaId do vínculo ATIVO de quem pede
+// (mesmo padrão de todo o resto do app: troca de vínculo = pedir outro
+// token, nunca "somar" feeds de vários vínculos numa mesma resposta).
+// Paginação por cursor simples (id do último post já carregado).
+app.get('/api/feed', autenticar, async (req, res) => {
+  try {
+    let escolaId;
+    if (req.auth.papel === 'professor') {
+      const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+      if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+      escolaId = professor.escolaId;
+    } else if (req.auth.papel === 'aluno') {
+      const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+      if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
+      escolaId = aluno.escolaId;
+    } else {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno pra ver o feed.' });
+    }
+
+    const cursor = req.query.cursor;
+    const posts = await prisma.post.findMany({
+      where: { escolaId },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      ...(cursor ? { cursor: { id: String(cursor) }, skip: 1 } : {}),
+      include: {
+        autorProfessor: { select: { id: true, nome: true, fotoUrl: true } },
+        autorEscola: { select: { id: true, nome: true, logoUrl: true } },
+        _count: { select: { curtidas: true, comentarios: true } },
+      },
+    });
+
+    // Marca se quem pediu já curtiu cada post — 1 query agregada, não N+1.
+    const curtidasDoUsuario = posts.length ? await prisma.postCurtida.findMany({
+      where: {
+        postId: { in: posts.map((p) => p.id) },
+        ...(req.auth.papel === 'professor' ? { autorProfessorId: req.auth.id } : { autorAlunoId: req.auth.id }),
+      },
+      select: { postId: true },
+    }) : [];
+    const idsCurtidos = new Set(curtidasDoUsuario.map((c) => c.postId));
+
+    // Paywall (Fase 5): só Aluno é gateado — Professor sempre vê o próprio
+    // feed institucional inteiro (é a equipe, não o público pagante). 1
+    // query agregada (nunca N+1) pelos autores de posts exclusivos deste lote.
+    const professoresExclusivosDoLote = req.auth.papel === 'aluno'
+      ? [...new Set(posts.filter((p) => p.exclusivo && p.autorProfessorId).map((p) => p.autorProfessorId))]
+      : [];
+    const idsProfessorAssinados = professoresExclusivosDoLote.length
+      ? new Set((await prisma.assinaturaPremium.findMany({
+          where: { alunoId: req.auth.id, status: 'ATIVA', professorId: { in: professoresExclusivosDoLote } },
+          select: { professorId: true },
+        })).map((a) => a.professorId))
+      : new Set();
+
+    res.json({
+      posts: posts.map((p) => {
+        const bloqueado = req.auth.papel === 'aluno' && p.exclusivo && !idsProfessorAssinados.has(p.autorProfessorId);
+        return {
+          id: p.id,
+          conteudo: bloqueado ? null : p.conteudo,
+          midiaUrl: bloqueado ? null : p.midiaUrl,
+          exclusivo: p.exclusivo,
+          bloqueado,
+          createdAt: p.createdAt,
+          autor: p.autorProfessor
+            ? { tipo: 'professor', id: p.autorProfessor.id, nome: p.autorProfessor.nome, fotoUrl: p.autorProfessor.fotoUrl }
+            : { tipo: 'escola', id: p.autorEscola.id, nome: p.autorEscola.nome, fotoUrl: p.autorEscola.logoUrl },
+          totalCurtidas: p._count.curtidas,
+          totalComentarios: p._count.comentarios,
+          curtidoPeloUsuario: idsCurtidos.has(p.id),
+        };
+      }),
+      proximoCursor: posts.length === 20 ? posts[posts.length - 1].id : null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar o feed.' });
+  }
+});
+
+// POST /api/posts/:id/curtir — toggle (curte se não tinha curtido, descurte
+// se já tinha). Professor ou aluno, nunca Conta neutra (precisa ter vínculo
+// pra curtir algo).
+// Paywall (Fase 5): aluno sem assinatura ATIVA não interage com post
+// exclusivo de outro professor (não faz sentido curtir/comentar algo que
+// nem consegue ler) — professor nunca é bloqueado aqui (ver GET /api/feed).
+async function alunoBloqueadoPorPaywall(post, req) {
+  if (req.auth.papel !== 'aluno' || !post.exclusivo || !post.autorProfessorId) return false;
+  const assinatura = await prisma.assinaturaPremium.findUnique({
+    where: { alunoId_professorId: { alunoId: req.auth.id, professorId: post.autorProfessorId } },
+    select: { status: true },
+  });
+  return assinatura?.status !== 'ATIVA';
+}
+
+app.post('/api/posts/:id/curtir', autenticar, async (req, res) => {
+  try {
+    if (req.auth.papel !== 'professor' && req.auth.papel !== 'aluno') {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno.' });
+    }
+    const post = await prisma.post.findUnique({ where: { id: req.params.id }, select: { id: true, exclusivo: true, autorProfessorId: true } });
+    if (!post) return res.status(404).json({ erro: 'Post não encontrado.' });
+    if (await alunoBloqueadoPorPaywall(post, req)) {
+      return res.status(403).json({ erro: 'Assine o conteúdo premium deste professor pra interagir com este post.' });
+    }
+
+    const campoAutor = req.auth.papel === 'professor' ? 'autorProfessorId' : 'autorAlunoId';
+    const existente = await prisma.postCurtida.findFirst({ where: { postId: post.id, [campoAutor]: req.auth.id } });
+
+    if (existente) {
+      await prisma.postCurtida.delete({ where: { id: existente.id } });
+      return res.json({ curtido: false });
+    }
+
+    await prisma.postCurtida.create({ data: { postId: post.id, [campoAutor]: req.auth.id } });
+    res.json({ curtido: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao curtir.' });
+  }
+});
+
+app.get('/api/posts/:id/comentarios', autenticar, async (req, res) => {
+  try {
+    const comentarios = await prisma.postComentario.findMany({
+      where: { postId: req.params.id },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        autorProfessor: { select: { id: true, nome: true, fotoUrl: true } },
+        autorAluno: { select: { id: true, nome: true, fotoUrl: true } },
+      },
+      take: 100,
+    });
+    res.json({
+      comentarios: comentarios.map((c) => ({
+        id: c.id,
+        conteudo: c.conteudo,
+        createdAt: c.createdAt,
+        autor: c.autorProfessor
+          ? { tipo: 'professor', id: c.autorProfessor.id, nome: c.autorProfessor.nome, fotoUrl: c.autorProfessor.fotoUrl }
+          : { tipo: 'aluno', id: c.autorAluno.id, nome: c.autorAluno.nome, fotoUrl: c.autorAluno.fotoUrl },
+      })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar comentários.' });
+  }
+});
+
+app.post('/api/posts/:id/comentarios', autenticar, async (req, res) => {
+  try {
+    if (req.auth.papel !== 'professor' && req.auth.papel !== 'aluno') {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno.' });
+    }
+    const { conteudo } = req.body;
+    if (!conteudo?.trim()) return res.status(400).json({ erro: 'conteudo é obrigatório.' });
+
+    const post = await prisma.post.findUnique({ where: { id: req.params.id }, select: { id: true, exclusivo: true, autorProfessorId: true } });
+    if (!post) return res.status(404).json({ erro: 'Post não encontrado.' });
+    if (await alunoBloqueadoPorPaywall(post, req)) {
+      return res.status(403).json({ erro: 'Assine o conteúdo premium deste professor pra interagir com este post.' });
+    }
+
+    const campoAutor = req.auth.papel === 'professor' ? 'autorProfessorId' : 'autorAlunoId';
+    const comentario = await prisma.postComentario.create({
+      data: { postId: post.id, conteudo: conteudo.trim(), [campoAutor]: req.auth.id },
+    });
+    res.status(201).json({ comentario });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao comentar.' });
   }
 });
 
@@ -1138,6 +1746,7 @@ app.post('/api/auth/google/verificar', async (req, res) => {
       const modelo = papel === 'professor' ? prisma.professor : prisma.aluno;
       usuario = await modelo.update({ where: { id: usuario.id }, data: { googleId } });
     }
+    await sincronizarConta(usuario.email, { googleId, nome: usuario.nome, fotoUrl: usuario.fotoUrl });
 
     if (papel === 'professor') {
       const desligado = checarProfessorAtivoNaEscola(usuario);
@@ -1146,7 +1755,7 @@ app.post('/api/auth/google/verificar', async (req, res) => {
       if (bloqueio) return res.status(403).json(bloqueio);
     }
 
-    const token = jwt.sign({ id: usuario.id, papel }, SEGREDO_JWT, { expiresIn: '7d' });
+    const token = jwt.sign({ id: usuario.id, papel, contaId: usuario.contaId || undefined }, SEGREDO_JWT, { expiresIn: '7d' });
     res.json({ existe: true, token, usuario: { id: usuario.id, nome: usuario.nome, papel } });
   } catch (err) {
     console.error(err);
@@ -1183,6 +1792,7 @@ app.post('/api/auth/google/cadastrar', async (req, res) => {
     // nunca exposto garante isso sem precisar tornar a coluna "senha" opcional.
     const senhaHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), await bcrypt.genSalt(10));
     const nome = payload.name || emailNorm;
+    const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome, fotoUrl: payload.picture || null, googleId });
     let usuario;
 
     if (papel === 'professor') {
@@ -1199,6 +1809,9 @@ app.post('/api/auth/google/cadastrar', async (req, res) => {
           cursos,
           fotoUrl: payload.picture || null,
           googleId,
+          // conta:{connect}, não contaId escalar (ver comentário em
+          // /api/professores/cadastro).
+          conta: contaId ? { connect: { id: contaId } } : undefined,
           codigoConvite: gerarCodigoConvite(),
           assinaturaStatus: 'TESTE',
           assinaturaFim: new Date(Date.now() + DIAS_TESTE_GRATIS * 24 * 60 * 60 * 1000),
@@ -1246,6 +1859,7 @@ app.post('/api/auth/google/cadastrar', async (req, res) => {
             dataNascimento: dataNasc,
             fotoUrl: payload.picture || null,
             googleId,
+            contaId,
             professorId: professor ? professor.id : null,
             escolaId: escolaIdAlvo,
             status: 'PENDENTE',
@@ -1256,7 +1870,7 @@ app.post('/api/auth/google/cadastrar', async (req, res) => {
       });
     }
 
-    const token = jwt.sign({ id: usuario.id, papel }, SEGREDO_JWT, { expiresIn: '7d' });
+    const token = jwt.sign({ id: usuario.id, papel, contaId: contaId || undefined }, SEGREDO_JWT, { expiresIn: '7d' });
     res.status(201).json({
       mensagem: papel === 'professor' ? 'Professor criado! Teste grátis de 15 dias ativado.' : 'Aluno cadastrado!',
       token,
@@ -1274,8 +1888,8 @@ app.post('/api/forgot-password', async (req, res) => {
     const email = (req.body.email || '').toLowerCase().trim();
     if (!email) return res.status(400).json({ erro: 'E-mail obrigatório.' });
 
-    const encontrado = await prisma.professor.findUnique({ where: { email } }) ||
-                       await prisma.aluno.findUnique({ where: { email } });
+    const encontrado = await prisma.professor.findFirst({ where: { email } }) ||
+                       await prisma.aluno.findFirst({ where: { email } });
 
     if (encontrado) {
       await prisma.tokenRedefinicaoSenha.updateMany({ where: { email, usado: false }, data: { usado: true } });
@@ -1310,11 +1924,17 @@ app.post('/api/reset-password', async (req, res) => {
 
     const salt = await bcrypt.genSalt(10);
     const hash = await bcrypt.hash(novaSenha, salt);
-    if (await prisma.professor.findUnique({ where: { email: emailNorm } })) {
-      await prisma.professor.update({ where: { email: emailNorm }, data: { senha: hash } });
+    // updateMany, não update: email deixou de ser único sozinho (Rede Social
+    // Fase 1, Step 2) — se a Conta tiver mais de um vínculo Professor/Aluno
+    // com esse e-mail, todos recebem o mesmo hash novo (dual-write igual ao
+    // resto do arquivo; Conta.senha via sincronizarConta abaixo é quem
+    // decide de verdade o login por Conta).
+    if (await prisma.professor.findFirst({ where: { email: emailNorm } })) {
+      await prisma.professor.updateMany({ where: { email: emailNorm }, data: { senha: hash } });
     } else {
-      await prisma.aluno.update({ where: { email: emailNorm }, data: { senha: hash } });
+      await prisma.aluno.updateMany({ where: { email: emailNorm }, data: { senha: hash } });
     }
+    await sincronizarConta(emailNorm, { senha: hash });
     await prisma.tokenRedefinicaoSenha.update({ where: { id: tokenRecord.id }, data: { usado: true } });
     res.json({ mensagem: 'Senha redefinida!' });
   } catch (err) {
@@ -1835,7 +2455,9 @@ app.get('/api/professor/perfil', exigirProfessor, async (req, res) => {
         id: true, nome: true, email: true, telefone: true,
         cursos: true, codigoConvite: true, chavePix: true,
         linkPagamentoCartao: true, fotoUrl: true, createdAt: true,
-        papel: true, escola: { select: { pacote: true, nome: true } },
+        papel: true, escola: { select: { pacote: true, nome: true, stripeConnectOnboardingCompleto: true } },
+        precoAssinaturaPremium: true,
+        bio: true, cidade: true, estado: true, videoApresentacaoUrl: true, visivelBuscaSelf: true,
       },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
@@ -1849,7 +2471,10 @@ app.get('/api/professor/perfil', exigirProfessor, async (req, res) => {
 app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
   try {
     const professorId = req.auth.id;
-    const { nome, telefone, chavePix, linkPagamentoCartao, fotoUrl, senhaAtual, novaSenha } = req.body;
+    const {
+      nome, telefone, chavePix, linkPagamentoCartao, fotoUrl, senhaAtual, novaSenha,
+      bio, cidade, estado, videoApresentacaoUrl, visivelBuscaSelf,
+    } = req.body;
 
     const professor = await prisma.professor.findUnique({ where: { id: professorId } });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
@@ -1860,6 +2485,17 @@ app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
     if (chavePix !== undefined) dados.chavePix = chavePix.trim() || null;
     if (linkPagamentoCartao !== undefined) dados.linkPagamentoCartao = linkPagamentoCartao.trim() || null;
     if (fotoUrl !== undefined) dados.fotoUrl = fotoUrl || null;
+    // Perfil vitrine (Rede Social Fase 3) — visível em /api/professores/:id/perfil-publico
+    // quando visivelBuscaSelf=true.
+    if (bio !== undefined) dados.bio = bio?.trim() || null;
+    if (cidade !== undefined) dados.cidade = cidade?.trim() || null;
+    if (estado !== undefined) dados.estado = estado?.trim().toUpperCase() || null;
+    if (videoApresentacaoUrl !== undefined) dados.videoApresentacaoUrl = videoApresentacaoUrl?.trim() || null;
+    // Discoverável na busca de aula particular é auto-serviço pro professor
+    // (diferente do gate por assinaturaStatus, que a própria query de busca
+    // já aplica) — ligar antes de ter assinatura ativa não faz mal, só não
+    // aparece até o status virar ATIVO/VITALICIO/TESTE.
+    if (visivelBuscaSelf !== undefined) dados.visivelBuscaSelf = !!visivelBuscaSelf;
 
     if (senhaAtual && novaSenha) {
       if (novaSenha.length < 6) return res.status(400).json({ erro: 'Nova senha: mín. 6 caracteres.' });
@@ -1876,8 +2512,10 @@ app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
       select: {
         id: true, nome: true, email: true, telefone: true,
         cursos: true, codigoConvite: true, chavePix: true, linkPagamentoCartao: true, fotoUrl: true,
+        bio: true, cidade: true, estado: true, videoApresentacaoUrl: true, visivelBuscaSelf: true,
       },
     });
+    if (dados.senha) await sincronizarConta(atualizado.email, { senha: dados.senha });
     res.json({ mensagem: 'Perfil atualizado!', professor: atualizado });
   } catch (err) {
     console.error(err);
@@ -2087,6 +2725,7 @@ app.put('/api/aluno/perfil', exigirAluno, async (req, res) => {
       data: dados,
       select: { id: true, nome: true, email: true, telefone: true, fotoUrl: true },
     });
+    if (dados.senha) await sincronizarConta(atualizado.email, { senha: dados.senha });
     res.json({ mensagem: 'Perfil atualizado!', aluno: atualizado });
   } catch (err) {
     console.error(err);
@@ -4337,6 +4976,141 @@ app.post('/api/escola/stripe-connect/iniciar', async (req, res) => {
     const msg = err?.raw?.message || err?.message || 'Erro ao iniciar conexão com Stripe.';
     console.error('[StripeConnect] Erro ao iniciar onboarding:', msg);
     res.status(500).json({ erro: msg });
+  }
+});
+
+// ============================================================================
+// PAYWALL / CONTEÚDO PREMIUM — Rede Social Fase 5. Reaproveita a MESMA
+// conta Stripe Connect da Escola do professor (stub pessoal, se SELF
+// autônomo) já usada pra cobrança automática Aluno→Escola logo abaixo —
+// nenhuma infraestrutura de pagamento nova. Diferente daquele fluxo
+// (cron + PaymentIntent avulso), aqui é uma stripe.subscriptions de
+// verdade: o Stripe cobra o ciclo mensal sozinho, sem cron nosso.
+// ============================================================================
+
+// PUT /api/professor/premium/configurar — define/atualiza o preço mensal do
+// conteúdo exclusivo. Exige a MESMA conta Stripe Connect da Escola do
+// professor já onboardada (GET/POST /api/escola/stripe-connect/*, acima) —
+// sem isso não tem pra onde o dinheiro do assinante ir.
+app.put('/api/professor/premium/configurar', exigirProfessor, async (req, res) => {
+  try {
+    const { precoAssinaturaPremium } = req.body;
+    const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+
+    if (precoAssinaturaPremium !== null && precoAssinaturaPremium !== undefined) {
+      const preco = Number(precoAssinaturaPremium);
+      if (!(preco > 0)) return res.status(400).json({ erro: 'precoAssinaturaPremium deve ser maior que zero.' });
+
+      const escola = await prisma.escola.findUnique({ where: { id: professor.escolaId }, select: { stripeConnectOnboardingCompleto: true } });
+      if (!escola?.stripeConnectOnboardingCompleto) {
+        return res.status(400).json({ erro: 'Conecte sua conta Stripe (Financeiro) antes de ativar o conteúdo premium.' });
+      }
+    }
+
+    const atualizado = await prisma.professor.update({
+      where: { id: req.auth.id },
+      data: { precoAssinaturaPremium: precoAssinaturaPremium === null ? null : Number(precoAssinaturaPremium) },
+      select: { precoAssinaturaPremium: true },
+    });
+    res.json({ mensagem: 'Configuração premium atualizada!', precoAssinaturaPremium: atualizado.precoAssinaturaPremium });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao configurar conteúdo premium.' });
+  }
+});
+
+// POST /api/professores/:id/premium/assinar — aluno inicia assinatura do
+// conteúdo premium de um professor. Sempre reaproveita/recria a MESMA linha
+// AssinaturaPremium (unique [alunoId, professorId]) — reassinar depois de
+// cancelar não gera duplicata.
+app.post('/api/professores/:id/premium/assinar', exigirAluno, async (req, res) => {
+  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
+  try {
+    const professor = await prisma.professor.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, nome: true, escolaId: true, precoAssinaturaPremium: true },
+    });
+    if (!professor?.precoAssinaturaPremium) {
+      return res.status(400).json({ erro: 'Este professor não oferece conteúdo premium.' });
+    }
+
+    const escola = await prisma.escola.findUnique({
+      where: { id: professor.escolaId },
+      select: { stripeConnectAccountId: true, stripeConnectOnboardingCompleto: true },
+    });
+    if (!escola?.stripeConnectAccountId || !escola.stripeConnectOnboardingCompleto) {
+      return res.status(400).json({ erro: 'Este professor ainda não concluiu a configuração de recebimento.' });
+    }
+
+    const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { nome: true, email: true } });
+
+    const assinatura = await prisma.assinaturaPremium.upsert({
+      where: { alunoId_professorId: { alunoId: req.auth.id, professorId: professor.id } },
+      create: { alunoId: req.auth.id, professorId: professor.id, status: 'PENDENTE' },
+      update: {},
+    });
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer_email: aluno.email,
+      line_items: [{
+        price_data: {
+          currency: 'brl',
+          product_data: { name: `Conteúdo Premium — ${professor.nome}` },
+          unit_amount: Math.round(professor.precoAssinaturaPremium * 100),
+          recurring: { interval: 'month' },
+        },
+        quantity: 1,
+      }],
+      subscription_data: {
+        transfer_data: { destination: escola.stripeConnectAccountId },
+      },
+      metadata: { assinaturaPremiumId: assinatura.id },
+      success_url: 'https://kav-class-1.onrender.com/checkout/premium-sucesso?session_id={CHECKOUT_SESSION_ID}',
+      cancel_url: 'https://kav-class-1.onrender.com/checkout/premium-cancelado',
+    });
+
+    res.json({ url: session.url, sessionId: session.id });
+  } catch (err) {
+    const msg = err?.raw?.message || err?.message || 'Erro ao iniciar assinatura premium.';
+    console.error('[Premium] Erro ao iniciar assinatura:', msg);
+    res.status(500).json({ erro: msg });
+  }
+});
+
+// POST /api/professores/:id/premium/cancelar — aluno cancela a própria
+// assinatura (mantém acesso até o fim do período já pago, igual à
+// assinatura Escola→Kav Class do professor).
+app.post('/api/professores/:id/premium/cancelar', exigirAluno, async (req, res) => {
+  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
+  try {
+    const assinatura = await prisma.assinaturaPremium.findUnique({
+      where: { alunoId_professorId: { alunoId: req.auth.id, professorId: req.params.id } },
+    });
+    if (!assinatura?.stripeSubscriptionId) return res.status(404).json({ erro: 'Nenhuma assinatura ativa encontrada.' });
+
+    await stripe.subscriptions.update(assinatura.stripeSubscriptionId, { cancel_at_period_end: true });
+    res.json({ mensagem: 'Assinatura cancelada. Você mantém acesso até o fim do período já pago.' });
+  } catch (err) {
+    const msg = err?.raw?.message || err?.message || 'Erro ao cancelar assinatura.';
+    console.error('[Premium] Erro ao cancelar:', msg);
+    res.status(500).json({ erro: msg });
+  }
+});
+
+// GET /api/professores/:id/premium/status — pra tela do aluno decidir se
+// mostra "Assinar" ou "Assinante ativo".
+app.get('/api/professores/:id/premium/status', exigirAluno, async (req, res) => {
+  try {
+    const assinatura = await prisma.assinaturaPremium.findUnique({
+      where: { alunoId_professorId: { alunoId: req.auth.id, professorId: req.params.id } },
+      select: { status: true },
+    });
+    res.json({ status: assinatura?.status || null, ativa: assinatura?.status === 'ATIVA' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao consultar assinatura.' });
   }
 });
 
@@ -7459,7 +8233,7 @@ app.post('/checkout', async (req, res) => {
         return res.status(400).json({ erro: 'Este e-mail já possui uma assinatura ativa.' });
       }
     } else {
-      let prof = await prisma.professor.findUnique({ where: { email: emailNorm } });
+      let prof = await prisma.professor.findFirst({ where: { email: emailNorm }, orderBy: { createdAt: 'asc' } });
 
       if (!prof) {
         // Novo professor: cria com status PENDENTE aguardando pagamento
@@ -7467,11 +8241,16 @@ app.post('/checkout', async (req, res) => {
           return res.status(400).json({ erro: 'Dados de cadastro incompletos. Volte e preencha o formulário.' });
         }
         const salt = await bcrypt.genSalt(10);
+        const senhaHash = await bcrypt.hash(senha, salt);
+        const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome: nome.trim(), fotoUrl: fotoUrl || null });
         prof = await prisma.professor.create({
           data: {
             nome: nome.trim(),
             email: emailNorm,
-            senha: await bcrypt.hash(senha, salt),
+            senha: senhaHash,
+            // conta:{connect}, não contaId escalar (ver comentário em
+            // /api/professores/cadastro).
+            conta: contaId ? { connect: { id: contaId } } : undefined,
             telefone: telefone || null,
             cursos: Array.isArray(cursos) ? cursos : [],
             codigoConvite: gerarCodigoConvite(),
@@ -7601,6 +8380,68 @@ app.post('/api/professor/assinatura/cancelar', exigirProfessor, async (req, res)
   }
 });
 
+// POST /api/professor/self/ativar — Rede Social Fase 1, Step 2. Professor
+// filiado a uma Escola institucional (PACOTE_ESCOLA) que quer também atuar
+// como SELF autônomo (aparecer em busca de aula particular, ter alunos
+// próprios). Não reaproveita a linha institucional: cria uma SEGUNDA linha
+// Professor, presa à mesma Conta (contaId), dona de uma Escola stub pessoal
+// nova (PACOTE_PROFESSOR) — o mesmíssimo padrão que já existe pra todo
+// professor autônomo (escola: { create: { nome } }, ver /api/professores/
+// cadastro). A linha institucional nunca é tocada: continua com seu próprio
+// assinaturaStatus (normalmente ATIVO de graça, por já fazer parte de uma
+// Escola paga — server.js, comentário em /api/escola/convites/aceitar) —
+// a linha SELF nova começa em TESTE, com o mesmo trial de 15 dias de
+// qualquer professor autônomo novo, e vive seu próprio ciclo de assinatura
+// dali pra frente (Stripe, /api/professor/assinatura/*), sem herdar nada.
+app.post('/api/professor/self/ativar', exigirProfessor, async (req, res) => {
+  try {
+    if (!MULTI_VINCULO_HABILITADO) {
+      return res.status(403).json({ erro: 'Recurso ainda não disponível.' });
+    }
+
+    const institucional = await prisma.professor.findUnique({ where: { id: req.auth.id } });
+    if (!institucional) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    if (!institucional.contaId) {
+      return res.status(400).json({ erro: 'Sua conta ainda não foi migrada para o novo login. Fale com o suporte.' });
+    }
+
+    const jaTemSelf = await prisma.professor.findFirst({
+      where: { contaId: institucional.contaId, escola: { pacote: 'PACOTE_PROFESSOR' } },
+    });
+    if (jaTemSelf) return res.status(400).json({ erro: 'Você já tem uma prática SELF ativa.' });
+
+    const { cursos } = req.body;
+    const selfProfessor = await prisma.professor.create({
+      data: {
+        nome: institucional.nome,
+        email: institucional.email,
+        // conta:{connect}, não contaId escalar (ver comentário em
+        // /api/professores/cadastro).
+        conta: { connect: { id: institucional.contaId } },
+        senha: null, // login sempre via Conta a partir daqui (sincronizarConta já manteve Conta.senha em dia)
+        fotoUrl: institucional.fotoUrl,
+        telefone: institucional.telefone,
+        cursos: Array.isArray(cursos) && cursos.length ? cursos : (institucional.cursos || []),
+        codigoConvite: gerarCodigoConvite(),
+        assinaturaStatus: 'TESTE',
+        assinaturaFim: new Date(Date.now() + DIAS_TESTE_GRATIS * 24 * 60 * 60 * 1000),
+        escola: { create: { nome: institucional.nome } },
+      },
+    });
+
+    const token = jwt.sign({ id: selfProfessor.id, papel: 'professor', contaId: institucional.contaId }, SEGREDO_JWT, { expiresIn: '7d' });
+    res.status(201).json({
+      mensagem: 'SELF ativado! Teste grátis de 15 dias.',
+      token,
+      usuario: { id: selfProfessor.id, nome: selfProfessor.nome, papel: 'professor' },
+      codigoConvite: selfProfessor.codigoConvite,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao ativar SELF.' });
+  }
+});
+
 // ============================================================================
 // 13. ESCOLA / GESTOR (Fase 0)
 //
@@ -7702,7 +8543,7 @@ app.post('/api/escola/convites', async (req, res) => {
     const papelConvite = papel === 'GESTOR' ? 'GESTOR' : 'PROFESSOR'; // nunca cria DONO por convite
 
     const emailNorm = email.toLowerCase().trim();
-    if (await prisma.professor.findUnique({ where: { email: emailNorm } }))
+    if (await prisma.professor.findFirst({ where: { email: emailNorm } }))
       return res.status(400).json({ erro: 'Já existe uma conta de professor com esse e-mail.' });
 
     const codigo = gerarCodigoConvite();
@@ -7751,16 +8592,19 @@ app.post('/api/escola/convites/aceitar', async (req, res) => {
     if (convite.email !== emailNorm)
       return res.status(400).json({ erro: 'Esse convite foi feito para outro e-mail.' });
 
-    if (await prisma.professor.findUnique({ where: { email: emailNorm } }))
+    if (await prisma.professor.findFirst({ where: { email: emailNorm } }))
       return res.status(400).json({ erro: 'E-mail já em uso.' });
 
     const salt = await bcrypt.genSalt(10);
+    const senhaHash = await bcrypt.hash(senha, salt);
+    const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome, fotoUrl: fotoUrl || null });
     const novoProfessor = await prisma.professor.create({
       data: {
         nome,
         email: emailNorm,
         telefone: telefone || null,
-        senha: await bcrypt.hash(senha, salt),
+        senha: senhaHash,
+        contaId,
         cursos: Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []),
         codigoConvite: gerarCodigoConvite(), // esse aqui é o convite dele pros próprios alunos, não tem relação com o convite de escola
         fotoUrl: fotoUrl || null,
@@ -7771,7 +8615,7 @@ app.post('/api/escola/convites/aceitar', async (req, res) => {
     });
     await prisma.conviteProfessor.update({ where: { id: convite.id }, data: { aceitoEm: new Date() } });
 
-    const token = jwt.sign({ id: novoProfessor.id, papel: 'professor' }, SEGREDO_JWT, { expiresIn: '7d' });
+    const token = jwt.sign({ id: novoProfessor.id, papel: 'professor', contaId: contaId || undefined }, SEGREDO_JWT, { expiresIn: '7d' });
     res.status(201).json({
       mensagem: 'Bem-vindo à equipe!',
       token,
@@ -7866,6 +8710,9 @@ app.get('/api/escola/perfil', async (req, res) => {
       valorPorAula: professor.escola.valorPorAula,
       tipoRemuneracaoProfessor: professor.escola.tipoRemuneracaoProfessor,
       diaFechamento: professor.escola.diaFechamento,
+      bio: professor.escola.bio,
+      cidade: professor.escola.cidade,
+      estado: professor.escola.estado,
     });
   } catch (err) {
     console.error(err);
@@ -7884,7 +8731,10 @@ app.put('/api/escola/perfil', async (req, res) => {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
     if (!professor) return;
 
-    const { nome, logoUrl, email, horarioFuncionamento, valorPorAula, tipoRemuneracaoProfessor, diaFechamento } = req.body;
+    const {
+      nome, logoUrl, email, horarioFuncionamento, valorPorAula, tipoRemuneracaoProfessor, diaFechamento,
+      bio, cidade, estado,
+    } = req.body;
 
     const data = {};
     if (nome !== undefined) {
@@ -7894,6 +8744,10 @@ app.put('/api/escola/perfil', async (req, res) => {
     if (logoUrl !== undefined) data.logoUrl = logoUrl || null;
     if (email !== undefined) data.email = email?.trim() || null;
     if (horarioFuncionamento !== undefined) data.horarioFuncionamento = horarioFuncionamento;
+    // Perfil vitrine (Rede Social Fase 3) — visível em /api/escolas/:id/perfil-publico.
+    if (bio !== undefined) data.bio = bio?.trim() || null;
+    if (cidade !== undefined) data.cidade = cidade?.trim() || null;
+    if (estado !== undefined) data.estado = estado?.trim().toUpperCase() || null;
     if (valorPorAula !== undefined) data.valorPorAula = valorPorAula === null ? null : Number(valorPorAula);
     if (tipoRemuneracaoProfessor !== undefined) {
       if (!['POR_AULA', 'POR_ALUNO_MES'].includes(tipoRemuneracaoProfessor)) {
@@ -7973,18 +8827,20 @@ app.post('/api/escola/professores/criar', async (req, res) => {
     if (senha.length < 6) return res.status(400).json({ erro: 'senha: mínimo 6 caracteres.' });
 
     const emailNorm = email.toLowerCase().trim();
-    if (await prisma.professor.findUnique({ where: { email: emailNorm } })) {
+    if (await prisma.professor.findFirst({ where: { email: emailNorm } })) {
       return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
     }
 
     const papelNovo = papel === 'GESTOR' ? 'GESTOR' : 'PROFESSOR'; // nunca cria DONO por aqui
     const senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
+    const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome: nome.trim(), fotoUrl: fotoUrl || null });
 
     const novoProfessor = await prisma.professor.create({
       data: {
         nome: nome.trim(),
         email: emailNorm,
         senha: senhaHash,
+        contaId,
         telefone: telefone?.trim() || null,
         contatoEmergencia: contatoEmergencia?.trim() || null,
         dataNascimento: dataNascimento ? new Date(dataNascimento) : null,
@@ -8368,17 +9224,26 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
     if (!professorDaTurma) return res.status(404).json({ erro: 'Professor não encontrado nesta Escola.' });
 
     const emailNorm = email.toLowerCase().trim();
-    if (await prisma.aluno.findUnique({ where: { email: emailNorm } })) {
+    // findFirst, não findUnique: email deixou de ser único sozinho (Rede
+    // Social Fase 1, Step 2). Mantém a rejeição de e-mail duplicado em
+    // qualquer escola de propósito aqui: diferente de /api/alunos/cadastro
+    // (onde o próprio aluno prova a senha da Conta existente antes de
+    // anexar um vínculo novo), aqui é um DONO/GESTOR cadastrando em nome de
+    // outra pessoa — sem prova de identidade, não é seguro anexar
+    // silenciosamente um aluno de outra Escola a esta.
+    if (await prisma.aluno.findFirst({ where: { email: emailNorm } })) {
       return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
     }
 
     const senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
+    const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome: nome.trim() });
     const novoAluno = await prisma.$transaction(async (tx) => {
       const aluno = await tx.aluno.create({
         data: {
           nome: nome.trim(),
           email: emailNorm,
           senha: senhaHash,
+          contaId,
           telefone: telefone?.trim() || null,
           curso: curso?.trim() || null,
           dataNascimento: dataNascimento ? new Date(dataNascimento) : null,
@@ -8442,8 +9307,11 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
     if (email !== undefined && email?.trim()) {
       const emailNorm = email.toLowerCase().trim();
       if (emailNorm !== alunoAlvo.email) {
-        const existente = await prisma.aluno.findUnique({ where: { email: emailNorm } });
-        if (existente) return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
+        // Escopado por escolaId (Rede Social Fase 1, Step 2): o mesmo e-mail
+        // pode legitimamente já ser aluno em OUTRA escola/professor — só
+        // bloqueia se já existir outro aluno com esse e-mail NESTA escola.
+        const existente = await prisma.aluno.findFirst({ where: { email: emailNorm, escolaId: alunoAlvo.escolaId } });
+        if (existente) return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail nesta Escola.' });
       }
       data.email = emailNorm;
     }
@@ -8503,6 +9371,7 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
       });
     });
 
+    if (data.senha) await sincronizarConta(atualizado.email, { senha: data.senha });
     res.json({ mensagem: 'Aluno atualizado!', aluno: atualizado });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar aluno.');
@@ -8741,15 +9610,20 @@ app.post('/api/admin/reset-senha', async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hash = await bcrypt.hash(novaSenha, salt);
 
-    const prof = await prisma.professor.findUnique({ where: { email: emailNorm } });
+    // findFirst/updateMany, não findUnique/update: email deixou de ser único
+    // sozinho (Rede Social Fase 1, Step 2) — reseta TODAS as linhas com esse
+    // e-mail (dual-write, igual ao resto do arquivo).
+    const prof = await prisma.professor.findFirst({ where: { email: emailNorm } });
     if (prof) {
-      await prisma.professor.update({ where: { email: emailNorm }, data: { senha: hash } });
+      await prisma.professor.updateMany({ where: { email: emailNorm }, data: { senha: hash } });
+      await sincronizarConta(emailNorm, { senha: hash });
       return res.json({ mensagem: 'Senha do professor redefinida com sucesso.' });
     }
 
-    const aluno = await prisma.aluno.findUnique({ where: { email: emailNorm } });
+    const aluno = await prisma.aluno.findFirst({ where: { email: emailNorm } });
     if (aluno) {
-      await prisma.aluno.update({ where: { email: emailNorm }, data: { senha: hash } });
+      await prisma.aluno.updateMany({ where: { email: emailNorm }, data: { senha: hash } });
+      await sincronizarConta(emailNorm, { senha: hash });
       return res.json({ mensagem: 'Senha do aluno redefinida com sucesso.' });
     }
 
@@ -8778,7 +9652,12 @@ app.post('/api/admin/escola/pacote', async (req, res) => {
       return res.status(400).json({ erro: 'email e pacote (PACOTE_PROFESSOR|PACOTE_ESCOLA) são obrigatórios.' });
     }
 
-    const dono = await prisma.professor.findUnique({ where: { email: email.toLowerCase().trim() } });
+    // findFirst, não findUnique: email deixou de ser único sozinho (Rede
+    // Social Fase 1, Step 2). Rota interna (ADMIN_SECRET), uso manual pelo
+    // time — se esse e-mail tiver mais de um vínculo DONO (ex.: institucional
+    // + SELF), pega o mais antigo; em caso de ambiguidade real, resolver
+    // manualmente passando o e-mail exato daquela Escola específica.
+    const dono = await prisma.professor.findFirst({ where: { email: email.toLowerCase().trim() }, orderBy: { createdAt: 'asc' } });
     if (!dono) return res.status(404).json({ erro: 'Professor não encontrado.' });
     if (dono.papel !== 'DONO') {
       return res.status(400).json({ erro: 'Esse e-mail não é DONO de nenhuma escola — use o e-mail de quem criou a conta original.' });

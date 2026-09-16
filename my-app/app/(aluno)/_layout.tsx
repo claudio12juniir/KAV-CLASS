@@ -4,13 +4,16 @@ import { Drawer } from 'expo-router/drawer';
 import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import SyncLoader from '../../components/SyncLoader';
 import { usePushToken } from '../../hooks/usePushToken';
 import { BASE_URL, fetchComRetry } from '../api';
+import { useConta } from '../_contaContexto';
 
 function CustomDrawerContent(props: any) {
+  const { vinculos, trocarVinculo } = useConta();
+
   return (
     <DrawerContentScrollView {...props}>
       <View style={styles.drawerHeader}>
@@ -19,6 +22,24 @@ function CustomDrawerContent(props: any) {
         <Text style={styles.roleTag}>PORTAL DO ALUNO</Text>
       </View>
       <DrawerItemList {...props} />
+
+      {/* Só aparece quando a Conta tem mais de 1 vínculo (fundação de
+          identidade unificada) — hoje isso nunca acontece em produção. */}
+      {vinculos.length > 1 && (
+        <View style={styles.trocarContaBox}>
+          <Text style={styles.trocarContaTitulo}>Trocar de conta</Text>
+          {vinculos.map((v) => (
+            <TouchableOpacity
+              key={`${v.papel}-${v.id}`}
+              style={styles.trocarContaItem}
+              onPress={() => { props.navigation.closeDrawer(); trocarVinculo(v); }}
+            >
+              <Ionicons name="swap-horizontal-outline" size={16} color="#555" />
+              <Text style={styles.trocarContaTexto} numberOfLines={1}>{v.nome}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
     </DrawerContentScrollView>
   );
 }
@@ -89,6 +110,8 @@ function AlunoDrawer() {
         }}
       >
         <Drawer.Screen name="index"     options={{ drawerLabel: 'Início',          drawerIcon: ({ color }) => <Ionicons name="home-outline"        size={22} color={color} /> }} />
+        <Drawer.Screen name="feed"      options={{ drawerLabel: 'Feed',            drawerIcon: ({ color }) => <Ionicons name="newspaper-outline"   size={22} color={color} /> }} />
+        <Drawer.Screen name="busca"     options={{ drawerLabel: 'Explorar',        drawerIcon: ({ color }) => <Ionicons name="search-outline"      size={22} color={color} /> }} />
         <Drawer.Screen name="materiais" options={{ drawerLabel: 'Material Didático', drawerIcon: ({ color }) => <Ionicons name="book-outline"      size={22} color={color} /> }} />
         <Drawer.Screen name="pagamento" options={{ drawerLabel: 'Financeiro',       drawerIcon: ({ color }) => <Ionicons name="wallet-outline"     size={22} color={color} /> }} />
         <Drawer.Screen name="reposicoes" options={{ drawerLabel: 'Reposições',      drawerIcon: ({ color }) => <Ionicons name="repeat-outline"     size={22} color={color} /> }} />
@@ -106,4 +129,8 @@ const styles = StyleSheet.create({
   brandKav:   { fontSize: 18, color: '#000000', fontWeight: '300', letterSpacing: 2 },
   brandClass: { fontSize: 24, color: '#000000', fontWeight: 'bold', marginTop: -5 },
   roleTag:    { fontSize: 10, color: '#32BCAD', fontWeight: 'bold', marginTop: 5, letterSpacing: 1 },
+  trocarContaBox: { marginTop: 10, paddingHorizontal: 20, paddingTop: 14, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
+  trocarContaTitulo: { fontSize: 11, color: '#AAAAAA', fontWeight: '700', marginBottom: 8, letterSpacing: 0.5 },
+  trocarContaItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  trocarContaTexto: { color: '#333', fontSize: 13, flexShrink: 1 },
 });

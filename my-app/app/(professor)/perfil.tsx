@@ -12,6 +12,7 @@ import {
   Linking,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -33,6 +34,13 @@ interface Perfil {
   chavePix: string | null;
   linkPagamentoCartao: string | null;
   fotoUrl: string | null;
+  precoAssinaturaPremium: number | null;
+  escola?: { stripeConnectOnboardingCompleto: boolean };
+  bio: string | null;
+  cidade: string | null;
+  estado: string | null;
+  videoApresentacaoUrl: string | null;
+  visivelBuscaSelf: boolean;
 }
 
 interface Assinatura {
@@ -66,6 +74,14 @@ export default function PerfilProfessorScreen() {
   const [chavePix, setChavePix] = useState('');
   const [linkCartao, setLinkCartao] = useState('');
   const [fotoUrl, setFotoUrl] = useState<string | null>(null);
+  const [precoPremium, setPrecoPremium] = useState('');
+  const [salvandoPremium, setSalvandoPremium] = useState(false);
+  const [bio, setBio] = useState('');
+  const [cidade, setCidade] = useState('');
+  const [estado, setEstado] = useState('');
+  const [videoUrl, setVideoUrl] = useState('');
+  const [visivelBusca, setVisivelBusca] = useState(false);
+  const [salvandoVitrine, setSalvandoVitrine] = useState(false);
   const [senhaAtual, setSenhaAtual] = useState('');
   const [novaSenha, setNovaSenha] = useState('');
   const [confirmarSenha, setConfirmarSenha] = useState('');
@@ -90,6 +106,12 @@ export default function PerfilProfessorScreen() {
         setChavePix(dados.chavePix || '');
         setLinkCartao(dados.linkPagamentoCartao || '');
         setFotoUrl(dados.fotoUrl || null);
+        setPrecoPremium(dados.precoAssinaturaPremium ? String(dados.precoAssinaturaPremium) : '');
+        setBio(dados.bio || '');
+        setCidade(dados.cidade || '');
+        setEstado(dados.estado || '');
+        setVideoUrl(dados.videoApresentacaoUrl || '');
+        setVisivelBusca(!!dados.visivelBuscaSelf);
       }
     } catch (err) {
       console.error(err);
@@ -97,6 +119,60 @@ export default function PerfilProfessorScreen() {
       setCarregando(false);
     }
   }, []);
+
+  const salvarPremium = async () => {
+    const preco = precoPremium.trim() ? Number(precoPremium.replace(',', '.')) : null;
+    if (preco !== null && !(preco > 0)) {
+      Alert.alert('Atenção', 'Informe um preço maior que zero, ou deixe em branco pra desativar.');
+      return;
+    }
+    setSalvandoPremium(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/professor/premium/configurar`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ precoAssinaturaPremium: preco }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        Alert.alert('Sucesso', preco ? 'Conteúdo premium ativado!' : 'Conteúdo premium desativado.');
+        carregarPerfil();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível salvar.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Verifique a conexão.');
+    } finally {
+      setSalvandoPremium(false);
+    }
+  };
+
+  const salvarVitrine = async () => {
+    setSalvandoVitrine(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
+      const res = await fetchComRetry(`${API_URL}/api/professor/perfil`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          professorId, bio, cidade, estado, videoApresentacaoUrl: videoUrl, visivelBuscaSelf: visivelBusca,
+        }),
+      });
+      const dados = await res.json();
+      if (res.ok) {
+        Alert.alert('Sucesso', 'Perfil público atualizado!');
+        carregarPerfil();
+      } else {
+        Alert.alert('Erro', dados.erro || 'Não foi possível salvar.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Verifique a conexão.');
+    } finally {
+      setSalvandoVitrine(false);
+    }
+  };
 
   const carregarAssinatura = useCallback(async () => {
     try {
@@ -383,6 +459,103 @@ export default function PerfilProfessorScreen() {
           keyboardType="url"
         />
 
+        {/* Perfil público / vitrine (Rede Social Fase 3) */}
+        <Text style={styles.secaoLabel}>PERFIL PÚBLICO</Text>
+
+        <View style={styles.vitrineToggleLinha}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.fieldLabel}>Aparecer na busca de aula particular</Text>
+            <Text style={styles.vitrineToggleAjuda}>Alunos podem te encontrar e ver seu perfil sem já ter vínculo com você.</Text>
+          </View>
+          <Switch
+            value={visivelBusca}
+            onValueChange={setVisivelBusca}
+            trackColor={{ true: CORES.acento }}
+          />
+        </View>
+
+        <Text style={styles.fieldLabel}>Bio</Text>
+        <TextInput
+          style={[styles.input, { minHeight: 70, textAlignVertical: 'top' }]}
+          value={bio}
+          onChangeText={setBio}
+          placeholder="Conte sobre sua experiência, metodologia..."
+          placeholderTextColor={CORES.secundaria}
+          selectionColor={CORES.acento}
+          multiline
+        />
+
+        <Text style={styles.fieldLabel}>Cidade</Text>
+        <TextInput
+          style={styles.input}
+          value={cidade}
+          onChangeText={setCidade}
+          placeholderTextColor={CORES.secundaria}
+          selectionColor={CORES.acento}
+        />
+
+        <Text style={styles.fieldLabel}>Estado (UF)</Text>
+        <TextInput
+          style={styles.input}
+          value={estado}
+          onChangeText={(t) => setEstado(t.toUpperCase().slice(0, 2))}
+          placeholder="SP"
+          placeholderTextColor={CORES.secundaria}
+          selectionColor={CORES.acento}
+          autoCapitalize="characters"
+          maxLength={2}
+        />
+
+        <Text style={styles.fieldLabel}>Vídeo de apresentação (link)</Text>
+        <TextInput
+          style={styles.input}
+          value={videoUrl}
+          onChangeText={setVideoUrl}
+          placeholder="https://..."
+          placeholderTextColor={CORES.secundaria}
+          selectionColor={CORES.acento}
+          autoCapitalize="none"
+          keyboardType="url"
+        />
+
+        <TouchableOpacity
+          style={[styles.btnSalvar, { marginTop: 0, marginBottom: 20 }, salvandoVitrine && { opacity: 0.6 }]}
+          onPress={salvarVitrine}
+          disabled={salvandoVitrine}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.btnSalvarTexto}>{salvandoVitrine ? 'SALVANDO...' : 'SALVAR PERFIL PÚBLICO'}</Text>
+        </TouchableOpacity>
+
+        {/* Conteúdo Premium (Rede Social Fase 5) */}
+        <Text style={styles.secaoLabel}>CONTEÚDO PREMIUM</Text>
+        {!perfil?.escola?.stripeConnectOnboardingCompleto ? (
+          <Text style={{ color: CORES.secundaria, fontSize: 13, marginBottom: 20 }}>
+            Conecte sua conta Stripe no Financeiro pra poder oferecer conteúdo exclusivo por assinatura no feed.
+          </Text>
+        ) : (
+          <>
+            <Text style={styles.fieldLabel}>Preço da assinatura mensal (R$)</Text>
+            <TextInput
+              style={styles.input}
+              value={precoPremium}
+              onChangeText={setPrecoPremium}
+              keyboardType="decimal-pad"
+              placeholder="deixe em branco pra não oferecer"
+              placeholderTextColor={CORES.secundaria}
+              selectionColor={CORES.acento}
+            />
+            <TouchableOpacity
+              style={[styles.btnSalvar, { marginTop: 0, marginBottom: 20 }, salvandoPremium && { opacity: 0.6 }]}
+              onPress={salvarPremium}
+              disabled={salvandoPremium}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.btnSalvarTexto}>{salvandoPremium ? 'SALVANDO...' : 'SALVAR CONTEÚDO PREMIUM'}</Text>
+            </TouchableOpacity>
+          </>
+        )}
+
         {/* Minhas avaliações */}
         <Text style={styles.secaoLabel}>MINHAS AVALIAÇÕES</Text>
         {carregandoAvaliacoes ? (
@@ -604,6 +777,8 @@ const styles = StyleSheet.create({
     letterSpacing: 2, marginBottom: 12, marginTop: 8,
   },
   fieldLabel: { color: CORES.secundaria, fontSize: 12, letterSpacing: 1, marginBottom: 6 },
+  vitrineToggleLinha: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  vitrineToggleAjuda: { color: CORES.secundaria, fontSize: 11, marginTop: 2, lineHeight: 15 },
   input: {
     backgroundColor: CORES.superficie, borderRadius: 8,
     paddingHorizontal: 14, paddingVertical: 12,
