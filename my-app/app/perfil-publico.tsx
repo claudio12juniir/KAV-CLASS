@@ -93,6 +93,26 @@ export default function PerfilPublicoScreen() {
     } as any);
   };
 
+  const [enviandoInteresse, setEnviandoInteresse] = useState(false);
+  const querSerAluno = async () => {
+    if (!perfil || enviandoInteresse) return;
+    setEnviandoInteresse(true);
+    try {
+      const endpoint = tipo === 'escola' ? `/escolas/${perfil.id}/quero-ser-aluno` : `/professores/${perfil.id}/quero-ser-aluno`;
+      const resposta = await apiFetch(endpoint, { method: 'POST' });
+      const dados = await resposta.json();
+      if (resposta.ok) {
+        Alert.alert('Pronto!', dados.mensagem);
+      } else {
+        Alert.alert('Não foi possível', dados.erro || 'Tente novamente mais tarde.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Não foi possível falar com o servidor.');
+    } finally {
+      setEnviandoInteresse(false);
+    }
+  };
+
   useEffect(() => {
     const endpoint = tipo === 'escola' ? `/escolas/${id}/reels` : `/professores/${id}/reels`;
     apiFetch(endpoint).then((r) => r.ok && r.json()).then((d) => d && setReels(d.reels || [])).catch(() => {});
@@ -232,11 +252,26 @@ export default function PerfilPublicoScreen() {
                 ))}
               </View>
             )}
-            {tipo === 'professor' && (papel === 'professor' || papel === 'aluno') && perfil.id !== meuId && (
-              <TouchableOpacity style={styles.botaoMensagem} onPress={abrirMensagem} activeOpacity={0.85}>
-                <Ionicons name="chatbubble-outline" size={16} color={CORES.acento} />
-                <Text style={styles.botaoMensagemTexto}>Mensagem</Text>
-              </TouchableOpacity>
+            {(papel === 'professor' || papel === 'aluno' || papel === 'conta') && perfil.id !== meuId && (
+              <View style={styles.acoesLinha}>
+                {tipo === 'professor' && (papel === 'professor' || papel === 'aluno') && (
+                  <TouchableOpacity style={styles.botaoMensagem} onPress={abrirMensagem} activeOpacity={0.85}>
+                    <Ionicons name="chatbubble-outline" size={16} color={CORES.acento} />
+                    <Text style={styles.botaoMensagemTexto}>Mensagem</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={[styles.botaoMensagem, styles.botaoQuerSerAluno]}
+                  onPress={querSerAluno}
+                  disabled={enviandoInteresse}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="hand-right-outline" size={16} color="#ffffff" />
+                  <Text style={[styles.botaoMensagemTexto, { color: '#ffffff' }]}>
+                    {enviandoInteresse ? 'Enviando...' : 'Quero ser aluno'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
             )}
           </View>
 
@@ -385,12 +420,14 @@ const styles = StyleSheet.create({
   modalidadeLista: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, justifyContent: 'center' },
   modalidadeBadge: { backgroundColor: CORES.acentoClaro, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
   modalidadeBadgeTexto: { color: CORES.acento, fontSize: 11, fontWeight: '700' },
+  acoesLinha: { flexDirection: 'row', gap: 10, marginTop: 14 },
   botaoMensagem: {
-    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 14,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
     borderWidth: 1, borderColor: CORES.acento, borderRadius: RAIO.pill,
     paddingHorizontal: 18, paddingVertical: 8,
   },
   botaoMensagemTexto: { color: CORES.acento, fontWeight: '700', fontSize: 13 },
+  botaoQuerSerAluno: { backgroundColor: CORES.acento },
   secao: { marginBottom: 20 },
   secaoTitulo: { fontSize: 13, fontWeight: '700', color: CORES.secundaria, marginBottom: 8, letterSpacing: 0.5 },
   bioTexto: { fontSize: 14, color: CORES.primaria, lineHeight: 20 },

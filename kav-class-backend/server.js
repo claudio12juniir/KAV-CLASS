@@ -1658,6 +1658,117 @@ app.get('/api/escolas/:id/reels', autenticar, (req, res) =>
   listarReelsPublicos(req, res, { autorEscolaId: req.params.id }));
 
 // ============================================================================
+// "QUERO SER ALUNO" — self-service a partir do perfil público (Rede Social,
+// 18/09/2026). Pedido explícito do usuário: dá pra virar aluno de várias
+// instituições sem precisar de código de convite privado. Antifraude: isto
+// NÃO cria um Aluno/Matricula na hora — vira um Lead (mesmo pipeline de
+// captação que o professor já usa, reaproveitado 100%), com uma TarefaLead
+// de follow-up pro professor/DONO confirmar. A pessoa só vira Aluno de
+// verdade (e só fica elegível a avaliar — POST /api/aluno/avaliacoes exige
+// presença confirmada, ver acima) depois que o professor faz o cadastro de
+// sempre — um clique aqui nunca gera matrícula, cobrança nem direito de
+// avaliação sozinho.
+// ============================================================================
+
+const LIMITE_INTERESSES_POR_DIA = 5;
+
+async function resolverIdentidadeSolicitante(req) {
+  if (req.auth.papel === 'aluno') {
+    return prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { nome: true, email: true, telefone: true } });
+  }
+  if (req.auth.papel === 'professor') {
+    return prisma.professor.findUnique({ where: { id: req.auth.id }, select: { nome: true, email: true, telefone: true } });
+  }
+  if (req.auth.papel === 'conta') {
+    const conta = await prisma.conta.findUnique({ where: { id: req.auth.id }, select: { nome: true, email: true } });
+    return conta ? { ...conta, telefone: null } : null;
+  }
+  return null;
+}
+
+// Cria o Lead + TarefaLead de follow-up. Compartilhado pelas duas rotas
+// abaixo (professor e escola) — só muda o que preenche professorId.
+async function registrarInteresseComoLead(res, { escolaId, professorId, solicitante }) {
+  const emailNorm = solicitante.email?.toLowerCase().trim() || null;
+
+  if (emailNorm) {
+    const desde = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const totalHoje = await prisma.lead.count({ where: { email: emailNorm, createdAt: { gte: desde } } });
+    if (totalHoje >= LIMITE_INTERESSES_POR_DIA) {
+      return res.status(429).json({ erro: 'Você já demonstrou interesse em vários lugares hoje. Tente de novo amanhã.' });
+    }
+    const jaExiste = await prisma.lead.findFirst({ where: { escolaId, professorId, email: emailNorm, arquivado: false } });
+    if (jaExiste) {
+      return res.json({ mensagem: 'Você já demonstrou interesse aqui — em breve alguém entra em contato.' });
+    }
+  }
+
+  const primeiroEstagio = await prisma.estagioFunil.findFirst({ where: { escolaId, ativo: true }, orderBy: { ordem: 'asc' } });
+  if (!primeiroEstagio) {
+    return res.status(503).json({ erro: 'Essa instituição ainda não está pronta pra receber solicitações. Tente novamente mais tarde.' });
+  }
+
+  const lead = await prisma.lead.create({
+    data: {
+      nome: solicitante.nome || 'Interessado via app',
+      telefone: solicitante.telefone || null,
+      email: emailNorm,
+      origem: 'Rede Social (perfil público)',
+      estagioId: primeiroEstagio.id,
+      professorId: professorId || null,
+      escolaId,
+    },
+  });
+
+  const amanha = new Date();
+  amanha.setDate(amanha.getDate() + 1);
+  await prisma.tarefaLead.create({
+    data: {
+      descricao: 'Entrar em contato — interesse registrado pelo perfil público no app.',
+      dataPrevista: amanha,
+      leadId: lead.id,
+      responsavelId: professorId || null,
+      escolaId,
+    },
+  });
+
+  res.status(201).json({ mensagem: 'Interesse enviado! Em breve alguém entra em contato com você.' });
+}
+
+app.post('/api/professores/:id/quero-ser-aluno', autenticar, async (req, res) => {
+  try {
+    const professor = await prisma.professor.findFirst({
+      where: { id: req.params.id, visivelBuscaSelf: true, ativoNaEscola: true },
+      select: { id: true, escolaId: true },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+
+    const solicitante = await resolverIdentidadeSolicitante(req);
+    if (!solicitante) return res.status(403).json({ erro: 'Entre com sua conta pra demonstrar interesse.' });
+
+    await registrarInteresseComoLead(res, { escolaId: professor.escolaId, professorId: professor.id, solicitante });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao registrar interesse.' });
+  }
+});
+
+app.post('/api/escolas/:id/quero-ser-aluno', autenticar, async (req, res) => {
+  try {
+    const escola = await prisma.escola.findFirst({ where: { id: req.params.id, pacote: 'PACOTE_ESCOLA' }, select: { id: true } });
+    if (!escola) return res.status(404).json({ erro: 'Escola não encontrada.' });
+
+    const solicitante = await resolverIdentidadeSolicitante(req);
+    if (!solicitante) return res.status(403).json({ erro: 'Entre com sua conta pra demonstrar interesse.' });
+
+    await registrarInteresseComoLead(res, { escolaId: escola.id, professorId: null, solicitante });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao registrar interesse.' });
+  }
+});
+
+// ============================================================================
 // FEED / POSTS — Rede Social Fase 4. Comunidade fechada por Escola: o feed
 // só mostra posts com o MESMO escolaId do vínculo ativo de quem está
 // olhando (nunca um feed global) — "timeline do professor"/"comunidade de
@@ -4970,6 +5081,12 @@ app.post('/api/aluno/avaliacoes', exigirAluno, async (req, res) => {
     if (aulaId) {
       const aula = await prisma.aula.findFirst({ where: { id: aulaId, alunoId: req.auth.id } });
       if (!aula) return res.status(404).json({ erro: 'Aula não encontrada.' });
+      // Antifraude (18/09/2026): só dá pra avaliar uma aula em que a
+      // presença foi de fato confirmada — sem isso, bastava marcar uma
+      // aula futura/pendente como alvo pra avaliar sem nunca ter assistido.
+      if (aula.presenca !== 'PRESENTE') {
+        return res.status(400).json({ erro: 'Só é possível avaliar aulas com presença confirmada.' });
+      }
       professorId = aula.professorId;
     } else {
       if (!professorId) return res.status(400).json({ erro: 'professorId ou aulaId é obrigatório.' });
@@ -4977,6 +5094,17 @@ app.post('/api/aluno/avaliacoes', exigirAluno, async (req, res) => {
       const temMatricula = await prisma.matricula.findFirst({ where: { alunoId: req.auth.id, professorId } });
       if (aluno?.professorId !== professorId && !temMatricula) {
         return res.status(400).json({ erro: 'Esse professor não dá aula pra você.' });
+      }
+      // Antifraude (18/09/2026): vínculo (professorId/Matricula) sozinho não
+      // prova que o aluno já teve aula de verdade — sem isso, um professor
+      // mal-intencionado podia criar um aluno fake pelo próprio código de
+      // convite e se autoavaliar na hora, sem nenhum histórico real.
+      const temPresencaConfirmada = await prisma.aula.findFirst({
+        where: { alunoId: req.auth.id, professorId, presenca: 'PRESENTE' },
+        select: { id: true },
+      });
+      if (!temPresencaConfirmada) {
+        return res.status(400).json({ erro: 'Você precisa ter pelo menos uma aula com presença confirmada pra avaliar este professor.' });
       }
     }
 
