@@ -17,7 +17,7 @@ jest.mock('@prisma/client', () => {
     professor: { findMany: jest.fn(), findFirst: jest.fn(), findUnique: jest.fn() },
     escola: { findMany: jest.fn(), findFirst: jest.fn() },
     curso: { findMany: jest.fn() },
-    avaliacao: { aggregate: jest.fn() },
+    avaliacao: { aggregate: jest.fn(), findMany: jest.fn(), groupBy: jest.fn() },
     $connect: jest.fn(),
     $disconnect: jest.fn(),
   };
@@ -77,6 +77,25 @@ describe('GET /api/busca/professores', () => {
     expect(where.estado).toEqual({ equals: 'PE' });
     expect(where.nome).toEqual({ contains: 'Ana', mode: 'insensitive' });
   });
+
+  test('exige nivelPlano:COMPLETO e ordena por notaMedia desc', async () => {
+    prismaMock.professor.findMany.mockResolvedValue([
+      { id: 'prof-1', nome: 'Sem nota' },
+      { id: 'prof-2', nome: 'Nota alta' },
+      { id: 'prof-3', nome: 'Nota baixa' },
+    ]);
+    prismaMock.avaliacao.groupBy.mockResolvedValue([
+      { professorId: 'prof-2', _avg: { nota: 5 }, _count: { nota: 3 } },
+      { professorId: 'prof-3', _avg: { nota: 2 }, _count: { nota: 1 } },
+    ]);
+    const token = assinarToken({ id: 'aluno-1', papel: 'aluno' });
+
+    const resposta = await request(app).get('/api/busca/professores').set('Authorization', `Bearer ${token}`);
+
+    const where = prismaMock.professor.findMany.mock.calls[0][0].where;
+    expect(where.nivelPlano).toBe('COMPLETO');
+    expect(resposta.body.professores.map((p) => p.id)).toEqual(['prof-2', 'prof-3', 'prof-1']);
+  });
 });
 
 describe('GET /api/busca/escolas', () => {
@@ -113,6 +132,7 @@ describe('GET /api/professores/:id/perfil-publico', () => {
       id: 'prof-1', nome: 'Fulano', fotoUrl: null, bio: 'Ensino violão há 10 anos', cidade: 'Recife', estado: 'PE', cursos: ['Violão'], videoApresentacaoUrl: null,
     });
     prismaMock.avaliacao.aggregate.mockResolvedValue({ _avg: { nota: 4.5 }, _count: { nota: 10 } });
+    prismaMock.avaliacao.findMany.mockResolvedValue([]);
     const token = assinarToken({ id: 'conta-1', papel: 'conta' });
 
     const resposta = await request(app)
@@ -126,6 +146,24 @@ describe('GET /api/professores/:id/perfil-publico', () => {
     expect(resposta.body.email).toBeUndefined();
     expect(resposta.body.telefone).toBeUndefined();
     expect(resposta.body.chavePix).toBeUndefined();
+  });
+
+  test('devolve a lista pública de avaliações (nome do aluno + comentário)', async () => {
+    prismaMock.professor.findFirst.mockResolvedValue({ id: 'prof-1', nome: 'Fulano' });
+    prismaMock.avaliacao.aggregate.mockResolvedValue({ _avg: { nota: 4.5 }, _count: { nota: 1 } });
+    prismaMock.avaliacao.findMany.mockResolvedValue([
+      { id: 'av-1', nota: 5, comentario: 'Ótimo professor!', createdAt: new Date('2026-01-01'), aluno: { nome: 'Ana', fotoUrl: null } },
+    ]);
+    const token = assinarToken({ id: 'conta-1', papel: 'conta' });
+
+    const resposta = await request(app)
+      .get('/api/professores/prof-1/perfil-publico')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(resposta.status).toBe(200);
+    expect(resposta.body.avaliacoes).toEqual([
+      { id: 'av-1', nota: 5, comentario: 'Ótimo professor!', createdAt: expect.any(String), aluno: { nome: 'Ana', fotoUrl: null } },
+    ]);
   });
 });
 
@@ -144,6 +182,7 @@ describe('GET /api/escolas/:id/perfil-publico', () => {
   test('escola de verdade: 200, com cursos e nota média da escola', async () => {
     prismaMock.escola.findFirst.mockResolvedValue({ id: 'escola-1', nome: 'Instituto X', logoUrl: null, bio: 'Escola de música', cidade: 'Recife', estado: 'PE' });
     prismaMock.avaliacao.aggregate.mockResolvedValue({ _avg: { notaEscola: 4.8 }, _count: { notaEscola: 20 } });
+    prismaMock.avaliacao.findMany.mockResolvedValue([]);
     prismaMock.curso.findMany.mockResolvedValue([{ nome: 'Violão' }, { nome: 'Piano' }]);
     const token = assinarToken({ id: 'conta-1', papel: 'conta' });
 

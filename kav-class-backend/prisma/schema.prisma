@@ -167,6 +167,28 @@ enum PacoteAssinatura {
   PACOTE_ESCOLA
 }
 
+// Classificação de modalidade de ensino (Rede Social — planos/captação,
+// 18/09/2026). Multi-select: um professor/escola pode dar aula presencial
+// E remota ao mesmo tempo. ONLINE sinaliza "100% curso gravado/vendido, sem
+// aluno matriculado no sentido tradicional de agenda/presença/reposição" —
+// hoje só é um rótulo informativo; o pacote Completo pra esse perfil ainda
+// não foi redesenhado (ver aviso em POST /checkout).
+enum ModalidadeEnsino {
+  PRESENCIAL
+  REMOTO
+  ONLINE
+}
+
+// Nível do plano pago (Rede Social — planos em 2 níveis, 18/09/2026). BASICO =
+// só ferramentas de gestão (SaaS). COMPLETO = SaaS + Rede Social (aparece na
+// busca, tem avaliações públicas, entra no ranking por nota). Reels é liberado
+// já no BASICO (isca de captação) — não depende deste enum, só de
+// assinaturaStatus ativo.
+enum NivelPlano {
+  BASICO
+  COMPLETO
+}
+
 // ─── 0. ESCOLA ───────────────────────────────────────────────────
 // Tenant raiz. Introduzida em S0.1 como infraestrutura aditiva: todo
 // Professor/Aluno existente ganha uma Escola de 1 pessoa via backfill,
@@ -233,6 +255,14 @@ model Escola {
   cidade String?
   estado String? // UF, ex: "SP"
 
+  // Classificação de modalidade de ensino (ver enum ModalidadeEnsino acima).
+  modalidadeEnsino ModalidadeEnsino[] @default([PRESENCIAL])
+
+  // Nível do plano pago (ver enum NivelPlano acima) — quem cobra é sempre o
+  // DONO (Professor.stripeCustomerId/assinaturaStatus), mas o nível que
+  // decide se a Escola aparece em busca/avaliações públicas é este aqui.
+  nivelPlano NivelPlano @default(BASICO)
+
   // valorPorAula é a base do cálculo de pagamento de professor (Sprint 7,
   // "coração do sistema" nas palavras do usuário) — v1 global por Escola,
   // não por professor (ver TipoRemuneracaoProfessor acima).
@@ -277,6 +307,12 @@ model Escola {
   // dela) — é o que popula o feed de quem tem vínculo aqui.
   postsAutorados Post[] @relation("PostAutorEscola")
   posts          Post[] @relation("PostEscopo")
+
+  // Reels (Rede Social — Epic D, 18/09/2026): mesmo padrão de Post acima —
+  // reelsAutorados: reels feitos EM NOME da Escola; reels: todo reel
+  // escopado a esta Escola (autoria própria + de todos os professores dela).
+  reelsAutorados Reel[] @relation("ReelAutorEscola")
+  reels          Reel[] @relation("ReelEscopo")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -335,6 +371,7 @@ model Professor {
   cidade               String?
   estado               String? // UF, ex: "SP"
   videoApresentacaoUrl String?
+  modalidadeEnsino     ModalidadeEnsino[] @default([PRESENCIAL])
 
   // Paywall de conteúdo (Rede Social Fase 5) — preço mensal (BRL) do
   // conteúdo exclusivo no feed. Null/0 = professor não oferece premium,
@@ -358,14 +395,15 @@ model Professor {
   assinaturaStatus StatusAssinaturaProfessor @default(INATIVO)
   assinaturaFim    DateTime?
   stripeSessionId  String?
+  nivelPlano       NivelPlano                @default(BASICO)
 
   // Fundação de identidade unificada (Rede Social Fase 1) — ver Conta acima.
   // visivelBuscaSelf fica pronto sem UI ainda: gate de busca de aula
   // particular (Fase 2) pra professor que ativou o SELF pago, distinto do
   // acesso institucional gratuito (assinaturaStatus=ATIVO de escola paga).
   contaId          String?
-  conta            Conta?   @relation(fields: [contaId], references: [id])
-  visivelBuscaSelf Boolean  @default(false)
+  conta            Conta?  @relation(fields: [contaId], references: [id])
+  visivelBuscaSelf Boolean @default(false)
 
   escolaId String
   escola   Escola       @relation(fields: [escolaId], references: [id])
@@ -404,6 +442,11 @@ model Professor {
   posts       Post[]           @relation("PostAutorProfessor")
   curtidas    PostCurtida[]
   comentarios PostComentario[]
+
+  // Reels (Rede Social — Epic D, 18/09/2026)
+  reels            Reel[]           @relation("ReelAutorProfessor")
+  curtidasReels    ReelCurtida[]
+  comentariosReels ReelComentario[]
 
   // Paywall (Rede Social Fase 5) — alunos assinantes do conteúdo premium
   // DESTE professor.
@@ -525,12 +568,16 @@ model Aluno {
   curtidas    PostCurtida[]
   comentarios PostComentario[]
 
+  // Reels (Rede Social — Epic D, 18/09/2026) — mesma regra: aluno só curte/comenta.
+  curtidasReels    ReelCurtida[]
+  comentariosReels ReelComentario[]
+
   // Paywall (Rede Social Fase 5) — assinaturas premium que ESTE aluno fez a
   // professores (pode assinar mais de um).
   assinaturasPremium AssinaturaPremium[]
 
-  @@index([professorId, status])
   @@unique([email, escolaId])
+  @@index([professorId, status])
   @@index([status])
   @@index([escolaId])
   @@index([responsavelId])
@@ -1857,7 +1904,7 @@ model PostCurtida {
   autorProfessor   Professor? @relation(fields: [autorProfessorId], references: [id])
 
   autorAlunoId String?
-  autorAluno   Aluno? @relation(fields: [autorAlunoId], references: [id])
+  autorAluno   Aluno?  @relation(fields: [autorAlunoId], references: [id])
 
   createdAt DateTime @default(now())
 
@@ -1880,11 +1927,89 @@ model PostComentario {
   autorProfessor   Professor? @relation(fields: [autorProfessorId], references: [id])
 
   autorAlunoId String?
-  autorAluno   Aluno? @relation(fields: [autorAlunoId], references: [id])
+  autorAluno   Aluno?  @relation(fields: [autorAlunoId], references: [id])
 
   createdAt DateTime @default(now())
 
   @@index([postId])
+}
+
+// ─── REELS (Rede Social — planos/captação, Epic D, 18/09/2026) ────────────
+// Vídeo curto, liberado já no plano BASICO (isca de captação, não upsell do
+// Completo — ver NivelPlano). videoId é o UID do Cloudflare Stream (Direct
+// Creator Upload: o backend só gera a URL descartável de upload em
+// POST /api/reels/upload-url, o app sobe o arquivo direto pro Cloudflare,
+// nunca passa pelo nosso servidor). status começa PROCESSANDO até o
+// webhook do Cloudflare confirmar que o encode terminou.
+enum StatusReel {
+  PROCESSANDO
+  PRONTO
+  ERRO
+}
+
+model Reel {
+  id                 String     @id @default(uuid())
+  videoId            String     @unique
+  thumbnailUrl       String?
+  duracaoSegundos    Int?
+  descricao          String?
+  status             StatusReel @default(PROCESSANDO)
+  totalVisualizacoes Int        @default(0)
+
+  autorProfessorId String?
+  autorProfessor   Professor? @relation("ReelAutorProfessor", fields: [autorProfessorId], references: [id])
+
+  autorEscolaId String?
+  autorEscola   Escola? @relation("ReelAutorEscola", fields: [autorEscolaId], references: [id])
+
+  // Escopo do feed — mesmo padrão denormalizado de Post.escolaId.
+  escolaId String
+  escola   Escola @relation("ReelEscopo", fields: [escolaId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  curtidas    ReelCurtida[]
+  comentarios ReelComentario[]
+
+  @@index([escolaId, createdAt])
+  @@index([autorProfessorId])
+}
+
+model ReelCurtida {
+  id     String @id @default(uuid())
+  reelId String
+  reel   Reel   @relation(fields: [reelId], references: [id], onDelete: Cascade)
+
+  autorProfessorId String?
+  autorProfessor   Professor? @relation(fields: [autorProfessorId], references: [id])
+
+  autorAlunoId String?
+  autorAluno   Aluno?  @relation(fields: [autorAlunoId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([reelId, autorProfessorId])
+  @@unique([reelId, autorAlunoId])
+  @@index([reelId])
+}
+
+model ReelComentario {
+  id       String @id @default(uuid())
+  conteudo String
+
+  reelId String
+  reel   Reel   @relation(fields: [reelId], references: [id], onDelete: Cascade)
+
+  autorProfessorId String?
+  autorProfessor   Professor? @relation(fields: [autorProfessorId], references: [id])
+
+  autorAlunoId String?
+  autorAluno   Aluno?  @relation(fields: [autorAlunoId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([reelId])
 }
 
 // ─── PAYWALL / CONTEÚDO PREMIUM (Rede Social Fase 5) ──────────────────────
@@ -1900,7 +2025,7 @@ model AssinaturaPremium {
   id String @id @default(uuid())
 
   alunoId String
-  aluno   Aluno @relation(fields: [alunoId], references: [id])
+  aluno   Aluno  @relation(fields: [alunoId], references: [id])
 
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])

@@ -86,6 +86,33 @@ async function asaasFetch(escola, path, options = {}) {
   return corpo;
 }
 
+// ─── CLOUDFLARE STREAM (Reels, Epic D, 18/09/2026) ──────────────────────────
+// Direct Creator Upload: o backend só pede à Cloudflare uma URL de upload
+// descartável — o app sobe o arquivo de vídeo direto pra lá, o token da
+// plataforma nunca chega ao cliente (mesmo espírito de não expor segredo
+// nenhum de terceiro, ver asaasFetch acima). Sem CLOUDFLARE_ACCOUNT_ID/
+// CLOUDFLARE_STREAM_API_TOKEN configurados, toda rota de Reels responde 503
+// (mesmo padrão do `stripe` null acima).
+const CLOUDFLARE_STREAM_CONFIGURADO = !!(process.env.CLOUDFLARE_ACCOUNT_ID && process.env.CLOUDFLARE_STREAM_API_TOKEN);
+async function cloudflareStreamFetch(path, options = {}) {
+  const resposta = await fetch(`https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.CLOUDFLARE_STREAM_API_TOKEN}`,
+      ...(options.headers || {}),
+    },
+  });
+  const corpo = await resposta.json().catch(() => ({}));
+  if (!resposta.ok || corpo.success === false) {
+    const mensagem = corpo?.errors?.[0]?.message || 'Erro ao chamar o Cloudflare Stream.';
+    const erro = new Error(mensagem);
+    erro.status = resposta.status;
+    throw erro;
+  }
+  return corpo.result;
+}
+
 // Client IDs OAuth do Google (Web/iOS/Android) — login com Google fica desativado
 // (503) até essas variáveis serem configuradas no ambiente.
 const GOOGLE_CLIENT_IDS = [
@@ -235,20 +262,9 @@ app.post('/stripe/webhook', express.raw({ type: 'application/json' }), async (re
             stripeCustomerId: session.customer ? String(session.customer) : null,
           },
         });
-      } else {
-        // Assinatura Escola → Kav Class (fluxo já existente, sem mudança)
-        const professorId = session.client_reference_id;
-        const plano = session.metadata?.plano;
-        if (professorId) {
-          await prisma.professor.update({
-            where: { id: professorId },
-            data: {
-              ...(session.customer ? { stripeCustomerId: String(session.customer) } : {}),
-              stripeSessionId: session.id,
-              assinaturaStatus: plano === 'one-time' ? 'VITALICIO' : 'ATIVO',
-            },
-          });
-        }
+      } else if (session.client_reference_id) {
+        // Assinatura Professor/Escola → Kav Class (planos em 2 níveis).
+        await ativarAssinaturaPosCheckout(session);
       }
     } else if (event.type === 'customer.subscription.updated') {
       const sub = event.data.object;
@@ -388,6 +404,50 @@ app.post('/asaas/webhook', express.json({ limit: '2mb' }), async (req, res) => {
     }
   } catch (err) {
     console.error('[Asaas Webhook] Erro ao processar evento:', err);
+  }
+
+  res.json({ received: true });
+});
+
+// ─── CLOUDFLARE STREAM WEBHOOK (Reels, Epic D) — raw body MUST come before
+// express.json, mesmo motivo do webhook do Stripe acima: a assinatura HMAC
+// é calculada sobre os bytes crus do corpo, reserializar via JSON.stringify
+// pode não bater byte a byte com o que a Cloudflare assinou. Dispara quando
+// o encode de um vídeo termina (ou falha) — atualiza Reel.status de
+// PROCESSANDO pra PRONTO/ERRO. Registrado via CronCreate/setup manual (ver
+// docs) com POST /accounts/:id/stream/webhook, que devolve o secret usado
+// aqui em CLOUDFLARE_STREAM_WEBHOOK_SECRET.
+app.post('/stream/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const segredo = process.env.CLOUDFLARE_STREAM_WEBHOOK_SECRET;
+  if (!segredo) return res.status(200).json({ received: true });
+
+  try {
+    const assinatura = req.headers['webhook-signature'] || '';
+    const partes = Object.fromEntries(assinatura.split(',').map((p) => p.split('=')));
+    const corpoCru = req.body.toString('utf8');
+    const esperado = crypto.createHmac('sha256', segredo).update(`${partes.time}.${corpoCru}`).digest('hex');
+    const valido = partes.sig1 && esperado.length === partes.sig1.length &&
+      crypto.timingSafeEqual(Buffer.from(esperado), Buffer.from(partes.sig1));
+    if (!valido) return res.status(401).json({ erro: 'Assinatura inválida.' });
+
+    const evento = JSON.parse(corpoCru);
+    const pronto = evento.status?.state === 'ready' || evento.readyToStream === true;
+    const erro = evento.status?.state === 'error';
+
+    if (evento.uid && (pronto || erro)) {
+      await prisma.reel.updateMany({
+        where: { videoId: evento.uid },
+        data: {
+          status: pronto ? 'PRONTO' : 'ERRO',
+          ...(pronto ? {
+            thumbnailUrl: evento.thumbnail || null,
+            duracaoSegundos: evento.duration ? Math.round(evento.duration) : null,
+          } : {}),
+        },
+      });
+    }
+  } catch (err) {
+    console.error('[Stream Webhook] Erro ao processar evento:', err.message);
   }
 
   res.json({ received: true });
@@ -896,10 +956,11 @@ app.post('/api/professores/cadastro', async (req, res) => {
 // POST /api/escola/cadastro — Fase 6 (S6.3): autocadastro de Escola direto
 // pelo app, sem depender do painel web. Mesmo espírito de /api/professores/cadastro
 // (conta ativa na hora, 15 dias grátis) — a diferença é que aqui a Escola já
-// nasce PACOTE_ESCOLA e com o quem cadastrou como DONO. Preço da Escola é
-// sob consulta (ver escolher-plano.tsx), então não passa por checkout aqui:
-// quando o teste acabar, o DONO é direcionado a "falar com a gente" — não
-// existe tier self-serve de Escola ainda.
+// nasce PACOTE_ESCOLA e com o quem cadastrou como DONO. Não passa por
+// checkout aqui: quando o teste acabar, checarBloqueioAssinaturaProfessor
+// bloqueia o login e o DONO cai em /escolher-plano com pacote:'PACOTE_ESCOLA'
+// — checkout self-service dos planos Básico/Completo de Escola (planos em 2
+// níveis, 18/09/2026), sem intervenção manual.
 app.post('/api/escola/cadastro', async (req, res) => {
   try {
     const { nomeEscola, nome, email, senha, telefone, fotoUrl } = req.body;
@@ -1109,6 +1170,13 @@ async function checarBloqueioAssinaturaProfessor(professor) {
   }
 
   if (status === 'PENDENTE' || status === 'INATIVO' || status === 'CANCELADO') {
+    // pacote decide qual par de planos (Professor Básico/Completo ou Escola
+    // Básico/Completo) o app mostra em /escolher-plano — todo Professor é
+    // DONO da própria escola de 1 pessoa por padrão (Pacote Professor), só
+    // quem de fato cadastrou uma instituição (POST /api/escola/cadastro)
+    // tem pacote PACOTE_ESCOLA aqui.
+    const escola = await prisma.escola.findUnique({ where: { id: professor.escolaId }, select: { pacote: true, modalidadeEnsino: true } });
+    const pacote = escola?.pacote || 'PACOTE_PROFESSOR';
     return {
       erro: testeVencido
         ? 'Seu período de teste grátis de 15 dias terminou. Escolha um plano para continuar.'
@@ -1117,6 +1185,10 @@ async function checarBloqueioAssinaturaProfessor(professor) {
       professorId: professor.id,
       email: professor.email,
       codigoConvite: professor.codigoConvite,
+      pacote,
+      // Modalidade do que está de fato sendo assinado: da Escola quando é
+      // instituição, do próprio Professor quando é conta individual (SELF).
+      modalidadeEnsino: pacote === 'PACOTE_ESCOLA' ? (escola?.modalidadeEnsino || []) : professor.modalidadeEnsino,
     };
   }
   return null;
@@ -1341,24 +1413,48 @@ const RESULTADOS_BUSCA_MAX = 30;
 
 app.get('/api/busca/professores', autenticar, async (req, res) => {
   try {
-    const { curso, cidade, estado, q } = req.query;
+    const { curso, cidade, estado, q, modalidade } = req.query;
 
     const professores = await prisma.professor.findMany({
       where: {
         visivelBuscaSelf: true,
         ativoNaEscola: true,
         assinaturaStatus: { in: ['ATIVO', 'VITALICIO', 'TESTE'] },
+        // Gate por nível (planos em 2 níveis, 18/09/2026): busca/avaliação
+        // pública é feature do plano COMPLETO — BASICO continua com o SaaS
+        // de gestão normal, só não aparece pra quem procura aula/escola.
+        nivelPlano: 'COMPLETO',
         ...(curso ? { cursos: { has: String(curso) } } : {}),
         ...(cidade ? { cidade: { equals: String(cidade), mode: 'insensitive' } } : {}),
         ...(estado ? { estado: { equals: String(estado).toUpperCase() } } : {}),
         ...(q ? { nome: { contains: String(q), mode: 'insensitive' } } : {}),
+        ...(modalidade ? { modalidadeEnsino: { has: String(modalidade).toUpperCase() } } : {}),
       },
-      select: { id: true, nome: true, fotoUrl: true, bio: true, cidade: true, estado: true, cursos: true },
+      select: { id: true, nome: true, fotoUrl: true, bio: true, cidade: true, estado: true, cursos: true, modalidadeEnsino: true },
       orderBy: { createdAt: 'desc' },
       take: RESULTADOS_BUSCA_MAX,
     });
 
-    res.json({ professores });
+    // Ranking por nota (Rede Social — Epic B, 18/09/2026): groupBy numa
+    // query só, em vez de um aggregate por professor (evitaria N+1 pra até
+    // RESULTADOS_BUSCA_MAX linhas). Quem não tem avaliação nenhuma cai pro
+    // fim da lista, não some.
+    const notas = professores.length
+      ? await prisma.avaliacao.groupBy({
+          by: ['professorId'],
+          where: { professorId: { in: professores.map((p) => p.id) } },
+          _avg: { nota: true },
+          _count: { nota: true },
+        })
+      : [];
+    const notaPorProfessor = new Map(notas.map((n) => [n.professorId, n]));
+    const comNota = professores.map((p) => {
+      const n = notaPorProfessor.get(p.id);
+      return { ...p, notaMedia: n?._avg.nota ?? null, totalAvaliacoes: n?._count.nota ?? 0 };
+    });
+    comNota.sort((a, b) => (b.notaMedia ?? -1) - (a.notaMedia ?? -1));
+
+    res.json({ professores: comNota });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao buscar professores.' });
@@ -1367,22 +1463,48 @@ app.get('/api/busca/professores', autenticar, async (req, res) => {
 
 app.get('/api/busca/escolas', autenticar, async (req, res) => {
   try {
-    const { curso, cidade, estado, q } = req.query;
+    const { curso, cidade, estado, q, modalidade } = req.query;
 
     const escolas = await prisma.escola.findMany({
       where: {
         pacote: 'PACOTE_ESCOLA',
+        nivelPlano: 'COMPLETO',
         ...(cidade ? { cidade: { equals: String(cidade), mode: 'insensitive' } } : {}),
         ...(estado ? { estado: { equals: String(estado).toUpperCase() } } : {}),
         ...(q ? { nome: { contains: String(q), mode: 'insensitive' } } : {}),
         ...(curso ? { cursos: { some: { nome: { equals: String(curso), mode: 'insensitive' }, ativo: true } } } : {}),
+        ...(modalidade ? { modalidadeEnsino: { has: String(modalidade).toUpperCase() } } : {}),
       },
-      select: { id: true, nome: true, logoUrl: true, bio: true, cidade: true, estado: true },
+      select: { id: true, nome: true, logoUrl: true, bio: true, cidade: true, estado: true, modalidadeEnsino: true },
       orderBy: { createdAt: 'desc' },
       take: RESULTADOS_BUSCA_MAX,
     });
 
-    res.json({ escolas });
+    // Ranking por nota (Rede Social — Epic B, 18/09/2026): notaEscola vive em
+    // Avaliacao.professorId (o aluno avalia professor+escola na mesma
+    // submissão mensal), não tem escolaId direto — por isso o join manual em
+    // vez de groupBy (Prisma não agrupa por campo de relação).
+    const escolaIds = escolas.map((e) => e.id);
+    const avaliacoesEscolas = escolaIds.length
+      ? await prisma.avaliacao.findMany({
+          where: { notaEscola: { not: null }, professor: { escolaId: { in: escolaIds } } },
+          select: { notaEscola: true, professor: { select: { escolaId: true } } },
+        })
+      : [];
+    const somaPorEscola = new Map();
+    for (const a of avaliacoesEscolas) {
+      const atual = somaPorEscola.get(a.professor.escolaId) || { soma: 0, total: 0 };
+      atual.soma += a.notaEscola;
+      atual.total += 1;
+      somaPorEscola.set(a.professor.escolaId, atual);
+    }
+    const comNota = escolas.map((e) => {
+      const agr = somaPorEscola.get(e.id);
+      return { ...e, notaMedia: agr ? agr.soma / agr.total : null, totalAvaliacoes: agr?.total ?? 0 };
+    });
+    comNota.sort((a, b) => (b.notaMedia ?? -1) - (a.notaMedia ?? -1));
+
+    res.json({ escolas: comNota });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao buscar escolas.' });
@@ -1393,11 +1515,13 @@ app.get('/api/busca/escolas', autenticar, async (req, res) => {
 // desconhecido ver (nunca email/telefone/chavePix). 404 (não 403) quando o
 // professor não está com SELF ativo, de propósito: não revela se aquele id
 // existe ou não pra quem só está de passagem.
+const AVALIACOES_PUBLICAS_POR_PAGINA = 20;
+
 app.get('/api/professores/:id/perfil-publico', autenticar, async (req, res) => {
   try {
     const professor = await prisma.professor.findFirst({
-      where: { id: req.params.id, visivelBuscaSelf: true, ativoNaEscola: true },
-      select: { id: true, nome: true, fotoUrl: true, bio: true, cidade: true, estado: true, cursos: true, videoApresentacaoUrl: true, precoAssinaturaPremium: true },
+      where: { id: req.params.id, visivelBuscaSelf: true, ativoNaEscola: true, nivelPlano: 'COMPLETO' },
+      select: { id: true, nome: true, fotoUrl: true, bio: true, cidade: true, estado: true, cursos: true, videoApresentacaoUrl: true, precoAssinaturaPremium: true, modalidadeEnsino: true },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
 
@@ -1407,7 +1531,26 @@ app.get('/api/professores/:id/perfil-publico', autenticar, async (req, res) => {
       _count: { nota: true },
     });
 
-    res.json({ ...professor, notaMedia: avaliacao._avg.nota, totalAvaliacoes: avaliacao._count.nota });
+    // Lista pública de avaliações (Rede Social — Epic B, 18/09/2026): só
+    // chega aqui quem já passou pelo gate nivelPlano:COMPLETO acima. Nome do
+    // aluno + comentário: mesma exposição que já existia pro próprio
+    // professor ver em (professor)/perfil.tsx, agora pública.
+    const pagina = Math.max(1, parseInt(req.query.pagina, 10) || 1);
+    const avaliacoes = await prisma.avaliacao.findMany({
+      where: { professorId: professor.id, comentario: { not: null } },
+      select: { id: true, nota: true, comentario: true, createdAt: true, aluno: { select: { nome: true, fotoUrl: true } } },
+      orderBy: { createdAt: 'desc' },
+      skip: (pagina - 1) * AVALIACOES_PUBLICAS_POR_PAGINA,
+      take: AVALIACOES_PUBLICAS_POR_PAGINA,
+    });
+
+    res.json({
+      ...professor,
+      notaMedia: avaliacao._avg.nota,
+      totalAvaliacoes: avaliacao._count.nota,
+      avaliacoes,
+      proximaPagina: avaliacoes.length === AVALIACOES_PUBLICAS_POR_PAGINA ? pagina + 1 : null,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao carregar perfil.' });
@@ -1417,8 +1560,8 @@ app.get('/api/professores/:id/perfil-publico', autenticar, async (req, res) => {
 app.get('/api/escolas/:id/perfil-publico', autenticar, async (req, res) => {
   try {
     const escola = await prisma.escola.findFirst({
-      where: { id: req.params.id, pacote: 'PACOTE_ESCOLA' },
-      select: { id: true, nome: true, logoUrl: true, bio: true, cidade: true, estado: true },
+      where: { id: req.params.id, pacote: 'PACOTE_ESCOLA', nivelPlano: 'COMPLETO' },
+      select: { id: true, nome: true, logoUrl: true, bio: true, cidade: true, estado: true, modalidadeEnsino: true },
     });
     if (!escola) return res.status(404).json({ erro: 'Escola não encontrada.' });
 
@@ -1434,12 +1577,85 @@ app.get('/api/escolas/:id/perfil-publico', autenticar, async (req, res) => {
       take: 50,
     });
 
-    res.json({ ...escola, cursos: cursos.map((c) => c.nome), notaMedia: avaliacao._avg.notaEscola, totalAvaliacoes: avaliacao._count.notaEscola });
+    // Lista pública de avaliações da Escola (Rede Social — Epic B,
+    // 18/09/2026) — mesma linha de Avaliacao do professor, só que lendo
+    // notaEscola/mesReferencia em vez de nota (ver comentário no model).
+    const pagina = Math.max(1, parseInt(req.query.pagina, 10) || 1);
+    const avaliacoesRaw = await prisma.avaliacao.findMany({
+      where: { professor: { escolaId: escola.id }, notaEscola: { not: null }, comentario: { not: null } },
+      select: { id: true, notaEscola: true, comentario: true, createdAt: true, aluno: { select: { nome: true, fotoUrl: true } } },
+      orderBy: { createdAt: 'desc' },
+      skip: (pagina - 1) * AVALIACOES_PUBLICAS_POR_PAGINA,
+      take: AVALIACOES_PUBLICAS_POR_PAGINA,
+    });
+    const avaliacoes = avaliacoesRaw.map(({ notaEscola, ...a }) => ({ ...a, nota: notaEscola }));
+
+    res.json({
+      ...escola,
+      cursos: cursos.map((c) => c.nome),
+      notaMedia: avaliacao._avg.notaEscola,
+      totalAvaliacoes: avaliacao._count.notaEscola,
+      avaliacoes,
+      proximaPagina: avaliacoes.length === AVALIACOES_PUBLICAS_POR_PAGINA ? pagina + 1 : null,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao carregar perfil.' });
   }
 });
+
+// GET /api/professores/:id/reels e /api/escolas/:id/reels — grid de Reels
+// do perfil público (Rede Social — Epic D, 18/09/2026). Diferente de GET
+// /api/reels (escopado pela escola de quem PEDE, feed estilo comunidade
+// fechada), aqui é escopado pelo AUTOR sendo visitado — qualquer pessoa
+// autenticada pode ver os Reels públicos de qualquer professor/escola,
+// sem precisar compartilhar a mesma Escola.
+async function listarReelsPublicos(req, res, filtroAutor) {
+  try {
+    const cursor = req.query.cursor;
+    const reels = await prisma.reel.findMany({
+      where: { ...filtroAutor, status: 'PRONTO' },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      ...(cursor ? { cursor: { id: String(cursor) }, skip: 1 } : {}),
+      include: { _count: { select: { curtidas: true, comentarios: true } } },
+    });
+
+    const curtidasDoUsuario = reels.length ? await prisma.reelCurtida.findMany({
+      where: {
+        reelId: { in: reels.map((r) => r.id) },
+        ...(req.auth.papel === 'professor' ? { autorProfessorId: req.auth.id } : { autorAlunoId: req.auth.id }),
+      },
+      select: { reelId: true },
+    }) : [];
+    const idsCurtidos = new Set(curtidasDoUsuario.map((c) => c.reelId));
+
+    res.json({
+      reels: reels.map((r) => ({
+        id: r.id,
+        videoId: r.videoId,
+        thumbnailUrl: r.thumbnailUrl,
+        duracaoSegundos: r.duracaoSegundos,
+        descricao: r.descricao,
+        totalVisualizacoes: r.totalVisualizacoes,
+        createdAt: r.createdAt,
+        totalCurtidas: r._count.curtidas,
+        totalComentarios: r._count.comentarios,
+        curtidoPeloUsuario: idsCurtidos.has(r.id),
+      })),
+      proximoCursor: reels.length === 20 ? reels[reels.length - 1].id : null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar Reels.' });
+  }
+}
+
+app.get('/api/professores/:id/reels', autenticar, (req, res) =>
+  listarReelsPublicos(req, res, { autorProfessorId: req.params.id }));
+
+app.get('/api/escolas/:id/reels', autenticar, (req, res) =>
+  listarReelsPublicos(req, res, { autorEscolaId: req.params.id }));
 
 // ============================================================================
 // FEED / POSTS — Rede Social Fase 4. Comunidade fechada por Escola: o feed
@@ -1698,6 +1914,230 @@ app.post('/api/posts/:id/comentarios', autenticar, async (req, res) => {
     const campoAutor = req.auth.papel === 'professor' ? 'autorProfessorId' : 'autorAlunoId';
     const comentario = await prisma.postComentario.create({
       data: { postId: post.id, conteudo: conteudo.trim(), [campoAutor]: req.auth.id },
+    });
+    res.status(201).json({ comentario });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao comentar.' });
+  }
+});
+
+// ============================================================================
+// REELS (Rede Social — planos/captação, Epic D, 18/09/2026) — vídeo curto
+// liberado já no plano BASICO (isca de captação, não depende de
+// nivelPlano:COMPLETO como busca/avaliações). Hospedagem: Cloudflare Stream
+// via Direct Creator Upload (ver cloudflareStreamFetch acima).
+// ============================================================================
+
+const DURACAO_MAXIMA_REEL_SEGUNDOS = 90;
+
+// POST /api/reels/upload-url — gera a URL de upload descartável da
+// Cloudflare E já cria a linha do Reel na hora (status PROCESSANDO),
+// amarrada ao autor autenticado. Diferente de um desenho ingênuo em 2
+// passos (gerar URL → só depois "registrar" com o videoId de volta), criar
+// aqui evita um vetor onde qualquer professor autenticado poderia "roubar"
+// um vídeo enviando de volta um videoId gerado pra OUTRO professor (o uid
+// da Cloudflare não é escopado por usuário, só pela nossa conta inteira).
+app.post('/api/reels/upload-url', exigirProfessor, async (req, res) => {
+  if (!CLOUDFLARE_STREAM_CONFIGURADO) {
+    return res.status(503).json({ erro: 'Serviço de vídeo não configurado. Contate o suporte.' });
+  }
+  try {
+    const { descricao, comoInstituicao } = req.body;
+
+    const professor = await prisma.professor.findUnique({
+      where: { id: req.auth.id },
+      select: { escolaId: true, papel: true },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    if (comoInstituicao && !['DONO', 'GESTOR'].includes(professor.papel)) {
+      return res.status(403).json({ erro: 'Só DONO/GESTOR pode publicar Reels em nome da instituição.' });
+    }
+
+    const resultado = await cloudflareStreamFetch('/stream/direct_upload', {
+      method: 'POST',
+      body: JSON.stringify({ maxDurationSeconds: DURACAO_MAXIMA_REEL_SEGUNDOS }),
+    });
+
+    const reel = await prisma.reel.create({
+      data: {
+        videoId: resultado.uid,
+        descricao: descricao?.trim() || null,
+        escolaId: professor.escolaId,
+        ...(comoInstituicao ? { autorEscolaId: professor.escolaId } : { autorProfessorId: req.auth.id }),
+      },
+    });
+
+    res.json({ uploadURL: resultado.uploadURL, reelId: reel.id });
+  } catch (error) {
+    console.error('[Reels] Erro ao gerar upload URL:', error.message);
+    res.status(error.status || 500).json({ erro: error.message || 'Erro ao preparar upload do vídeo.' });
+  }
+});
+
+// GET /api/reels — feed paginado, mesmo escopo por escolaId de GET
+// /api/feed. Só devolve status:PRONTO (ainda processando/erro não aparece
+// pra ninguém além do próprio autor, que não tem tela de "meus reels"
+// nesta primeira versão — o upload já mostra "publicado" na hora).
+app.get('/api/reels', autenticar, async (req, res) => {
+  try {
+    let escolaId;
+    if (req.auth.papel === 'professor') {
+      const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+      if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+      escolaId = professor.escolaId;
+    } else if (req.auth.papel === 'aluno') {
+      const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { escolaId: true } });
+      if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
+      escolaId = aluno.escolaId;
+    } else {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno pra ver os Reels.' });
+    }
+
+    const cursor = req.query.cursor;
+    const reels = await prisma.reel.findMany({
+      where: { escolaId, status: 'PRONTO' },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      ...(cursor ? { cursor: { id: String(cursor) }, skip: 1 } : {}),
+      include: {
+        autorProfessor: { select: { id: true, nome: true, fotoUrl: true } },
+        autorEscola: { select: { id: true, nome: true, logoUrl: true } },
+        _count: { select: { curtidas: true, comentarios: true } },
+      },
+    });
+
+    const curtidasDoUsuario = reels.length ? await prisma.reelCurtida.findMany({
+      where: {
+        reelId: { in: reels.map((r) => r.id) },
+        ...(req.auth.papel === 'professor' ? { autorProfessorId: req.auth.id } : { autorAlunoId: req.auth.id }),
+      },
+      select: { reelId: true },
+    }) : [];
+    const idsCurtidos = new Set(curtidasDoUsuario.map((c) => c.reelId));
+
+    res.json({
+      reels: reels.map((r) => ({
+        id: r.id,
+        videoId: r.videoId,
+        thumbnailUrl: r.thumbnailUrl,
+        duracaoSegundos: r.duracaoSegundos,
+        descricao: r.descricao,
+        totalVisualizacoes: r.totalVisualizacoes,
+        createdAt: r.createdAt,
+        autor: r.autorProfessor
+          ? { tipo: 'professor', id: r.autorProfessor.id, nome: r.autorProfessor.nome, fotoUrl: r.autorProfessor.fotoUrl }
+          : { tipo: 'escola', id: r.autorEscola.id, nome: r.autorEscola.nome, fotoUrl: r.autorEscola.logoUrl },
+        totalCurtidas: r._count.curtidas,
+        totalComentarios: r._count.comentarios,
+        curtidoPeloUsuario: idsCurtidos.has(r.id),
+      })),
+      proximoCursor: reels.length === 20 ? reels[reels.length - 1].id : null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar os Reels.' });
+  }
+});
+
+// DELETE /api/reels/:id — mesma regra de moderação de DELETE /api/posts/:id:
+// o próprio autor sempre pode, DONO/GESTOR da Escola pode apagar qualquer
+// um escopado a ela.
+app.delete('/api/reels/:id', autenticar, async (req, res) => {
+  try {
+    const reel = await prisma.reel.findUnique({ where: { id: req.params.id } });
+    if (!reel) return res.status(404).json({ erro: 'Reel não encontrado.' });
+
+    let autorizado = false;
+    if (req.auth.papel === 'professor') {
+      if (reel.autorProfessorId === req.auth.id) {
+        autorizado = true;
+      } else {
+        const professor = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { papel: true, escolaId: true } });
+        if (professor && ['DONO', 'GESTOR'].includes(professor.papel) && professor.escolaId === reel.escolaId) {
+          autorizado = true;
+        }
+      }
+    }
+    if (!autorizado) return res.status(403).json({ erro: 'Você não pode apagar este Reel.' });
+
+    await prisma.reel.delete({ where: { id: reel.id } });
+    if (CLOUDFLARE_STREAM_CONFIGURADO) {
+      // Best-effort — não bloqueia a resposta se a Cloudflare estiver fora do ar.
+      cloudflareStreamFetch(`/stream/${reel.videoId}`, { method: 'DELETE' }).catch(() => {});
+    }
+    res.json({ mensagem: 'Reel removido.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao remover Reel.' });
+  }
+});
+
+app.post('/api/reels/:id/curtir', autenticar, async (req, res) => {
+  try {
+    if (req.auth.papel !== 'professor' && req.auth.papel !== 'aluno') {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno.' });
+    }
+    const reel = await prisma.reel.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!reel) return res.status(404).json({ erro: 'Reel não encontrado.' });
+
+    const campoAutor = req.auth.papel === 'professor' ? 'autorProfessorId' : 'autorAlunoId';
+    const existente = await prisma.reelCurtida.findFirst({ where: { reelId: reel.id, [campoAutor]: req.auth.id } });
+
+    if (existente) {
+      await prisma.reelCurtida.delete({ where: { id: existente.id } });
+      return res.json({ curtido: false });
+    }
+
+    await prisma.reelCurtida.create({ data: { reelId: reel.id, [campoAutor]: req.auth.id } });
+    res.json({ curtido: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao curtir.' });
+  }
+});
+
+app.get('/api/reels/:id/comentarios', autenticar, async (req, res) => {
+  try {
+    const comentarios = await prisma.reelComentario.findMany({
+      where: { reelId: req.params.id },
+      orderBy: { createdAt: 'asc' },
+      include: {
+        autorProfessor: { select: { id: true, nome: true, fotoUrl: true } },
+        autorAluno: { select: { id: true, nome: true, fotoUrl: true } },
+      },
+      take: 100,
+    });
+    res.json({
+      comentarios: comentarios.map((c) => ({
+        id: c.id,
+        conteudo: c.conteudo,
+        createdAt: c.createdAt,
+        autor: c.autorProfessor
+          ? { tipo: 'professor', id: c.autorProfessor.id, nome: c.autorProfessor.nome, fotoUrl: c.autorProfessor.fotoUrl }
+          : { tipo: 'aluno', id: c.autorAluno.id, nome: c.autorAluno.nome, fotoUrl: c.autorAluno.fotoUrl },
+      })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar comentários.' });
+  }
+});
+
+app.post('/api/reels/:id/comentarios', autenticar, async (req, res) => {
+  try {
+    if (req.auth.papel !== 'professor' && req.auth.papel !== 'aluno') {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno.' });
+    }
+    const { conteudo } = req.body;
+    if (!conteudo?.trim()) return res.status(400).json({ erro: 'conteudo é obrigatório.' });
+
+    const reel = await prisma.reel.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!reel) return res.status(404).json({ erro: 'Reel não encontrado.' });
+
+    const campoAutor = req.auth.papel === 'professor' ? 'autorProfessorId' : 'autorAlunoId';
+    const comentario = await prisma.reelComentario.create({
+      data: { reelId: reel.id, conteudo: conteudo.trim(), [campoAutor]: req.auth.id },
     });
     res.status(201).json({ comentario });
   } catch (err) {
@@ -2458,6 +2898,7 @@ app.get('/api/professor/perfil', exigirProfessor, async (req, res) => {
         papel: true, escola: { select: { pacote: true, nome: true, stripeConnectOnboardingCompleto: true } },
         precoAssinaturaPremium: true,
         bio: true, cidade: true, estado: true, videoApresentacaoUrl: true, visivelBuscaSelf: true,
+        modalidadeEnsino: true,
       },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
@@ -2473,7 +2914,7 @@ app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
     const professorId = req.auth.id;
     const {
       nome, telefone, chavePix, linkPagamentoCartao, fotoUrl, senhaAtual, novaSenha,
-      bio, cidade, estado, videoApresentacaoUrl, visivelBuscaSelf,
+      bio, cidade, estado, videoApresentacaoUrl, visivelBuscaSelf, modalidadeEnsino,
     } = req.body;
 
     const professor = await prisma.professor.findUnique({ where: { id: professorId } });
@@ -2491,6 +2932,13 @@ app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
     if (cidade !== undefined) dados.cidade = cidade?.trim() || null;
     if (estado !== undefined) dados.estado = estado?.trim().toUpperCase() || null;
     if (videoApresentacaoUrl !== undefined) dados.videoApresentacaoUrl = videoApresentacaoUrl?.trim() || null;
+    if (modalidadeEnsino !== undefined) {
+      const valores = Array.isArray(modalidadeEnsino) ? modalidadeEnsino : [];
+      if (!valores.length || !valores.every((m) => ['PRESENCIAL', 'REMOTO', 'ONLINE'].includes(m))) {
+        return res.status(400).json({ erro: 'modalidadeEnsino inválido — use PRESENCIAL, REMOTO e/ou ONLINE.' });
+      }
+      dados.modalidadeEnsino = valores;
+    }
     // Discoverável na busca de aula particular é auto-serviço pro professor
     // (diferente do gate por assinaturaStatus, que a própria query de busca
     // já aplica) — ligar antes de ter assinatura ativa não faz mal, só não
@@ -2513,6 +2961,7 @@ app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
         id: true, nome: true, email: true, telefone: true,
         cursos: true, codigoConvite: true, chavePix: true, linkPagamentoCartao: true, fotoUrl: true,
         bio: true, cidade: true, estado: true, videoApresentacaoUrl: true, visivelBuscaSelf: true,
+        modalidadeEnsino: true,
       },
     });
     if (dados.senha) await sincronizarConta(atualizado.email, { senha: dados.senha });
@@ -8197,23 +8646,72 @@ app.get('/stripe-connect/atualizar', (_req, res) => {
 });
 
 // ─── CHECKOUT: ASSINATURA KAV CLASS ─────────────────────────────────────────
-// plano: 'pro' | 'premium' | 'one-time'
+// Planos em 2 níveis (Rede Social — planos/captação, 18/09/2026): BASICO só
+// ferramentas de gestão (SaaS), COMPLETO soma a Rede Social (busca pública,
+// avaliações, ranking). Substituem os planos antigos pro/premium/one-time
+// (produtos/preços novos criados no Stripe em 18/09/2026, price_ids abaixo).
 const STRIPE_PRICE_IDS = {
-  pro:        'price_1TPwgLRZkemiSVh6S0ASUKP8',
-  premium:    'price_1TPwl5RZkemiSVh6mbLU2lk4',
-  'one-time': 'price_1TPwmURZkemiSVh6NPET9vEz',
+  professor_basico:   'price_1UH31eRZkemiSVh6ZRM0RoAU',
+  professor_completo: 'price_1UH31eRZkemiSVh62f0Pi1Y8',
+  escola_basico:       'price_1UH31fRZkemiSVh6zjD5u0tq',
+  escola_completo:     'price_1UH31gRZkemiSVh6ZRO4CfER',
 };
+
+// plano ('professor_basico'|'professor_completo'|'escola_basico'|'escola_completo')
+// → { tipoConta, nivel } usado pra decidir o que atualizar no banco após o
+// pagamento (Professor.nivelPlano ou Escola.nivelPlano).
+function decompoePlano(plano) {
+  const tipoConta = plano.startsWith('escola_') ? 'escola' : 'professor';
+  const nivel = plano.endsWith('_completo') ? 'COMPLETO' : 'BASICO';
+  return { tipoConta, nivel };
+}
+
+// Aplica o resultado de um pagamento confirmado (chamado tanto pelo polling
+// de /checkout/verify quanto pelo webhook checkout.session.completed — os
+// dois caminhos existem porque nem todo device volta a rodar o app a tempo
+// do webhook, e nem todo ambiente tem STRIPE_WEBHOOK_SECRET configurado).
+// Idempotente: rodar duas vezes com a mesma session não duplica nada, só
+// reescreve os mesmos campos.
+async function ativarAssinaturaPosCheckout(session) {
+  const professorId = session.client_reference_id;
+  const plano = session.metadata?.plano;
+  if (!professorId || !plano || !STRIPE_PRICE_IDS[plano]) return null;
+
+  const { tipoConta, nivel } = decompoePlano(plano);
+
+  const professor = await prisma.professor.update({
+    where: { id: professorId },
+    data: {
+      ...(session.customer ? { stripeCustomerId: String(session.customer) } : {}),
+      stripeSessionId: session.id,
+      assinaturaStatus: 'ATIVO',
+      // Escola: quem paga é o DONO, mas o nível (Básico/Completo) que abre
+      // busca/avaliações públicas é o da Escola inteira, não da vitrine
+      // pessoal deste Professor — por isso só grava nivelPlano aqui quando
+      // for de fato um plano de professor.
+      ...(tipoConta === 'professor' ? { nivelPlano: nivel } : {}),
+    },
+    select: { id: true, escolaId: true, codigoConvite: true, nome: true, assinaturaStatus: true },
+  });
+
+  if (tipoConta === 'escola') {
+    await prisma.escola.update({ where: { id: professor.escolaId }, data: { nivelPlano: nivel } });
+  }
+
+  return professor;
+}
 
 app.post('/checkout', async (req, res) => {
   if (!stripe) {
     return res.status(503).json({ erro: 'Serviço de pagamento não configurado. Contate o suporte.' });
   }
   try {
-    const { professorId, email, plano = 'pro', nome, senha, telefone, cursos, fotoUrl } = req.body;
+    const { professorId, email, plano = 'professor_basico', nome, senha, telefone, cursos, fotoUrl } = req.body;
     if (!email) return res.status(400).json({ erro: 'email é obrigatório.' });
 
     const priceId = STRIPE_PRICE_IDS[plano];
     if (!priceId) return res.status(400).json({ erro: 'Plano inválido.' });
+    const { tipoConta } = decompoePlano(plano);
 
     const emailNorm = email.toLowerCase().trim();
     let pid = professorId;
@@ -8225,13 +8723,31 @@ app.post('/checkout', async (req, res) => {
       // assinatura de qualquer um só sabendo o UUID. Exigir que o e-mail bata
       // com o dono daquele id fecha isso sem mudar o fluxo pra quem já sabe
       // o próprio e-mail (o caso normal).
-      const existente = await prisma.professor.findUnique({ where: { id: pid }, select: { email: true, assinaturaStatus: true } });
+      const existente = await prisma.professor.findUnique({
+        where: { id: pid },
+        select: { email: true, assinaturaStatus: true, papel: true, escola: { select: { pacote: true } } },
+      });
       if (!existente || existente.email !== emailNorm) {
         return res.status(404).json({ erro: 'Professor não encontrado.' });
       }
       if (existente.assinaturaStatus === 'ATIVO' || existente.assinaturaStatus === 'VITALICIO') {
         return res.status(400).json({ erro: 'Este e-mail já possui uma assinatura ativa.' });
       }
+      // Checkout de Escola (S18.09.2026): quem paga tem que ser de fato o
+      // DONO de uma instituição já cadastrada (POST /api/escola/cadastro) —
+      // um professor comum tentando comprar plano de Escola (ou vice-versa)
+      // cai aqui, não no Stripe.
+      if (tipoConta === 'escola' && (existente.papel !== 'DONO' || existente.escola?.pacote !== 'PACOTE_ESCOLA')) {
+        return res.status(400).json({ erro: 'Esta conta não é uma Escola cadastrada.' });
+      }
+      if (tipoConta === 'professor' && existente.escola?.pacote === 'PACOTE_ESCOLA' && existente.papel === 'DONO') {
+        return res.status(400).json({ erro: 'Esta conta é uma Escola — escolha um plano de Escola.' });
+      }
+    } else if (tipoConta === 'escola') {
+      // Não existe criação de Escola pelo checkout — a instituição já nasce
+      // via POST /api/escola/cadastro (com teste grátis). Chegar aqui sem
+      // professorId só faz sentido pro professorId ser sempre enviado.
+      return res.status(400).json({ erro: 'professorId é obrigatório para o plano de Escola.' });
     } else {
       let prof = await prisma.professor.findFirst({ where: { email: emailNorm }, orderBy: { createdAt: 'asc' } });
 
@@ -8273,7 +8789,7 @@ app.post('/checkout', async (req, res) => {
       customer_email: emailNorm,
       client_reference_id: pid,
       line_items: [{ price: priceId, quantity: 1 }],
-      mode: plano === 'one-time' ? 'payment' : 'subscription',
+      mode: 'subscription',
       success_url: 'https://kav-class-1.onrender.com/checkout/sucesso?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://kav-class-1.onrender.com/checkout/cancelado',
       metadata: { professorId: pid, plano },
@@ -8297,21 +8813,9 @@ app.get('/checkout/verify/:sessionId', async (req, res) => {
       return res.json({ ativo: false });
     }
 
-    const professorId = session.client_reference_id;
-    const plano = session.metadata?.plano;
+    if (!session.client_reference_id) return res.json({ ativo: true });
 
-    if (!professorId) return res.json({ ativo: true });
-
-    const prof = await prisma.professor.update({
-      where: { id: professorId },
-      data: {
-        ...(session.customer ? { stripeCustomerId: String(session.customer) } : {}),
-        stripeSessionId: session.id,
-        assinaturaStatus: plano === 'one-time' ? 'VITALICIO' : 'ATIVO',
-      },
-      select: { codigoConvite: true, nome: true, assinaturaStatus: true },
-    });
-
+    const prof = await ativarAssinaturaPosCheckout(session);
     res.json({ ativo: true, professor: prof });
   } catch (err) {
     console.error('[Verify] Erro ao verificar sessão:', err.message);
@@ -8330,10 +8834,21 @@ app.get('/api/professor/assinatura/:professorId', exigirProfessor, async (req, r
         stripeCustomerId: true,
         email: true,
         codigoConvite: true,
+        modalidadeEnsino: true,
+        escola: { select: { pacote: true, modalidadeEnsino: true } },
       },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
-    res.json(professor);
+    const pacote = professor.escola?.pacote || 'PACOTE_PROFESSOR';
+    res.json({
+      assinaturaStatus: professor.assinaturaStatus,
+      assinaturaFim: professor.assinaturaFim,
+      stripeCustomerId: professor.stripeCustomerId,
+      email: professor.email,
+      codigoConvite: professor.codigoConvite,
+      pacote,
+      modalidadeEnsino: pacote === 'PACOTE_ESCOLA' ? (professor.escola?.modalidadeEnsino || []) : professor.modalidadeEnsino,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -8484,7 +8999,10 @@ async function exigirPapelNaEscola(req, res, papeisPermitidos) {
       // valorPorAula/tipoRemuneracaoProfessor/diaFechamento adicionados aqui —
       // sem isso, GET /api/escola/perfil (que lê professor.escola.*) sempre
       // devolvia esses campos undefined, mesmo já gravados no banco pelo PUT.
-      escola: { select: { id: true, nome: true, pacote: true, codigoConvite: true, logoUrl: true, email: true, horarioFuncionamento: true, valorPorAula: true, tipoRemuneracaoProfessor: true, diaFechamento: true } },
+      // bio/cidade/estado/modalidadeEnsino adicionados aqui pelo mesmo motivo do
+      // comentário acima: sem estar neste select, GET /api/escola/perfil devolve
+      // esses campos sempre undefined mesmo já gravados pelo PUT.
+      escola: { select: { id: true, nome: true, pacote: true, codigoConvite: true, logoUrl: true, email: true, horarioFuncionamento: true, valorPorAula: true, tipoRemuneracaoProfessor: true, diaFechamento: true, bio: true, cidade: true, estado: true, modalidadeEnsino: true } },
     },
   });
   if (!professor) {
@@ -8713,6 +9231,7 @@ app.get('/api/escola/perfil', async (req, res) => {
       bio: professor.escola.bio,
       cidade: professor.escola.cidade,
       estado: professor.escola.estado,
+      modalidadeEnsino: professor.escola.modalidadeEnsino,
     });
   } catch (err) {
     console.error(err);
@@ -8733,7 +9252,7 @@ app.put('/api/escola/perfil', async (req, res) => {
 
     const {
       nome, logoUrl, email, horarioFuncionamento, valorPorAula, tipoRemuneracaoProfessor, diaFechamento,
-      bio, cidade, estado,
+      bio, cidade, estado, modalidadeEnsino,
     } = req.body;
 
     const data = {};
@@ -8748,6 +9267,13 @@ app.put('/api/escola/perfil', async (req, res) => {
     if (bio !== undefined) data.bio = bio?.trim() || null;
     if (cidade !== undefined) data.cidade = cidade?.trim() || null;
     if (estado !== undefined) data.estado = estado?.trim().toUpperCase() || null;
+    if (modalidadeEnsino !== undefined) {
+      const valores = Array.isArray(modalidadeEnsino) ? modalidadeEnsino : [];
+      if (!valores.length || !valores.every((m) => ['PRESENCIAL', 'REMOTO', 'ONLINE'].includes(m))) {
+        return res.status(400).json({ erro: 'modalidadeEnsino inválido — use PRESENCIAL, REMOTO e/ou ONLINE.' });
+      }
+      data.modalidadeEnsino = valores;
+    }
     if (valorPorAula !== undefined) data.valorPorAula = valorPorAula === null ? null : Number(valorPorAula);
     if (tipoRemuneracaoProfessor !== undefined) {
       if (!['POR_AULA', 'POR_ALUNO_MES'].includes(tipoRemuneracaoProfessor)) {
