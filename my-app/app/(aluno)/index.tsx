@@ -132,6 +132,15 @@ export default function AlunoDashboard() {
         const d: DashboardData = await res.json();
         setDados(d);
 
+        // Enquanto o aluno não é aluno registrado de ninguém (aguardando o
+        // professor configurar horário/mensalidade), o dashboard normal não
+        // tem nada pra mostrar — manda direto pro Feed, que já funciona sem
+        // vínculo nenhum (Busca/Descoberta e Reels também).
+        if (d.pendente) {
+          router.replace('/(aluno)/feed');
+          return;
+        }
+
         if (!d.pendente && !d.inativo) {
           const prog = calcProgresso(d.plano?.tempoContrato ?? null, d.plano?.dataInicio ?? null);
           const freq = (d.frequencia?.total ?? 0) > 0

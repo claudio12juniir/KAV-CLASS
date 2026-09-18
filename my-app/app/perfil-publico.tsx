@@ -57,6 +57,7 @@ export default function PerfilPublicoScreen() {
   const [perfil, setPerfil] = useState<(PerfilProfessor | PerfilEscola) | null>(null);
   const [erro, setErro] = useState(false);
   const [papel, setPapel] = useState<string | null>(null);
+  const [meuId, setMeuId] = useState<string | null>(null);
   const [assinaturaAtiva, setAssinaturaAtiva] = useState(false);
   const [carregandoPremium, setCarregandoPremium] = useState(false);
   const [processandoPremium, setProcessandoPremium] = useState(false);
@@ -76,8 +77,21 @@ export default function PerfilPublicoScreen() {
         setCarregando(false);
       }
     })();
-    SecureStore.getItemAsync('kav_papel').then(setPapel);
+    SecureStore.getItemAsync('kav_papel').then(async (p) => {
+      setPapel(p);
+      if (p === 'professor' || p === 'aluno') {
+        setMeuId(await SecureStore.getItemAsync(p === 'professor' ? 'kav_professor_id' : 'kav_aluno_id'));
+      }
+    });
   }, [id, tipo]);
+
+  const abrirMensagem = () => {
+    if (!perfil) return;
+    router.push({
+      pathname: papel === 'professor' ? '/(professor)/chat' : '/(aluno)/chat',
+      params: { tipo: 'professor', id: perfil.id, nome: perfil.nome, fotoUrl: 'fotoUrl' in perfil ? (perfil.fotoUrl || '') : '' },
+    } as any);
+  };
 
   useEffect(() => {
     const endpoint = tipo === 'escola' ? `/escolas/${id}/reels` : `/professores/${id}/reels`;
@@ -217,6 +231,12 @@ export default function PerfilPublicoScreen() {
                   </View>
                 ))}
               </View>
+            )}
+            {tipo === 'professor' && (papel === 'professor' || papel === 'aluno') && perfil.id !== meuId && (
+              <TouchableOpacity style={styles.botaoMensagem} onPress={abrirMensagem} activeOpacity={0.85}>
+                <Ionicons name="chatbubble-outline" size={16} color={CORES.acento} />
+                <Text style={styles.botaoMensagemTexto}>Mensagem</Text>
+              </TouchableOpacity>
             )}
           </View>
 
@@ -365,6 +385,12 @@ const styles = StyleSheet.create({
   modalidadeLista: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, justifyContent: 'center' },
   modalidadeBadge: { backgroundColor: CORES.acentoClaro, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
   modalidadeBadgeTexto: { color: CORES.acento, fontSize: 11, fontWeight: '700' },
+  botaoMensagem: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 14,
+    borderWidth: 1, borderColor: CORES.acento, borderRadius: RAIO.pill,
+    paddingHorizontal: 18, paddingVertical: 8,
+  },
+  botaoMensagemTexto: { color: CORES.acento, fontWeight: '700', fontSize: 13 },
   secao: { marginBottom: 20 },
   secaoTitulo: { fontSize: 13, fontWeight: '700', color: CORES.secundaria, marginBottom: 8, letterSpacing: 0.5 },
   bioTexto: { fontSize: 14, color: CORES.primaria, lineHeight: 20 },

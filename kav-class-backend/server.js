@@ -2603,6 +2603,16 @@ app.delete('/api/alunos/:id/cancelar', exigirProfessor, async (req, res) => {
       prisma.pagamento.deleteMany({ where: { alunoId: id } }),
       prisma.reposicao.deleteMany({ where: { alunoId: id } }),
       prisma.mensagem.deleteMany({ where: { alunoId: id } }),
+      // MensagemDireta não tem FK pro Aluno (participante é tipo+id solto,
+      // ver ConversaDireta) — sem isso, apagar o aluno deixaria as conversas
+      // dele órfãs (inofensivo pro app, que já ignora conversa sem o outro
+      // participante, mas suja o banco à toa).
+      prisma.conversaDireta.deleteMany({
+        where: { OR: [
+          { participanteATipo: 'ALUNO', participanteAId: id },
+          { participanteBTipo: 'ALUNO', participanteBId: id },
+        ] },
+      }),
       prisma.aluno.delete({ where: { id } }),
     ], { maxWait: 10000, timeout: 15000 });
     res.json({ mensagem: 'Aluno excluído permanentemente.' });
@@ -3331,47 +3341,6 @@ app.post('/api/reposicoes/:id/solicitar-outro', exigirAluno, async (req, res) =>
   }
 });
 
-app.get('/api/aluno/mensagens', exigirAluno, async (req, res) => {
-  try {
-    const alunoId = req.auth.id;
-    const msgs = await prisma.mensagem.findMany({
-      where: { alunoId },
-      include: { aluno: { select: { nome: true } } },
-      orderBy: { createdAt: 'asc' },
-    });
-    res.json(msgs);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
-  }
-});
-
-app.post('/api/aluno/mensagens', exigirAluno, async (req, res) => {
-  try {
-    const alunoId = req.auth.id;
-    const { texto } = req.body;
-    if (!texto) return res.status(400).json({ erro: 'texto obrigatório.' });
-
-    const msg = await prisma.mensagem.create({
-      data: { alunoId, texto, remetente: alunoId },
-      include: { aluno: { select: { nome: true, professorId: true } } },
-    });
-
-    const professor = await prisma.professor.findUnique({
-      where: { id: msg.aluno.professorId },
-      select: { expoPushToken: true },
-    });
-    if (professor?.expoPushToken) {
-      await enviarPushNotificacao(professor.expoPushToken, 'Nova mensagem', `${msg.aluno.nome} enviou uma mensagem.`, { tipo: 'NOVA_MENSAGEM', alunoId });
-    }
-
-    res.status(201).json(msg);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
-  }
-});
-
 // ============================================================================
 // 7. MURAL DA TURMA (CHAT EM GRUPO)
 // ============================================================================
@@ -3443,99 +3412,182 @@ app.post('/api/mural', exigirProfessor, async (req, res) => {
 });
 
 // ============================================================================
-// 8. ROTAS DE MENSAGENS DIRETAS DO PROFESSOR (legado)
+// 8. MENSAGENS DIRETAS (DM aberto, Rede Social 18/09/2026)
+// Qualquer Professor ou Aluno manda mensagem pra qualquer outro, sem
+// precisar de vínculo/matrícula — estilo Instagram Direct, sem etapa de
+// "solicitação de mensagem" (pedido explícito do usuário: direto na caixa).
+// Substitui as rotas antigas de mensagem privada aluno↔professor (o mural
+// de turma continua igual, acima).
 // ============================================================================
 
-// Professor vê o histórico de chat com um aluno específico
-app.get('/api/professor/mensagens/:alunoId', exigirProfessor, async (req, res) => {
+// participanteA é sempre o menor entre os dois pela chave "TIPO:id" —
+// assim @@unique acha a conversa não importa quem mandou a mensagem
+// primeiro.
+function ordenarParticipantesDM(tipoA, idA, tipoB, idB) {
+  const chaveA = `${tipoA}:${idA}`;
+  const chaveB = `${tipoB}:${idB}`;
+  return chaveA <= chaveB
+    ? { participanteATipo: tipoA, participanteAId: idA, participanteBTipo: tipoB, participanteBId: idB }
+    : { participanteATipo: tipoB, participanteAId: idB, participanteBTipo: tipoA, participanteBId: idA };
+}
+
+async function resolverIdentidadeDM(tipo, id) {
+  const modelo = tipo === 'professor' ? prisma.professor : prisma.aluno;
+  return modelo.findUnique({ where: { id }, select: { id: true, nome: true, fotoUrl: true, expoPushToken: true } });
+}
+
+// GET /api/mensagens/conversas — caixa de entrada de quem está logado.
+app.get('/api/mensagens/conversas', autenticar, async (req, res) => {
   try {
-    const { alunoId } = req.params;
-    const professorId = req.auth.id;
-
-    // Garante que o aluno pertence ao professor
-    const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, professorId } });
-    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a este professor.' });
-
-    const msgs = await prisma.mensagem.findMany({
-      where: { alunoId },
-      orderBy: { createdAt: 'asc' },
-    });
-    res.json(msgs);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
-  }
-});
-
-// Professor envia mensagem para um aluno
-app.post('/api/professor/mensagens', exigirProfessor, async (req, res) => {
-  try {
-    const professorId = req.auth.id;
-    const { alunoId, texto } = req.body;
-    if (!alunoId || !texto) return res.status(400).json({ erro: 'alunoId e texto são obrigatórios.' });
-
-    const aluno = await prisma.aluno.findFirst({ where: { id: alunoId, professorId } });
-    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado ou não pertence a este professor.' });
-
-    const msg = await prisma.mensagem.create({
-      data: { alunoId, texto, remetente: 'professor' },
-    });
-
-    // Notifica o aluno
-    if (aluno.expoPushToken) {
-      const professor = await prisma.professor.findUnique({ where: { id: professorId }, select: { nome: true } });
-      await enviarPushNotificacao(aluno.expoPushToken, 'Nova mensagem', `${professor?.nome ?? 'Seu professor'} enviou uma mensagem.`, { tipo: 'NOVA_MENSAGEM', alunoId });
+    if (req.auth.papel !== 'professor' && req.auth.papel !== 'aluno') {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno.' });
     }
+    const meuTipo = req.auth.papel.toUpperCase();
+    const meuId = req.auth.id;
 
-    res.status(201).json(msg);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
-  }
-});
-
-// GET /api/professor/conversas — lista de alunos do professor com a última
-// mensagem trocada (ou null se nunca conversaram), ordenada pela mais
-// recente primeiro. É a tela "lista de conversas" que faltava pro professor
-// conseguir achar rápido quem mandou mensagem, sem abrir aluno por aluno.
-app.get('/api/professor/conversas', exigirProfessor, async (req, res) => {
-  try {
-    const professorId = req.auth.id;
-    const alunos = await prisma.aluno.findMany({
-      where: { professorId },
-      select: { id: true, nome: true, fotoUrl: true, status: true },
-      orderBy: { nome: 'asc' },
-    });
-    const alunoIds = alunos.map(a => a.id);
-
-    const mensagens = await prisma.mensagem.findMany({
-      where: { alunoId: { in: alunoIds } },
-      orderBy: { createdAt: 'desc' },
-      select: { alunoId: true, texto: true, remetente: true, createdAt: true },
+    const conversas = await prisma.conversaDireta.findMany({
+      where: {
+        OR: [
+          { participanteATipo: meuTipo, participanteAId: meuId },
+          { participanteBTipo: meuTipo, participanteBId: meuId },
+        ],
+      },
+      orderBy: { ultimaMensagemEm: 'desc' },
+      include: { mensagens: { orderBy: { createdAt: 'desc' }, take: 1 } },
     });
 
-    const ultimaPorAluno = new Map();
-    for (const m of mensagens) {
-      if (!ultimaPorAluno.has(m.alunoId)) ultimaPorAluno.set(m.alunoId, m);
-    }
-
-    const conversas = alunos
-      .map(a => ({ aluno: a, ultimaMensagem: ultimaPorAluno.get(a.id) || null }))
-      .sort((x, y) => {
-        const tx = x.ultimaMensagem ? new Date(x.ultimaMensagem.createdAt).getTime() : 0;
-        const ty = y.ultimaMensagem ? new Date(y.ultimaMensagem.createdAt).getTime() : 0;
-        return ty - tx;
+    const resultado = await Promise.all(conversas.map(async (c) => {
+      const souA = c.participanteATipo === meuTipo && c.participanteAId === meuId;
+      const outroTipo = souA ? c.participanteBTipo : c.participanteATipo;
+      const outroId = souA ? c.participanteBId : c.participanteAId;
+      const outro = await resolverIdentidadeDM(outroTipo.toLowerCase(), outroId);
+      if (!outro) return null;
+      const naoLidas = await prisma.mensagemDireta.count({
+        where: { conversaId: c.id, lida: false, NOT: { autorTipo: meuTipo, autorId: meuId } },
       });
+      return {
+        id: c.id,
+        outro: { tipo: outroTipo.toLowerCase(), id: outro.id, nome: outro.nome, fotoUrl: outro.fotoUrl },
+        ultimaMensagem: c.mensagens[0] ? {
+          texto: c.mensagens[0].texto,
+          autorTipo: c.mensagens[0].autorTipo.toLowerCase(),
+          autorId: c.mensagens[0].autorId,
+          createdAt: c.mensagens[0].createdAt,
+        } : null,
+        naoLidas,
+        ultimaMensagemEm: c.ultimaMensagemEm,
+      };
+    }));
 
-    res.json(conversas);
+    res.json({ conversas: resultado.filter(Boolean) });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ erro: 'Erro interno.' });
+    res.status(500).json({ erro: 'Erro ao carregar conversas.' });
+  }
+});
+
+// GET /api/mensagens/conversas/:tipo/:id — histórico com uma pessoa
+// específica (professor ou aluno). Sem conversa ainda: devolve lista vazia
+// em vez de 404, pra tela poder abrir a thread antes da 1ª mensagem.
+app.get('/api/mensagens/conversas/:tipo/:id', autenticar, async (req, res) => {
+  try {
+    if (req.auth.papel !== 'professor' && req.auth.papel !== 'aluno') {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno.' });
+    }
+    const outroTipoParam = req.params.tipo;
+    if (!['professor', 'aluno'].includes(outroTipoParam)) return res.status(400).json({ erro: 'tipo inválido.' });
+
+    const outro = await resolverIdentidadeDM(outroTipoParam, req.params.id);
+    if (!outro) return res.status(404).json({ erro: 'Usuário não encontrado.' });
+
+    const meuTipo = req.auth.papel.toUpperCase();
+    const outroTipo = outroTipoParam.toUpperCase();
+    const chave = ordenarParticipantesDM(meuTipo, req.auth.id, outroTipo, req.params.id);
+
+    const conversa = await prisma.conversaDireta.findUnique({
+      where: { participanteATipo_participanteAId_participanteBTipo_participanteBId: chave },
+    });
+
+    const outroResumo = { tipo: outroTipoParam, id: outro.id, nome: outro.nome, fotoUrl: outro.fotoUrl };
+    if (!conversa) return res.json({ conversaId: null, mensagens: [], proximoCursor: null, outro: outroResumo });
+
+    const cursor = req.query.cursor;
+    const mensagensDesc = await prisma.mensagemDireta.findMany({
+      where: { conversaId: conversa.id },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+      ...(cursor ? { cursor: { id: String(cursor) }, skip: 1 } : {}),
+    });
+
+    // Marca como lidas as que não são minhas — só na primeira página (sem
+    // cursor), que é a que a tela abre por padrão.
+    if (!cursor) {
+      await prisma.mensagemDireta.updateMany({
+        where: { conversaId: conversa.id, lida: false, NOT: { autorTipo: meuTipo } },
+        data: { lida: true },
+      });
+    }
+
+    res.json({
+      conversaId: conversa.id,
+      mensagens: mensagensDesc.slice().reverse().map((m) => ({
+        id: m.id, texto: m.texto, autorTipo: m.autorTipo.toLowerCase(), autorId: m.autorId, createdAt: m.createdAt,
+      })),
+      proximoCursor: mensagensDesc.length === 30 ? mensagensDesc[mensagensDesc.length - 1].id : null,
+      outro: outroResumo,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao carregar conversa.' });
+  }
+});
+
+// POST /api/mensagens/conversas/:tipo/:id — envia mensagem, cria a
+// conversa na hora se ainda não existir.
+app.post('/api/mensagens/conversas/:tipo/:id', autenticar, async (req, res) => {
+  try {
+    if (req.auth.papel !== 'professor' && req.auth.papel !== 'aluno') {
+      return res.status(403).json({ erro: 'Entre como professor ou aluno.' });
+    }
+    const outroTipoParam = req.params.tipo;
+    if (!['professor', 'aluno'].includes(outroTipoParam)) return res.status(400).json({ erro: 'tipo inválido.' });
+    if (outroTipoParam === req.auth.papel && req.params.id === req.auth.id) {
+      return res.status(400).json({ erro: 'Não é possível enviar mensagem pra si mesmo.' });
+    }
+    const { texto } = req.body;
+    if (!texto?.trim()) return res.status(400).json({ erro: 'texto é obrigatório.' });
+
+    const outro = await resolverIdentidadeDM(outroTipoParam, req.params.id);
+    if (!outro) return res.status(404).json({ erro: 'Usuário não encontrado.' });
+
+    const meuTipo = req.auth.papel.toUpperCase();
+    const outroTipo = outroTipoParam.toUpperCase();
+    const chave = ordenarParticipantesDM(meuTipo, req.auth.id, outroTipo, req.params.id);
+
+    const conversa = await prisma.conversaDireta.upsert({
+      where: { participanteATipo_participanteAId_participanteBTipo_participanteBId: chave },
+      update: { ultimaMensagemEm: new Date() },
+      create: chave,
+    });
+
+    const msg = await prisma.mensagemDireta.create({
+      data: { conversaId: conversa.id, autorTipo: meuTipo, autorId: req.auth.id, texto: texto.trim() },
+    });
+
+    if (outro.expoPushToken) {
+      const eu = await resolverIdentidadeDM(req.auth.papel, req.auth.id);
+      await enviarPushNotificacao(outro.expoPushToken, eu?.nome || 'Nova mensagem', texto.trim(), { tipo: 'NOVA_MENSAGEM_DIRETA', conversaId: conversa.id });
+    }
+
+    res.status(201).json({ id: msg.id, texto: msg.texto, autorTipo: meuTipo.toLowerCase(), createdAt: msg.createdAt });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao enviar mensagem.' });
   }
 });
 
 // ============================================================================
-// 8. ROTAS DE REPOSIÇÕES DO PROFESSOR
+// 9. ROTAS DE REPOSIÇÕES DO PROFESSOR
 // ============================================================================
 
 // Professor cria uma proposta de reposição para um aluno

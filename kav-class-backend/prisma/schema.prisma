@@ -752,6 +752,12 @@ model Material {
 }
 
 // ─── 6. MENSAGENS DO CHAT ────────────────────────────────────────
+// Legado — só o mural de turma (professorId setado, alunoId null) ainda usa
+// este model pra chat. A parte 1:1 aluno↔professor foi substituída pelo DM
+// aberto abaixo (ConversaDireta/MensagemDireta, Rede Social 18/09/2026);
+// as linhas antigas de conversa privada continuam aqui só como histórico
+// (já migradas pro modelo novo), sem rota nenhuma lendo/escrevendo mais
+// nelas.
 model Mensagem {
   id          String     @id @default(uuid())
   texto       String
@@ -765,6 +771,55 @@ model Mensagem {
 
   @@index([alunoId, createdAt])
   @@index([professorId, remetente])
+}
+
+// Identifica quem é o participante de uma ConversaDireta/autor de uma
+// MensagemDireta sem precisar de 2 FKs opcionais (Professor OU Aluno) —
+// mesmo padrão de AutorMensagemTurma/MensagemTurma.autorTipo+autorId acima.
+enum TipoParticipanteDM {
+  PROFESSOR
+  ALUNO
+}
+
+// ─── MENSAGENS DIRETAS (DM aberto, Rede Social 18/09/2026) ────────────────
+// Substitui o Mensagem 1:1 (que só permitia aluno↔SEU professor): aqui
+// qualquer Professor ou Aluno manda mensagem pra qualquer outro, sem
+// precisar de vínculo/matrícula — pedido explícito do usuário ("estilo
+// direct do Instagram", sem etapa de solicitação prévia). participanteA é
+// sempre o menor entre os dois participantes pela chave "TIPO:id" ordenada
+// como string, pra @@unique valer não importa quem começou a conversa.
+model ConversaDireta {
+  id String @id @default(uuid())
+
+  participanteATipo TipoParticipanteDM
+  participanteAId   String
+  participanteBTipo TipoParticipanteDM
+  participanteBId   String
+
+  ultimaMensagemEm DateTime @default(now())
+  createdAt        DateTime @default(now())
+
+  mensagens MensagemDireta[]
+
+  @@unique([participanteATipo, participanteAId, participanteBTipo, participanteBId])
+  @@index([participanteATipo, participanteAId, ultimaMensagemEm])
+  @@index([participanteBTipo, participanteBId, ultimaMensagemEm])
+}
+
+model MensagemDireta {
+  id String @id @default(uuid())
+
+  conversaId String
+  conversa   ConversaDireta @relation(fields: [conversaId], references: [id], onDelete: Cascade)
+
+  autorTipo TipoParticipanteDM
+  autorId   String
+  texto     String
+  lida      Boolean            @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([conversaId, createdAt])
 }
 
 // Quem escreveu uma mensagem no chat de turma (MensagemTurma) — professor
