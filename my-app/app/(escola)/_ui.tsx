@@ -14,6 +14,7 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import BottomTabBar from '../../components/institution/BottomTabBar';
 import SyncLoader from '../../components/SyncLoader';
 import { ERP, ERP_BREAKPOINT_DESKTOP, transicaoWeb } from '../../constants/erpTheme';
 import { useEscolaContexto } from './_contexto';
@@ -41,6 +42,7 @@ export const NAV_ESCOLA: GrupoNav[] = [
     { chave: 'chats', rota: '/(escola)/chats', rotulo: 'Chats das Turmas', icone: 'chatbubbles-outline' },
   ]},
   { titulo: 'Crescimento', itens: [
+    { chave: 'reels', rota: '/(escola)/reels', rotulo: 'Reels', icone: 'film-outline' },
     { chave: 'captacao', rota: '/(escola)/captacao', rotulo: 'Experimentais', icone: 'megaphone-outline' },
     { chave: 'comunicados', rota: '/(escola)/comunicados', rotulo: 'Comunicados', icone: 'mail-outline' },
   ]},
@@ -129,6 +131,16 @@ function SidebarConteudo({ onNavegar }: { onNavegar?: () => void }) {
   );
 }
 
+// Os 4 mais usados no dia a dia ficam fixos na bottom tab bar em mobile; o
+// resto dos 12 itens de NAV_ESCOLA continua acessível pela lista completa
+// que abre em "Mais" (mesmo overlay usado hoje).
+const ITENS_TAB_ESCOLA: ItemNav[] = [
+  { chave: 'painel', rota: '/(escola)', rotulo: 'Painel', icone: 'grid-outline' },
+  { chave: 'alunos', rota: '/(escola)/alunos', rotulo: 'Alunos', icone: 'school-outline' },
+  { chave: 'financeiro', rota: '/(escola)/financeiro', rotulo: 'Financeiro', icone: 'cash-outline' },
+  { chave: 'chats', rota: '/(escola)/chats', rotulo: 'Chats das Turmas', icone: 'chatbubbles-outline' },
+];
+
 export function ErpShell({ titulo, acao, children }: { titulo: string; acao?: React.ReactNode; children: React.ReactNode }) {
   const ehDesktop = useEhDesktop();
   const [menuAberto, setMenuAberto] = useState(false);
@@ -149,11 +161,6 @@ export function ErpShell({ titulo, acao, children }: { titulo: string; acao?: Re
 
       <View style={estilos.colunaDireita}>
         <View style={estilos.topbar}>
-          {!ehDesktop && (
-            <TouchableOpacity onPress={() => setMenuAberto(true)} style={estilos.hamburger}>
-              <Ionicons name="menu" size={22} color={ERP.texto} />
-            </TouchableOpacity>
-          )}
           <Text style={estilos.topbarTitulo}>{titulo}</Text>
           <View style={{ flex: 1 }} />
           {acao}
@@ -162,6 +169,10 @@ export function ErpShell({ titulo, acao, children }: { titulo: string; acao?: Re
         <ScrollView style={estilos.conteudo} contentContainerStyle={estilos.conteudoInner} showsVerticalScrollIndicator={false}>
           {children}
         </ScrollView>
+
+        {!ehDesktop && (
+          <BottomTabBar itens={ITENS_TAB_ESCOLA} rotaBase="/(escola)" aoAbrirMais={() => setMenuAberto(true)} />
+        )}
       </View>
     </View>
   );
@@ -414,9 +425,9 @@ export function Tabela<T extends { id: string }>({ colunas, dados, onLinhaPress,
 const estilos = StyleSheet.create({
   appRow: { flex: 1, flexDirection: 'row', backgroundColor: ERP.fundo },
 
-  sidebar: { width: 248, backgroundColor: ERP.sidebarBg, paddingTop: 20, paddingBottom: 16 },
+  sidebar: { width: 248, backgroundColor: ERP.sidebarBg, borderRightWidth: 1, borderRightColor: ERP.sidebarBorda, paddingTop: 20, paddingBottom: 16 },
   marca: { paddingHorizontal: 20, paddingBottom: 18, marginBottom: 6, borderBottomWidth: 1, borderBottomColor: ERP.sidebarBorda },
-  marcaKav: { color: '#fff', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
+  marcaKav: { color: ERP.texto, fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
   marcaClass: { color: ERP.acento, fontWeight: '800' },
   tagEscola: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
   tagEscolaTexto: { color: ERP.sidebarTexto, fontSize: 12, fontWeight: '600', flexShrink: 1 },
@@ -437,7 +448,7 @@ const estilos = StyleSheet.create({
   avatarFallback: { width: 32, height: 32, borderRadius: 16, backgroundColor: ERP.acento, alignItems: 'center', justifyContent: 'center' },
   avatarFoto: { width: 32, height: 32, borderRadius: 16, backgroundColor: ERP.sidebarBgAtivo },
   avatarLetra: { color: '#fff', fontSize: 13, fontWeight: '700' },
-  perfilNome: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  perfilNome: { color: ERP.texto, fontSize: 13, fontWeight: '600' },
   perfilPapel: { color: ERP.sidebarTextoMuted, fontSize: 11, marginTop: 1 },
   sairBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingVertical: 10 },
   sairTexto: { color: ERP.sidebarTextoMuted, fontSize: 12.5, fontWeight: '600' },

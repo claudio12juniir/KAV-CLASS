@@ -36,7 +36,10 @@ async function checarAssinaturaProfessorBloqueada() {
     const semAssinatura = ['PENDENTE', 'INATIVO', 'CANCELADO'].includes(dados.assinaturaStatus);
 
     if (testeVencido || semAssinatura) {
-      return { professorId, email: dados.email, codigoConvite: dados.codigoConvite };
+      return {
+        professorId, email: dados.email, codigoConvite: dados.codigoConvite,
+        pacote: dados.pacote, modalidadeEnsino: dados.modalidadeEnsino,
+      };
     }
     return null;
   } catch {
@@ -97,7 +100,10 @@ export default function LoginScreen() {
           if (bloqueio) {
             router.replace({
               pathname: '/escolher-plano',
-              params: { professorId: bloqueio.professorId, email: bloqueio.email, codigoConvite: bloqueio.codigoConvite || '' },
+              params: {
+                professorId: bloqueio.professorId, email: bloqueio.email, codigoConvite: bloqueio.codigoConvite || '',
+                pacote: bloqueio.pacote || '', modalidadeEnsino: (bloqueio.modalidadeEnsino || []).join(','),
+              },
             });
           } else {
             router.replace('/(professor)');
@@ -161,7 +167,10 @@ export default function LoginScreen() {
               text: 'Escolher plano',
               onPress: () => router.replace({
                 pathname: '/escolher-plano',
-                params: { professorId: dados.professorId, email: dados.email, codigoConvite: dados.codigoConvite || '' },
+                params: {
+                  professorId: dados.professorId, email: dados.email, codigoConvite: dados.codigoConvite || '',
+                  pacote: dados.pacote || '', modalidadeEnsino: (dados.modalidadeEnsino || []).join(','),
+                },
               }),
             },
           ],

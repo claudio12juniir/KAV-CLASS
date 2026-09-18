@@ -1,46 +1,16 @@
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerContentScrollView, DrawerItemList } from '@react-navigation/drawer';
-import { Drawer } from 'expo-router/drawer';
-import { router } from 'expo-router';
+import { Tabs, router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
+import { CORES } from '../../constants/theme';
 import { usePushToken } from '../../hooks/usePushToken';
 import { BASE_URL, fetchComRetry } from '../api';
-import { useConta } from '../_contaContexto';
 
-function CustomDrawerContent(props: any) {
-  const { vinculos, trocarVinculo } = useConta();
-
-  return (
-    <DrawerContentScrollView {...props}>
-      <View style={styles.drawerHeader}>
-        <Text style={styles.brandKav}>KAV</Text>
-        <Text style={styles.brandClass}>CLASS</Text>
-        <Text style={styles.roleTag}>PORTAL DO ALUNO</Text>
-      </View>
-      <DrawerItemList {...props} />
-
-      {/* Só aparece quando a Conta tem mais de 1 vínculo (fundação de
-          identidade unificada) — hoje isso nunca acontece em produção. */}
-      {vinculos.length > 1 && (
-        <View style={styles.trocarContaBox}>
-          <Text style={styles.trocarContaTitulo}>Trocar de conta</Text>
-          {vinculos.map((v) => (
-            <TouchableOpacity
-              key={`${v.papel}-${v.id}`}
-              style={styles.trocarContaItem}
-              onPress={() => { props.navigation.closeDrawer(); trocarVinculo(v); }}
-            >
-              <Ionicons name="swap-horizontal-outline" size={16} color="#555" />
-              <Text style={styles.trocarContaTexto} numberOfLines={1}>{v.nome}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-    </DrawerContentScrollView>
+function icone(nome: keyof typeof Ionicons.glyphMap, nomeAtivo: keyof typeof Ionicons.glyphMap) {
+  return ({ focused, color }: { focused: boolean; color: string }) => (
+    <Ionicons name={focused ? nomeAtivo : nome} size={24} color={color} />
   );
 }
 
@@ -90,47 +60,39 @@ export default function AlunoLayout() {
   usePushToken();
   return (
     <RedirecionadorEscolaAluno>
-      <AlunoDrawer />
+      <AlunoTabs />
     </RedirecionadorEscolaAluno>
   );
 }
 
-function AlunoDrawer() {
+// Bottom tabs estilo X: 4 ícones fixos + "Mais" leva ao resto (Material,
+// Financeiro, Reposições, Escanear/Confirmar Presença, Perfil). Rotas
+// escondidas da tab bar (`href: null`) continuam navegáveis normalmente
+// via router.push, usadas pela tela "Mais".
+function AlunoTabs() {
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <Drawer
-        drawerContent={(props) => <CustomDrawerContent {...props} />}
-        screenOptions={{
-          headerShown: false,
-          drawerActiveBackgroundColor: '#000000',
-          drawerActiveTintColor: '#ffffff',
-          drawerInactiveTintColor: '#333333',
-          drawerLabelStyle: { fontWeight: '600', fontSize: 14 },
-          drawerStyle: { backgroundColor: '#ffffff', width: 280 },
-        }}
-      >
-        <Drawer.Screen name="index"     options={{ drawerLabel: 'Início',          drawerIcon: ({ color }) => <Ionicons name="home-outline"        size={22} color={color} /> }} />
-        <Drawer.Screen name="feed"      options={{ drawerLabel: 'Feed',            drawerIcon: ({ color }) => <Ionicons name="newspaper-outline"   size={22} color={color} /> }} />
-        <Drawer.Screen name="busca"     options={{ drawerLabel: 'Explorar',        drawerIcon: ({ color }) => <Ionicons name="search-outline"      size={22} color={color} /> }} />
-        <Drawer.Screen name="materiais" options={{ drawerLabel: 'Material Didático', drawerIcon: ({ color }) => <Ionicons name="book-outline"      size={22} color={color} /> }} />
-        <Drawer.Screen name="pagamento" options={{ drawerLabel: 'Financeiro',       drawerIcon: ({ color }) => <Ionicons name="wallet-outline"     size={22} color={color} /> }} />
-        <Drawer.Screen name="reposicoes" options={{ drawerLabel: 'Reposições',      drawerIcon: ({ color }) => <Ionicons name="repeat-outline"     size={22} color={color} /> }} />
-        <Drawer.Screen name="chat"      options={{ drawerLabel: 'Mensagens',   drawerIcon: ({ color }) => <Ionicons name="chatbubbles-outline" size={22} color={color} /> }} />
-        <Drawer.Screen name="escanear-presenca" options={{ drawerLabel: 'Escanear Presença', drawerIcon: ({ color }) => <Ionicons name="qr-code-outline" size={22} color={color} /> }} />
-        <Drawer.Screen name="checkin-presenca" options={{ drawerLabel: 'Confirmar Presença', drawerIcon: ({ color }) => <Ionicons name="finger-print-outline" size={22} color={color} /> }} />
-        <Drawer.Screen name="perfil"    options={{ drawerItemStyle: { display: 'none' } }} />
-      </Drawer>
-    </GestureHandlerRootView>
+    <Tabs
+      screenOptions={{
+        headerShown: false,
+        tabBarShowLabel: false,
+        tabBarActiveTintColor: CORES.acento,
+        tabBarInactiveTintColor: CORES.secundaria,
+        tabBarStyle: { backgroundColor: CORES.fundo, borderTopWidth: 1, borderTopColor: CORES.borda, height: 56 },
+      }}
+    >
+      <Tabs.Screen name="index" options={{ tabBarIcon: icone('home-outline', 'home') }} />
+      <Tabs.Screen name="feed" options={{ tabBarIcon: icone('newspaper-outline', 'newspaper') }} />
+      <Tabs.Screen name="reels" options={{ tabBarIcon: icone('film-outline', 'film') }} />
+      <Tabs.Screen name="busca" options={{ tabBarIcon: icone('search-outline', 'search') }} />
+      <Tabs.Screen name="chat" options={{ tabBarIcon: icone('chatbubbles-outline', 'chatbubbles') }} />
+      <Tabs.Screen name="mais" options={{ tabBarIcon: icone('ellipsis-horizontal-circle-outline', 'ellipsis-horizontal-circle') }} />
+
+      <Tabs.Screen name="materiais" options={{ href: null }} />
+      <Tabs.Screen name="pagamento" options={{ href: null }} />
+      <Tabs.Screen name="reposicoes" options={{ href: null }} />
+      <Tabs.Screen name="escanear-presenca" options={{ href: null }} />
+      <Tabs.Screen name="checkin-presenca" options={{ href: null }} />
+      <Tabs.Screen name="perfil" options={{ href: null }} />
+    </Tabs>
   );
 }
-
-const styles = StyleSheet.create({
-  drawerHeader: { padding: 25, borderBottomWidth: 1, borderBottomColor: '#eee', marginBottom: 10 },
-  brandKav:   { fontSize: 18, color: '#000000', fontWeight: '300', letterSpacing: 2 },
-  brandClass: { fontSize: 24, color: '#000000', fontWeight: 'bold', marginTop: -5 },
-  roleTag:    { fontSize: 10, color: '#32BCAD', fontWeight: 'bold', marginTop: 5, letterSpacing: 1 },
-  trocarContaBox: { marginTop: 10, paddingHorizontal: 20, paddingTop: 14, borderTopWidth: 1, borderTopColor: '#f0f0f0' },
-  trocarContaTitulo: { fontSize: 11, color: '#AAAAAA', fontWeight: '700', marginBottom: 8, letterSpacing: 0.5 },
-  trocarContaItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
-  trocarContaTexto: { color: '#333', fontSize: 13, flexShrink: 1 },
-});

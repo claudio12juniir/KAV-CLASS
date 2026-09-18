@@ -9,7 +9,6 @@ import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   FlatList,
   Image,
@@ -22,21 +21,41 @@ import {
 import { CORES } from '../constants/theme';
 import { apiFetch } from '../app/api';
 import SyncLoader from './SyncLoader';
+import Pill from './ui/Pill';
+import PostCard, { Post } from './ui/PostCard';
+import { Reel, reelThumbnailUrl } from './ui/ReelCard';
 
-type Autor = { tipo: 'professor' | 'escola'; id: string; nome: string; fotoUrl: string | null };
-
-type Post = {
-  id: string;
-  conteudo: string | null;
-  midiaUrl: string | null;
-  exclusivo: boolean;
-  bloqueado: boolean;
-  createdAt: string;
-  autor: Autor;
-  totalCurtidas: number;
-  totalComentarios: number;
-  curtidoPeloUsuario: boolean;
-};
+// Carrossel de Reels intercalado no topo do feed (Rede Social — Epic D,
+// 18/09/2026): isca de captação, precisa aparecer mesmo pra quem só usa o
+// Feed de texto e nunca abriu a aba própria de Reels. Carrega uma vez, não
+// pagina (é só uma vitrine, a lista completa vive na aba Reels).
+function CarrosselReels({ reels, aoAbrir }: { reels: Reel[]; aoAbrir: () => void }) {
+  if (!reels.length) return null;
+  return (
+    <View style={styles.carrosselWrap}>
+      <View style={styles.carrosselTopo}>
+        <Text style={styles.carrosselTitulo}>Reels</Text>
+        <TouchableOpacity onPress={aoAbrir}><Text style={styles.carrosselVerTodos}>Ver todos</Text></TouchableOpacity>
+      </View>
+      <FlatList
+        data={reels}
+        keyExtractor={(item) => item.id}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ gap: 10 }}
+        renderItem={({ item }) => (
+          <TouchableOpacity style={styles.carrosselItem} onPress={aoAbrir} activeOpacity={0.85}>
+            <Image source={{ uri: reelThumbnailUrl(item) }} style={styles.carrosselThumb} />
+            <View style={styles.carrosselPlayIcone}>
+              <Ionicons name="play" size={14} color="#ffffff" />
+            </View>
+            <Text style={styles.carrosselAutor} numberOfLines={1}>{item.autor.nome}</Text>
+          </TouchableOpacity>
+        )}
+      />
+    </View>
+  );
+}
 
 type Comentario = {
   id: string;
@@ -56,6 +75,7 @@ export default function Feed() {
   const [publicando, setPublicando] = useState(false);
   const [comentariosAbertos, setComentariosAbertos] = useState<Record<string, Comentario[]>>({});
   const [novoComentario, setNovoComentario] = useState<Record<string, string>>({});
+  const [reels, setReels] = useState<Reel[]>([]);
 
   const carregarFeed = useCallback(async () => {
     setCarregando(true);
@@ -70,6 +90,10 @@ export default function Feed() {
     } finally {
       setCarregando(false);
     }
+  }, []);
+
+  useEffect(() => {
+    apiFetch('/reels').then((r) => r.ok && r.json()).then((d) => d && setReels((d.reels || []).slice(0, 10))).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -162,9 +186,15 @@ export default function Feed() {
     }
   };
 
+  const abrirReels = () => {
+    router.push((papel === 'professor' ? '/(professor)/reels' : '/(aluno)/reels') as any);
+  };
+
   return (
     <View style={styles.container}>
       <Text style={styles.titulo}>Feed</Text>
+
+      <CarrosselReels reels={reels} aoAbrir={abrirReels} />
 
       {papel === 'professor' && (
         <View style={styles.composer}>
@@ -181,9 +211,7 @@ export default function Feed() {
               <Ionicons name={novoExclusivo ? 'star' : 'star-outline'} size={16} color={novoExclusivo ? '#E6A700' : CORES.secundaria} />
               <Text style={[styles.exclusivoToggleTexto, novoExclusivo && { color: '#E6A700' }]}>Exclusivo p/ assinantes</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.composerBotao} onPress={publicar} disabled={publicando || !novoConteudo.trim()}>
-              {publicando ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.composerBotaoTexto}>Publicar</Text>}
-            </TouchableOpacity>
+            <Pill texto="Publicar" onPress={publicar} disabled={!novoConteudo.trim()} carregando={publicando} tamanho="sm" />
           </View>
         </View>
       )}
@@ -199,58 +227,15 @@ export default function Feed() {
           refreshing={false}
           ListEmptyComponent={<Text style={styles.vazio}>Nenhuma novidade por aqui ainda.</Text>}
           renderItem={({ item }) => (
-            <View style={styles.card}>
-              <View style={styles.cardTopo}>
-                {item.autor.fotoUrl ? (
-                  <Image source={{ uri: item.autor.fotoUrl }} style={styles.autorFoto} />
-                ) : (
-                  <View style={styles.autorFotoFallback}>
-                    <Text style={styles.autorFotoLetra}>{item.autor.nome[0]?.toUpperCase()}</Text>
-                  </View>
-                )}
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.autorNome}>{item.autor.nome}</Text>
-                  <Text style={styles.dataTexto}>{new Date(item.createdAt).toLocaleDateString('pt-BR')}</Text>
-                </View>
-                {papel === 'professor' && item.autor.id === meuId && (
-                  <TouchableOpacity onPress={() => apagar(item)} hitSlop={10}>
-                    <Ionicons name="trash-outline" size={18} color={CORES.secundaria} />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {item.exclusivo && (
-                <View style={styles.exclusivoBadge}>
-                  <Ionicons name="star" size={11} color="#E6A700" />
-                  <Text style={styles.exclusivoBadgeTexto}>Conteúdo exclusivo</Text>
-                </View>
-              )}
-
-              {item.bloqueado ? (
-                <TouchableOpacity style={styles.bloqueadoBox} onPress={() => verPerfilDoAutor(item)} activeOpacity={0.85}>
-                  <Ionicons name="lock-closed" size={22} color={CORES.secundaria} />
-                  <Text style={styles.bloqueadoTexto}>
-                    Assine o conteúdo exclusivo de {item.autor.nome} pra ver este post.
-                  </Text>
-                  <Text style={styles.bloqueadoLink}>Ver perfil e assinar</Text>
-                </TouchableOpacity>
-              ) : (
-                <>
-                  <Text style={styles.conteudo}>{item.conteudo}</Text>
-                  {item.midiaUrl ? <Image source={{ uri: item.midiaUrl }} style={styles.midia} /> : null}
-                </>
-              )}
-
-              <View style={styles.acoes}>
-                <TouchableOpacity style={styles.acaoBotao} onPress={() => curtir(item)}>
-                  <Ionicons name={item.curtidoPeloUsuario ? 'heart' : 'heart-outline'} size={20} color={item.curtidoPeloUsuario ? CORES.erro : CORES.secundaria} />
-                  <Text style={styles.acaoTexto}>{item.totalCurtidas}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.acaoBotao} onPress={() => item.bloqueado ? verPerfilDoAutor(item) : alternarComentarios(item.id)}>
-                  <Ionicons name="chatbubble-outline" size={18} color={CORES.secundaria} />
-                  <Text style={styles.acaoTexto}>{item.totalComentarios}</Text>
-                </TouchableOpacity>
-              </View>
+            <View style={styles.postWrapper}>
+              <PostCard
+                post={item}
+                podeApagar={papel === 'professor' && item.autor.id === meuId}
+                onVerPerfil={() => verPerfilDoAutor(item)}
+                onCurtir={() => curtir(item)}
+                onToggleComentarios={() => item.bloqueado ? verPerfilDoAutor(item) : alternarComentarios(item.id)}
+                onApagar={() => apagar(item)}
+              />
 
               {!item.bloqueado && comentariosAbertos[item.id] && (
                 <View style={styles.comentariosBox}>
@@ -287,31 +272,21 @@ const styles = StyleSheet.create({
   titulo: { fontSize: 24, fontWeight: 'bold', color: CORES.primaria, marginBottom: 14 },
   centro: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   vazio: { textAlign: 'center', color: CORES.secundaria, marginTop: 30, fontSize: 13 },
-  composer: { backgroundColor: CORES.superficie, borderRadius: 12, padding: 14, marginBottom: 16 },
-  composerInput: { minHeight: 50, color: CORES.primaria, fontSize: 14, textAlignVertical: 'top' },
+  carrosselWrap: { marginBottom: 16 },
+  carrosselTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  carrosselTitulo: { fontSize: 14, fontWeight: '700', color: CORES.primaria },
+  carrosselVerTodos: { fontSize: 12, color: CORES.acento, fontWeight: '600' },
+  carrosselItem: { width: 84, height: 130, borderRadius: 10, overflow: 'hidden', backgroundColor: '#000' },
+  carrosselThumb: { width: '100%', height: '100%' },
+  carrosselPlayIcone: { position: 'absolute', top: 6, right: 6 },
+  carrosselAutor: { position: 'absolute', bottom: 4, left: 6, right: 6, color: '#ffffff', fontSize: 10, fontWeight: '700' },
+  composer: { borderBottomWidth: 1, borderBottomColor: CORES.borda, paddingBottom: 14, marginBottom: 4 },
+  composerInput: { minHeight: 50, color: CORES.primaria, fontSize: 15, textAlignVertical: 'top' },
   composerRodape: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 },
   exclusivoToggle: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   exclusivoToggleTexto: { fontSize: 12, color: CORES.secundaria, fontWeight: '600' },
-  composerBotao: { backgroundColor: CORES.primaria, borderRadius: 8, paddingVertical: 10, paddingHorizontal: 18, alignItems: 'center' },
-  composerBotaoTexto: { color: '#ffffff', fontWeight: '700', fontSize: 13 },
-  card: { backgroundColor: CORES.superficie, borderRadius: 12, padding: 14, marginBottom: 12 },
-  cardTopo: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 },
-  autorFoto: { width: 38, height: 38, borderRadius: 19 },
-  autorFotoFallback: { width: 38, height: 38, borderRadius: 19, backgroundColor: CORES.acento, alignItems: 'center', justifyContent: 'center' },
-  autorFotoLetra: { color: '#ffffff', fontWeight: '700' },
-  autorNome: { fontSize: 14, fontWeight: '700', color: CORES.primaria },
-  dataTexto: { fontSize: 11, color: CORES.secundaria },
-  conteudo: { fontSize: 14, color: CORES.primaria, lineHeight: 20, marginBottom: 8 },
-  midia: { width: '100%', height: 180, borderRadius: 10, marginBottom: 8 },
-  exclusivoBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },
-  exclusivoBadgeTexto: { fontSize: 11, color: '#E6A700', fontWeight: '700' },
-  bloqueadoBox: { backgroundColor: CORES.fundo, borderRadius: 10, borderWidth: 1, borderColor: CORES.borda, borderStyle: 'dashed', padding: 16, alignItems: 'center', gap: 6, marginBottom: 8 },
-  bloqueadoTexto: { fontSize: 13, color: CORES.secundaria, textAlign: 'center' },
-  bloqueadoLink: { fontSize: 13, color: CORES.acento, fontWeight: '700' },
-  acoes: { flexDirection: 'row', gap: 20, borderTopWidth: 1, borderTopColor: CORES.borda, paddingTop: 8, marginTop: 4 },
-  acaoBotao: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  acaoTexto: { fontSize: 12, color: CORES.secundaria, fontWeight: '600' },
-  comentariosBox: { marginTop: 10, borderTopWidth: 1, borderTopColor: CORES.borda, paddingTop: 10, gap: 8 },
+  postWrapper: { borderBottomWidth: 1, borderBottomColor: CORES.borda },
+  comentariosBox: { marginTop: -4, marginBottom: 10, gap: 8 },
   comentarioItem: { marginBottom: 2 },
   comentarioAutor: { fontSize: 12, fontWeight: '700', color: CORES.primaria },
   comentarioTexto: { fontSize: 12, color: CORES.secundaria },

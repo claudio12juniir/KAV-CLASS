@@ -1,6 +1,7 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
+import { router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -25,6 +26,7 @@ import {
   View,
 } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
+import Avatar from '../../components/ui/Avatar';
 
 function corBadgePresenca(p: string | null) {
   switch (p) {
@@ -72,7 +74,6 @@ const OPCOES_CONTRATO = [3, 6, 12, 24];
 type Recorrencia = 'SEMANAL' | 'QUINZENAL' | 'MENSAL';
 
 export default function AlunosProfessorScreen() {
-  const navigation = useNavigation();
   const [alunos, setAlunos]                   = useState<any[]>([]);
   const [alunosPendentes, setAlunosPendentes] = useState<any[]>([]);
   const [alunosInativos, setAlunosInativos]   = useState<any[]>([]);
@@ -582,10 +583,10 @@ export default function AlunosProfessorScreen() {
       <StatusBar style="dark" backgroundColor={CORES.fundo} />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-          <Ionicons name="menu" size={24} color={CORES.primaria} />
+        <TouchableOpacity onPress={() => router.back()} hitSlop={10} style={{ marginRight: 12 }}>
+          <Ionicons name="arrow-back" size={22} color={CORES.primaria} />
         </TouchableOpacity>
-        <View style={{ flex: 1, marginLeft: 12 }}>
+        <View style={{ flex: 1 }}>
           <Text style={styles.titulo}>MEUS ALUNOS</Text>
           <Text style={styles.subtitulo}>{totalGeral} alunos no total</Text>
         </View>
@@ -714,13 +715,9 @@ export default function AlunosProfessorScreen() {
         }
         renderItem={({ item }) => (
           <TouchableOpacity style={styles.cardAluno} onPress={() => abrirPerfil(item)}>
-            {item.fotoUrl ? (
-              <Image source={{ uri: item.fotoUrl }} style={styles.avatarImg} />
-            ) : (
-              <View style={styles.avatar}>
-                <Text style={styles.letraAvatar}>{item.nome?.charAt(0).toUpperCase()}</Text>
-              </View>
-            )}
+            <View style={{ marginRight: 14 }}>
+              <Avatar fotoUrl={item.fotoUrl} nome={item.nome} tamanho={46} />
+            </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.nomeAluno}>{item.nome}</Text>
               <Text style={styles.cursoAluno}>{item.email || 'Ver histórico e evolução'}</Text>
@@ -880,13 +877,7 @@ export default function AlunosProfessorScreen() {
           {alunoSelecionado && (
             <>
               <View style={styles.perfilInfo}>
-                {alunoSelecionado.fotoUrl ? (
-                  <Image source={{ uri: alunoSelecionado.fotoUrl }} style={{ width: 70, height: 70, borderRadius: 35 }} />
-                ) : (
-                  <View style={[styles.avatar, { width: 70, height: 70, borderRadius: 35 }]}>
-                    <Text style={[styles.letraAvatar, { fontSize: 28 }]}>{alunoSelecionado.nome?.charAt(0).toUpperCase()}</Text>
-                  </View>
-                )}
+                <Avatar fotoUrl={alunoSelecionado.fotoUrl} nome={alunoSelecionado.nome} tamanho={70} />
                 <Text style={styles.perfilNome}>{alunoSelecionado.nome}</Text>
                 <Text style={styles.perfilEmail}>{alunoSelecionado.email}</Text>
               </View>
@@ -1230,7 +1221,6 @@ const styles = StyleSheet.create({
     paddingTop: 56, paddingHorizontal: 20, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: CORES.borda,
   },
-  hamburger: { padding: 4 },
   titulo: { color: CORES.primaria, fontSize: 14, fontWeight: 'bold', letterSpacing: 3 },
   subtitulo: { color: CORES.secundaria, fontSize: 12, marginTop: 2 },
 

@@ -1,10 +1,13 @@
-// Shell mobile do sistema INSTITUTION (professor "PROFESSOR" e aluno de uma
-// Escola PACOTE_ESCOLA) — mesma linguagem visual do painel (escola) (sidebar
-// escura, ERP de constants/erpTheme.ts), mas construído do zero: o ErpShell
+// Shell do sistema INSTITUTION para professor "PROFESSOR" e aluno de uma
+// Escola PACOTE_ESCOLA — mesma linguagem visual do painel (escola) (rail
+// claro, ERP de constants/erpTheme.ts), mas construído do zero: o ErpShell
 // de app/(escola)/_ui.tsx está amarrado a useEscolaContexto() (DONO/GESTOR)
 // e a NAV_ESCOLA fixo, então não dá pra reusar sem editar um arquivo que já
 // está em produção. Este componente é puramente apresentacional — recebe
 // navGrupos e identidade via props, sem fazer fetch nenhum.
+// Responsivo como o ErpShell: rail fixo em desktop, bottom tabs (4 ícones
+// mais usados + "Mais") em mobile — os 4 pinados são os primeiros itens de
+// navGrupos, na ordem em que a tela os define.
 import { Ionicons } from '@expo/vector-icons';
 import { router, usePathname } from 'expo-router';
 import React, { useState } from 'react';
@@ -16,11 +19,18 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import SyncLoader from '../SyncLoader';
-import { ERP } from '../../constants/erpTheme';
+import { ERP, ERP_BREAKPOINT_DESKTOP } from '../../constants/erpTheme';
 import type { GrupoNav } from '../../app/(escola)/_ui';
+import BottomTabBar from './BottomTabBar';
+
+function useEhDesktop() {
+  const { width } = useWindowDimensions();
+  return width >= ERP_BREAKPOINT_DESKTOP;
+}
 
 function normalizar(rota: string, rotaBase: string) {
   return rota.replace(rotaBase, '') || '/';
@@ -107,7 +117,9 @@ export function MobileErpShell({
   aoSair: () => void;
   carregando?: boolean;
 }) {
+  const ehDesktop = useEhDesktop();
   const [menuAberto, setMenuAberto] = useState(false);
+  const itensPinados = navGrupos.flatMap((g) => g.itens).slice(0, 4);
 
   if (carregando) {
     return (
@@ -119,28 +131,39 @@ export function MobileErpShell({
 
   return (
     <View style={estilos.appRow}>
-      <RNModal visible={menuAberto} animationType="fade" transparent onRequestClose={() => setMenuAberto(false)}>
-        <TouchableOpacity style={estilos.overlay} activeOpacity={1} onPress={() => setMenuAberto(false)}>
-          <TouchableOpacity activeOpacity={1} style={estilos.overlaySidebar}>
-            <SidebarConteudo
-              navGrupos={navGrupos}
-              rotaBase={rotaBase}
-              nome={identidade.nome}
-              fotoUrl={identidade.fotoUrl}
-              subtitulo={identidade.subtitulo}
-              tag={tag}
-              aoSair={aoSair}
-              onNavegar={() => setMenuAberto(false)}
-            />
+      {ehDesktop && (
+        <SidebarConteudo
+          navGrupos={navGrupos}
+          rotaBase={rotaBase}
+          nome={identidade.nome}
+          fotoUrl={identidade.fotoUrl}
+          subtitulo={identidade.subtitulo}
+          tag={tag}
+          aoSair={aoSair}
+        />
+      )}
+
+      {!ehDesktop && (
+        <RNModal visible={menuAberto} animationType="fade" transparent onRequestClose={() => setMenuAberto(false)}>
+          <TouchableOpacity style={estilos.overlay} activeOpacity={1} onPress={() => setMenuAberto(false)}>
+            <TouchableOpacity activeOpacity={1} style={estilos.overlaySidebar}>
+              <SidebarConteudo
+                navGrupos={navGrupos}
+                rotaBase={rotaBase}
+                nome={identidade.nome}
+                fotoUrl={identidade.fotoUrl}
+                subtitulo={identidade.subtitulo}
+                tag={tag}
+                aoSair={aoSair}
+                onNavegar={() => setMenuAberto(false)}
+              />
+            </TouchableOpacity>
           </TouchableOpacity>
-        </TouchableOpacity>
-      </RNModal>
+        </RNModal>
+      )}
 
       <View style={estilos.colunaDireita}>
         <View style={estilos.topbar}>
-          <TouchableOpacity onPress={() => setMenuAberto(true)} style={estilos.hamburger}>
-            <Ionicons name="menu" size={22} color={ERP.texto} />
-          </TouchableOpacity>
           <Text style={estilos.topbarTitulo}>{titulo}</Text>
           <View style={{ flex: 1 }} />
           {acao}
@@ -149,17 +172,21 @@ export function MobileErpShell({
         <ScrollView style={estilos.conteudo} contentContainerStyle={estilos.conteudoInner} showsVerticalScrollIndicator={false}>
           {children}
         </ScrollView>
+
+        {!ehDesktop && (
+          <BottomTabBar itens={itensPinados} rotaBase={rotaBase} aoAbrirMais={() => setMenuAberto(true)} />
+        )}
       </View>
     </View>
   );
 }
 
 const estilos = StyleSheet.create({
-  appRow: { flex: 1, backgroundColor: ERP.fundo },
+  appRow: { flex: 1, flexDirection: 'row', backgroundColor: ERP.fundo },
 
-  sidebar: { width: 280, height: '100%', backgroundColor: ERP.sidebarBg, paddingTop: 20, paddingBottom: 16 },
+  sidebar: { width: 280, backgroundColor: ERP.sidebarBg, borderRightWidth: 1, borderRightColor: ERP.sidebarBorda, paddingTop: 20, paddingBottom: 16 },
   marca: { paddingHorizontal: 20, paddingBottom: 18, marginBottom: 6, borderBottomWidth: 1, borderBottomColor: ERP.sidebarBorda },
-  marcaKav: { color: '#fff', fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
+  marcaKav: { color: ERP.texto, fontSize: 17, fontWeight: '800', letterSpacing: 0.5 },
   marcaClass: { color: ERP.acento, fontWeight: '800' },
   tagEscola: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
   tagEscolaTexto: { color: ERP.sidebarTexto, fontSize: 12, fontWeight: '600', flexShrink: 1 },
@@ -180,7 +207,7 @@ const estilos = StyleSheet.create({
   avatarFallback: { width: 32, height: 32, borderRadius: 16, backgroundColor: ERP.acento, alignItems: 'center', justifyContent: 'center' },
   avatarFoto: { width: 32, height: 32, borderRadius: 16, backgroundColor: ERP.sidebarBgAtivo },
   avatarLetra: { color: '#fff', fontSize: 13, fontWeight: '700' },
-  perfilNome: { color: '#fff', fontSize: 13, fontWeight: '600' },
+  perfilNome: { color: ERP.texto, fontSize: 13, fontWeight: '600' },
   perfilPapel: { color: ERP.sidebarTextoMuted, fontSize: 11, marginTop: 1 },
   sairBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingVertical: 10 },
   sairTexto: { color: ERP.sidebarTextoMuted, fontSize: 12.5, fontWeight: '600' },
@@ -194,7 +221,6 @@ const estilos = StyleSheet.create({
     backgroundColor: ERP.superficie, borderBottomWidth: 1, borderBottomColor: ERP.borda,
     ...ERP.sombra.xs, zIndex: 1,
   },
-  hamburger: { marginRight: 14 },
   topbarTitulo: { fontSize: 15, fontWeight: '700', color: ERP.texto, letterSpacing: 0.1 },
 
   conteudo: { flex: 1 },

@@ -1,6 +1,6 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -25,7 +25,6 @@ function formatarHora(iso: string) {
 }
 
 export default function ChatAlunoScreen() {
-  const navigation = useNavigation();
   const [aba, setAba] = useState<'conversa' | 'mural'>('conversa');
 
   return (
@@ -33,9 +32,6 @@ export default function ChatAlunoScreen() {
       <StatusBar style="dark" backgroundColor={CORES.fundo} />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={{ padding: 4, marginRight: 14 }}>
-          <Ionicons name="menu" size={24} color={CORES.primaria} />
-        </TouchableOpacity>
         <View>
           <Text style={styles.headerTitle}>MENSAGENS</Text>
           <Text style={styles.headerSub}>Fale com o seu professor</Text>

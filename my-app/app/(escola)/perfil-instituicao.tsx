@@ -9,6 +9,13 @@ import { Botao, Campo, ErpShell, PageHeader, SectionCard } from './_ui';
 
 const DIAS_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 
+type ModalidadeEnsino = 'PRESENCIAL' | 'REMOTO' | 'ONLINE';
+const MODALIDADES_OPCOES: { valor: ModalidadeEnsino; label: string }[] = [
+  { valor: 'PRESENCIAL', label: 'Presencial' },
+  { valor: 'REMOTO', label: 'Remoto' },
+  { valor: 'ONLINE', label: 'Online' },
+];
+
 type DiaFuncionamento = { dia: number; aberto: boolean; abre: string; fecha: string };
 type HorarioFuncionamento = { dias: DiaFuncionamento[] };
 
@@ -50,6 +57,7 @@ export default function PerfilInstituicaoEscola() {
   const [tipoRemuneracao, setTipoRemuneracao] = useState<'POR_AULA' | 'POR_ALUNO_MES'>('POR_AULA');
   const [diaFechamento, setDiaFechamento] = useState('');
   const [horario, setHorario] = useState<HorarioFuncionamento>(horarioPadrao());
+  const [modalidades, setModalidades] = useState<ModalidadeEnsino[]>(['PRESENCIAL']);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -65,6 +73,7 @@ export default function PerfilInstituicaoEscola() {
         setTipoRemuneracao(d.tipoRemuneracaoProfessor === 'POR_ALUNO_MES' ? 'POR_ALUNO_MES' : 'POR_AULA');
         setDiaFechamento(d.diaFechamento != null ? String(d.diaFechamento) : '');
         if (d.horarioFuncionamento?.dias?.length === 7) setHorario(d.horarioFuncionamento);
+        setModalidades(d.modalidadeEnsino?.length ? d.modalidadeEnsino : ['PRESENCIAL']);
       }
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
@@ -80,6 +89,15 @@ export default function PerfilInstituicaoEscola() {
   };
   const editarHorarioDia = (dia: number, campo: 'abre' | 'fecha', valor: string) => {
     setHorario((h) => ({ dias: h.dias.map((d) => (d.dia === dia ? { ...d, [campo]: valor } : d)) }));
+  };
+  const alternarModalidade = (valor: ModalidadeEnsino) => {
+    setModalidades((atuais) => {
+      if (atuais.includes(valor)) {
+        // Sempre precisa sobrar pelo menos uma modalidade marcada.
+        return atuais.length > 1 ? atuais.filter((m) => m !== valor) : atuais;
+      }
+      return [...atuais, valor];
+    });
   };
 
   const salvar = async () => {
@@ -98,6 +116,7 @@ export default function PerfilInstituicaoEscola() {
           tipoRemuneracaoProfessor: tipoRemuneracao,
           diaFechamento: diaFechamento ? Number(diaFechamento) : null,
           horarioFuncionamento: horario,
+          modalidadeEnsino: modalidades,
         }),
       });
       if (res.ok) Alert.alert('Feito!', 'Perfil da Instituição atualizado.');
@@ -129,6 +148,14 @@ export default function PerfilInstituicaoEscola() {
         <Campo label="Nome da instituição" value={nome} onChangeText={setNome} placeholder="Ex.: Academia KAV" />
         <Campo label="E-mail da instituição" value={email} onChangeText={setEmail} placeholder="contato@suaescola.com" keyboardType="email-address" autoCapitalize="none" />
         <Campo label="URL do logo" value={logoUrl} onChangeText={setLogoUrl} placeholder="https://..." autoCapitalize="none" />
+      </SectionCard>
+
+      <SectionCard titulo="Modalidade de ensino" subtitulo="Aparece no perfil público e nos filtros de busca — pode marcar mais de uma">
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          {MODALIDADES_OPCOES.map((op) => (
+            <Chip key={op.valor} label={op.label} ativo={modalidades.includes(op.valor)} onPress={() => alternarModalidade(op.valor)} />
+          ))}
+        </View>
       </SectionCard>
 
       <SectionCard titulo="Horário de funcionamento" subtitulo="Usado na Grade de hoje, Logística e Cronograma">

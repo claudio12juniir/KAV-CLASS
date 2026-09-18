@@ -1,7 +1,7 @@
 import { BASE_URL, fetchComRetry } from '../app/api';
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { DrawerActions, useNavigation } from '@react-navigation/native';
+import { useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useRef, useState } from 'react';
@@ -88,8 +88,8 @@ export default function EscanearPresenca() {
     <View style={styles.container}>
       <StatusBar style="light" />
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-          <Ionicons name="menu" size={24} color="#ffffff" />
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.hamburger}>
+          <Ionicons name="arrow-back" size={24} color="#ffffff" />
         </TouchableOpacity>
         <Text style={styles.titulo}>ESCANEAR PRESENÇA</Text>
         <View style={{ width: 40 }} />

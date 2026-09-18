@@ -77,7 +77,8 @@
         {
           "cameraPermission": "Permita o uso da câmera pra escanear o QR Code de presença da sala."
         }
-      ]
+      ],
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true,

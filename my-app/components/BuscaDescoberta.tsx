@@ -10,7 +10,6 @@ import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Image,
   StyleSheet,
   Text,
   TextInput,
@@ -19,8 +18,15 @@ import {
 } from 'react-native';
 import { CORES } from '../constants/theme';
 import { apiFetch } from '../app/api';
+import Avatar from './ui/Avatar';
 
 type Tipo = 'professor' | 'escola';
+type ModalidadeEnsino = 'PRESENCIAL' | 'REMOTO' | 'ONLINE';
+const MODALIDADES_FILTRO: { valor: ModalidadeEnsino; label: string }[] = [
+  { valor: 'PRESENCIAL', label: 'Presencial' },
+  { valor: 'REMOTO', label: 'Remoto' },
+  { valor: 'ONLINE', label: 'Online' },
+];
 
 type ResultadoProfessor = {
   id: string;
@@ -30,6 +36,7 @@ type ResultadoProfessor = {
   cidade: string | null;
   estado: string | null;
   cursos: string[];
+  modalidadeEnsino: ModalidadeEnsino[];
 };
 
 type ResultadoEscola = {
@@ -39,6 +46,7 @@ type ResultadoEscola = {
   bio: string | null;
   cidade: string | null;
   estado: string | null;
+  modalidadeEnsino: ModalidadeEnsino[];
 };
 
 type Resultado = (ResultadoProfessor | ResultadoEscola) & { _tipo: Tipo };
@@ -49,6 +57,7 @@ export default function BuscaDescoberta() {
   const [curso, setCurso] = useState('');
   const [cidade, setCidade] = useState('');
   const [q, setQ] = useState('');
+  const [modalidade, setModalidade] = useState<ModalidadeEnsino | null>(null);
   const [carregando, setCarregando] = useState(false);
   const [jaBuscou, setJaBuscou] = useState(false);
   const [resultados, setResultados] = useState<Resultado[]>([]);
@@ -61,6 +70,7 @@ export default function BuscaDescoberta() {
       if (curso.trim()) params.set('curso', curso.trim());
       if (cidade.trim()) params.set('cidade', cidade.trim());
       if (q.trim()) params.set('q', q.trim());
+      if (modalidade) params.set('modalidade', modalidade);
 
       const endpoint = tipo === 'professor' ? '/busca/professores' : '/busca/escolas';
       const resposta = await apiFetch(`${endpoint}?${params.toString()}`);
@@ -73,7 +83,7 @@ export default function BuscaDescoberta() {
     } finally {
       setCarregando(false);
     }
-  }, [tipo, curso, cidade, q]);
+  }, [tipo, curso, cidade, q, modalidade]);
 
   const abrirPerfil = (item: Resultado) => {
     router.push({ pathname: '/perfil-publico', params: { id: item.id, tipo: item._tipo } } as any);
@@ -123,6 +133,21 @@ export default function BuscaDescoberta() {
             onChangeText={setQ}
           />
         </View>
+        <View style={styles.filtrosLinha}>
+          {MODALIDADES_FILTRO.map((op) => {
+            const ativo = modalidade === op.valor;
+            return (
+              <TouchableOpacity
+                key={op.valor}
+                style={[styles.modalidadeChip, ativo && styles.modalidadeChipAtivo]}
+                onPress={() => setModalidade(ativo ? null : op.valor)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.modalidadeChipTexto, ativo && styles.modalidadeChipTextoAtivo]}>{op.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
         <TouchableOpacity style={styles.botaoBuscar} onPress={buscar} disabled={carregando}>
           {carregando ? (
             <ActivityIndicator color="#ffffff" />
@@ -149,13 +174,7 @@ export default function BuscaDescoberta() {
           const cursos = 'cursos' in item ? item.cursos : undefined;
           return (
             <TouchableOpacity style={styles.card} onPress={() => abrirPerfil(item)} activeOpacity={0.7}>
-              {foto ? (
-                <Image source={{ uri: foto }} style={styles.cardFoto} />
-              ) : (
-                <View style={styles.cardFotoFallback}>
-                  <Text style={styles.cardFotoLetra}>{item.nome[0]?.toUpperCase()}</Text>
-                </View>
-              )}
+              <Avatar fotoUrl={foto} nome={item.nome} tamanho={48} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.cardNome} numberOfLines={1}>{item.nome}</Text>
                 {(item.cidade || item.estado) && (
@@ -164,6 +183,11 @@ export default function BuscaDescoberta() {
                 {item.bio ? <Text style={styles.cardBio} numberOfLines={2}>{item.bio}</Text> : null}
                 {cursos && cursos.length > 0 && (
                   <Text style={styles.cardCursos} numberOfLines={1}>{cursos.join(' • ')}</Text>
+                )}
+                {item.modalidadeEnsino?.length > 0 && (
+                  <Text style={styles.cardModalidade} numberOfLines={1}>
+                    {item.modalidadeEnsino.map((m) => MODALIDADES_FILTRO.find((op) => op.valor === m)?.label || m).join(' • ')}
+                  </Text>
                 )}
               </View>
               <Ionicons name="chevron-forward" size={18} color={CORES.secundaria} />
@@ -179,7 +203,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: CORES.fundo, padding: 20 },
   titulo: { fontSize: 24, fontWeight: 'bold', color: CORES.primaria },
   subtitulo: { fontSize: 13, color: CORES.secundaria, marginTop: 2, marginBottom: 16 },
-  tabsRow: { flexDirection: 'row', backgroundColor: CORES.superficie, borderRadius: 10, padding: 4, marginBottom: 14 },
+  tabsRow: { flexDirection: 'row', borderRadius: 10, borderWidth: 1, borderColor: CORES.borda, padding: 4, marginBottom: 14 },
   tab: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
   tabAtiva: { backgroundColor: CORES.primaria },
   tabTexto: { fontSize: 13, fontWeight: '600', color: CORES.secundaria },
@@ -206,16 +230,18 @@ const styles = StyleSheet.create({
   vazio: { textAlign: 'center', color: CORES.secundaria, marginTop: 30, fontSize: 13 },
   card: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
-    backgroundColor: CORES.superficie, borderRadius: 12, padding: 14, marginBottom: 10,
+    borderBottomWidth: 1, borderBottomColor: CORES.borda, paddingVertical: 14,
   },
-  cardFoto: { width: 48, height: 48, borderRadius: 24 },
-  cardFotoFallback: {
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: CORES.acento, alignItems: 'center', justifyContent: 'center',
-  },
-  cardFotoLetra: { color: '#ffffff', fontWeight: '700', fontSize: 18 },
   cardNome: { fontSize: 15, fontWeight: '700', color: CORES.primaria },
   cardLocal: { fontSize: 12, color: CORES.secundaria, marginTop: 1 },
   cardBio: { fontSize: 12, color: CORES.secundaria, marginTop: 4 },
   cardCursos: { fontSize: 11, color: CORES.acento, marginTop: 4, fontWeight: '600' },
+  cardModalidade: { fontSize: 11, color: CORES.secundaria, marginTop: 2 },
+  modalidadeChip: {
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8, borderWidth: 1,
+    borderColor: CORES.borda, backgroundColor: CORES.superficie,
+  },
+  modalidadeChipAtivo: { backgroundColor: CORES.acento, borderColor: CORES.acento },
+  modalidadeChipTexto: { fontSize: 12, fontWeight: '600', color: CORES.secundaria },
+  modalidadeChipTextoAtivo: { color: '#ffffff', fontWeight: '700' },
 });

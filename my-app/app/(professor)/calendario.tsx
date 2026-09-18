@@ -1,6 +1,6 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -146,8 +146,8 @@ export default function CalendarioProfessorScreen() {
       <StatusBar style="dark" backgroundColor="#ffffff" />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-          <Ionicons name="menu" size={24} color="#000000" />
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.hamburger}>
+          <Ionicons name="arrow-back" size={24} color="#000000" />
         </TouchableOpacity>
         <Text style={styles.titulo}>AGENDA</Text>
         <TouchableOpacity onPress={exportarAgendaICS} style={{ width: 40, alignItems: 'flex-end' }}>

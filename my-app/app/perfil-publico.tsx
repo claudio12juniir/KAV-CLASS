@@ -9,29 +9,45 @@ import * as SecureStore from 'expo-secure-store';
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
+  FlatList,
   Image,
   Linking,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { CORES } from '../constants/theme';
+import { CORES, RAIO } from '../constants/theme';
 import { apiFetch } from './api';
 import SyncLoader from '../components/SyncLoader';
+import Avatar from '../components/ui/Avatar';
+import ReelCard, { Reel, reelThumbnailUrl } from '../components/ui/ReelCard';
+
+type ModalidadeEnsino = 'PRESENCIAL' | 'REMOTO' | 'ONLINE';
+const MODALIDADE_LABEL: Record<ModalidadeEnsino, string> = {
+  PRESENCIAL: 'Presencial', REMOTO: 'Remoto', ONLINE: 'Online',
+};
+
+type AvaliacaoPublica = {
+  id: string; nota: number; comentario: string | null; createdAt: string;
+  aluno: { nome: string; fotoUrl: string | null };
+};
 
 type PerfilProfessor = {
   id: string; nome: string; fotoUrl: string | null; bio: string | null;
   cidade: string | null; estado: string | null; cursos: string[];
   videoApresentacaoUrl: string | null; notaMedia: number | null; totalAvaliacoes: number;
-  precoAssinaturaPremium: number | null;
+  precoAssinaturaPremium: number | null; modalidadeEnsino: ModalidadeEnsino[];
+  avaliacoes: AvaliacaoPublica[];
 };
 
 type PerfilEscola = {
   id: string; nome: string; logoUrl: string | null; bio: string | null;
   cidade: string | null; estado: string | null; cursos: string[];
-  notaMedia: number | null; totalAvaliacoes: number;
+  notaMedia: number | null; totalAvaliacoes: number; modalidadeEnsino: ModalidadeEnsino[];
+  avaliacoes: AvaliacaoPublica[];
 };
 
 export default function PerfilPublicoScreen() {
@@ -44,6 +60,8 @@ export default function PerfilPublicoScreen() {
   const [assinaturaAtiva, setAssinaturaAtiva] = useState(false);
   const [carregandoPremium, setCarregandoPremium] = useState(false);
   const [processandoPremium, setProcessandoPremium] = useState(false);
+  const [reels, setReels] = useState<Omit<Reel, 'autor'>[]>([]);
+  const [reelAberto, setReelAberto] = useState<Reel | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -60,6 +78,33 @@ export default function PerfilPublicoScreen() {
     })();
     SecureStore.getItemAsync('kav_papel').then(setPapel);
   }, [id, tipo]);
+
+  useEffect(() => {
+    const endpoint = tipo === 'escola' ? `/escolas/${id}/reels` : `/professores/${id}/reels`;
+    apiFetch(endpoint).then((r) => r.ok && r.json()).then((d) => d && setReels(d.reels || [])).catch(() => {});
+  }, [id, tipo]);
+
+  const abrirReel = (r: Omit<Reel, 'autor'>) => {
+    if (!perfil) return;
+    setReelAberto({
+      ...r,
+      autor: tipo === 'escola'
+        ? { tipo: 'escola', id: perfil.id, nome: perfil.nome, fotoUrl: (perfil as PerfilEscola).logoUrl }
+        : { tipo: 'professor', id: perfil.id, nome: perfil.nome, fotoUrl: (perfil as PerfilProfessor).fotoUrl },
+    });
+  };
+
+  const curtirReelAberto = async () => {
+    if (!reelAberto) return;
+    const atualizado = { ...reelAberto, curtidoPeloUsuario: !reelAberto.curtidoPeloUsuario, totalCurtidas: reelAberto.totalCurtidas + (reelAberto.curtidoPeloUsuario ? -1 : 1) };
+    setReelAberto(atualizado);
+    setReels((atual) => atual.map((r) => r.id === atualizado.id ? atualizado : r));
+    try {
+      await apiFetch(`/reels/${reelAberto.id}/curtir`, { method: 'POST' });
+    } catch {
+      // otimista — se falhar, o próximo carregamento da lista ressincroniza
+    }
+  };
 
   useEffect(() => {
     if (tipo !== 'professor' || papel !== 'aluno') return;
@@ -144,15 +189,13 @@ export default function PerfilPublicoScreen() {
           <Text style={styles.erroTexto}>Perfil não encontrado.</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ padding: 20 }}>
+        <ScrollView contentContainerStyle={{ paddingBottom: 20 }}>
+          <View style={styles.banner} />
+          <View style={styles.corpo}>
           <View style={styles.cabecalho}>
-            {foto ? (
-              <Image source={{ uri: foto }} style={styles.foto} />
-            ) : (
-              <View style={styles.fotoFallback}>
-                <Text style={styles.fotoLetra}>{perfil.nome[0]?.toUpperCase()}</Text>
-              </View>
-            )}
+            <View style={styles.fotoAnel}>
+              <Avatar fotoUrl={foto} nome={perfil.nome} tamanho={84} />
+            </View>
             <Text style={styles.nome}>{perfil.nome}</Text>
             {(perfil.cidade || perfil.estado) && (
               <Text style={styles.local}>
@@ -164,6 +207,15 @@ export default function PerfilPublicoScreen() {
               <View style={styles.notaBox}>
                 <Ionicons name="star" size={16} color="#E6A700" />
                 <Text style={styles.notaTexto}>{perfil.notaMedia.toFixed(1)} ({perfil.totalAvaliacoes} avaliações)</Text>
+              </View>
+            )}
+            {perfil.modalidadeEnsino?.length > 0 && (
+              <View style={styles.modalidadeLista}>
+                {perfil.modalidadeEnsino.map((m) => (
+                  <View key={m} style={styles.modalidadeBadge}>
+                    <Text style={styles.modalidadeBadgeTexto}>{MODALIDADE_LABEL[m] || m}</Text>
+                  </View>
+                ))}
               </View>
             )}
           </View>
@@ -195,6 +247,43 @@ export default function PerfilPublicoScreen() {
               <Text style={styles.videoBotaoTexto}>Ver vídeo de apresentação</Text>
             </TouchableOpacity>
           ) : null}
+
+          {perfil.avaliacoes?.length > 0 && (
+            <View style={styles.secao}>
+              <Text style={styles.secaoTitulo}>Avaliações</Text>
+              {perfil.avaliacoes.map((a) => (
+                <View key={a.id} style={styles.avaliacaoItem}>
+                  <Avatar fotoUrl={a.aluno.fotoUrl} nome={a.aluno.nome} tamanho={36} />
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.avaliacaoTopo}>
+                      <Text style={styles.avaliacaoNome}>{a.aluno.nome}</Text>
+                      <Text style={styles.avaliacaoData}>{new Date(a.createdAt).toLocaleDateString('pt-BR')}</Text>
+                    </View>
+                    <View style={styles.avaliacaoEstrelas}>
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <Ionicons key={n} name={n <= a.nota ? 'star' : 'star-outline'} size={13} color="#E6A700" />
+                      ))}
+                    </View>
+                    {a.comentario ? <Text style={styles.avaliacaoTexto}>{a.comentario}</Text> : null}
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {reels.length > 0 && (
+            <View style={styles.secao}>
+              <Text style={styles.secaoTitulo}>Reels</Text>
+              <View style={styles.reelsGrid}>
+                {reels.map((r) => (
+                  <TouchableOpacity key={r.id} style={styles.reelGridItem} onPress={() => abrirReel(r)} activeOpacity={0.85}>
+                    <Image source={{ uri: reelThumbnailUrl(r as any) }} style={styles.reelGridThumb} />
+                    <Ionicons name="play" size={16} color="#ffffff" style={styles.reelGridPlayIcone} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
 
           {precoPremium ? (
             <View style={styles.premiumBox}>
@@ -232,8 +321,28 @@ export default function PerfilPublicoScreen() {
               )}
             </View>
           ) : null}
+          </View>
         </ScrollView>
       )}
+
+      <Modal visible={!!reelAberto} animationType="slide" onRequestClose={() => setReelAberto(null)}>
+        {reelAberto && (
+          <View style={{ flex: 1 }}>
+            <ReelCard
+              reel={reelAberto}
+              ativo
+              podeApagar={false}
+              onVerPerfil={() => {}}
+              onCurtir={curtirReelAberto}
+              onAbrirComentarios={() => {}}
+              onApagar={() => {}}
+            />
+            <TouchableOpacity style={styles.reelFecharBotao} onPress={() => setReelAberto(null)} hitSlop={10}>
+              <Ionicons name="close" size={26} color="#ffffff" />
+            </TouchableOpacity>
+          </View>
+        )}
+      </Modal>
     </View>
   );
 }
@@ -245,21 +354,35 @@ const styles = StyleSheet.create({
   topoTitulo: { fontSize: 16, fontWeight: '700', color: CORES.primaria },
   centro: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   erroTexto: { color: CORES.secundaria, fontSize: 14 },
-  cabecalho: { alignItems: 'center', marginBottom: 20 },
-  foto: { width: 88, height: 88, borderRadius: 44, marginBottom: 12 },
-  fotoFallback: { width: 88, height: 88, borderRadius: 44, backgroundColor: CORES.acento, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
-  fotoLetra: { color: '#ffffff', fontWeight: '700', fontSize: 32 },
+  banner: { height: 100, backgroundColor: CORES.acentoClaro },
+  corpo: { paddingHorizontal: 20 },
+  cabecalho: { alignItems: 'center', marginTop: -44, marginBottom: 20 },
+  fotoAnel: { borderRadius: 46, borderWidth: 3, borderColor: CORES.fundo, marginBottom: 12 },
   nome: { fontSize: 20, fontWeight: '700', color: CORES.primaria },
   local: { fontSize: 13, color: CORES.secundaria, marginTop: 4 },
   notaBox: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8 },
   notaTexto: { fontSize: 13, color: CORES.primaria, fontWeight: '600' },
+  modalidadeLista: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, justifyContent: 'center' },
+  modalidadeBadge: { backgroundColor: CORES.acentoClaro, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  modalidadeBadgeTexto: { color: CORES.acento, fontSize: 11, fontWeight: '700' },
   secao: { marginBottom: 20 },
   secaoTitulo: { fontSize: 13, fontWeight: '700', color: CORES.secundaria, marginBottom: 8, letterSpacing: 0.5 },
   bioTexto: { fontSize: 14, color: CORES.primaria, lineHeight: 20 },
   cursosLista: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   cursoChip: { backgroundColor: CORES.acentoClaro, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6 },
   cursoChipTexto: { color: CORES.acento, fontSize: 12, fontWeight: '600' },
-  videoBotao: { flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: CORES.primaria, borderRadius: 8, paddingVertical: 12, marginTop: 4 },
+  avaliacaoItem: { flexDirection: 'row', gap: 10, borderTopWidth: 1, borderTopColor: CORES.borda, paddingTop: 14, marginTop: 14 },
+  avaliacaoTopo: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  avaliacaoNome: { fontSize: 13, fontWeight: '700', color: CORES.primaria },
+  avaliacaoData: { fontSize: 11, color: CORES.secundaria },
+  avaliacaoEstrelas: { flexDirection: 'row', gap: 2, marginTop: 3, marginBottom: 4 },
+  avaliacaoTexto: { fontSize: 13, color: CORES.primaria, lineHeight: 18 },
+  reelsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  reelGridItem: { width: '32%', aspectRatio: 9 / 16, borderRadius: 8, overflow: 'hidden', backgroundColor: '#000' },
+  reelGridThumb: { width: '100%', height: '100%' },
+  reelGridPlayIcone: { position: 'absolute', top: 6, right: 6 },
+  reelFecharBotao: { position: 'absolute', top: 52, left: 16, zIndex: 10, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
+  videoBotao: { flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: CORES.primaria, borderRadius: RAIO.pill, paddingVertical: 12, marginTop: 4 },
   videoBotaoTexto: { color: '#ffffff', fontWeight: '700', fontSize: 14 },
   premiumBox: { backgroundColor: CORES.acentoClaro, borderRadius: 12, padding: 16, marginTop: 8 },
   premiumTopo: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
@@ -267,8 +390,8 @@ const styles = StyleSheet.create({
   premiumTexto: { fontSize: 13, color: CORES.secundaria, lineHeight: 18, marginBottom: 12 },
   premiumAtivoBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
   premiumAtivoTexto: { fontSize: 13, fontWeight: '600', color: CORES.sucesso },
-  premiumBotaoAssinar: { backgroundColor: CORES.acento, borderRadius: 8, paddingVertical: 12, alignItems: 'center' },
+  premiumBotaoAssinar: { backgroundColor: CORES.acento, borderRadius: RAIO.pill, paddingVertical: 12, alignItems: 'center' },
   premiumBotaoAssinarTexto: { color: '#ffffff', fontWeight: '700', fontSize: 14 },
-  premiumBotaoCancelar: { borderWidth: 1, borderColor: CORES.erro, borderRadius: 8, paddingVertical: 12, alignItems: 'center' },
+  premiumBotaoCancelar: { borderWidth: 1, borderColor: CORES.erro, borderRadius: RAIO.pill, paddingVertical: 12, alignItems: 'center' },
   premiumBotaoCancelarTexto: { color: CORES.erro, fontWeight: '700', fontSize: 13 },
 });

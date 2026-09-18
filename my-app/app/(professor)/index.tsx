@@ -1,6 +1,6 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import * as Clipboard from 'expo-clipboard';
@@ -71,7 +71,6 @@ function labelPresenca(p: string | null) {
 
 export default function ProfessorDashboard() {
   const router = useRouter();
-  const navigation = useNavigation();
   const [aulasHoje, setAulasHoje]             = useState<any[]>([]);
   const [codigoConvite, setCodigoConvite]     = useState('...');
   const [carregando, setCarregando]           = useState(true);
@@ -637,10 +636,7 @@ export default function ProfessorDashboard() {
 
         {/* — Cabeçalho — */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-            <Ionicons name="menu" size={24} color={CORES.primaria} />
-          </TouchableOpacity>
-          <View style={{ flex: 1, marginLeft: 12 }}>
+          <View style={{ flex: 1 }}>
             <Text style={styles.saudacao}>Olá, Professor!</Text>
             <Text style={styles.dataHoje}>
               {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
@@ -1216,7 +1212,6 @@ const styles = StyleSheet.create({
     paddingTop: 56, paddingHorizontal: 20, paddingBottom: 20,
     borderBottomWidth: 1, borderBottomColor: CORES.borda,
   },
-  hamburger: { padding: 4, marginTop: 2 },
   saudacao: { color: CORES.primaria, fontSize: 22, fontWeight: 'bold' },
   dataHoje: { color: CORES.secundaria, fontSize: 13, marginTop: 2 },
   cardCodigo: {

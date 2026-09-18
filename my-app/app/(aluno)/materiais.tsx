@@ -1,8 +1,8 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useState } from 'react';
 import { Alert, Image, Linking,
@@ -38,7 +38,6 @@ interface MateriaisResposta {
 }
 
 export default function MateriaisScreen() {
-  const navigation = useNavigation();
   const [aulas, setAulas] = useState<AulaMaterial[]>([]);
   const [materiaisAvulsos, setMateriaisAvulsos] = useState<Anexo[]>([]);
   const [carregando, setCarregando] = useState(true);
@@ -222,8 +221,8 @@ export default function MateriaisScreen() {
       <StatusBar style="dark" backgroundColor={CORES.fundo} />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={{ padding: 4, marginBottom: 12 }}>
-          <Ionicons name="menu" size={24} color={CORES.primaria} />
+        <TouchableOpacity onPress={() => router.back()} hitSlop={10} style={{ marginBottom: 8 }}>
+          <Ionicons name="arrow-back" size={22} color={CORES.primaria} />
         </TouchableOpacity>
         <Text style={styles.titulo}>MATERIAL DIDÁTICO</Text>
         <Text style={styles.subtitulo}>Seu histórico de estudos</Text>

@@ -1,6 +1,6 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
@@ -69,7 +69,6 @@ function getCorBarra(p: number): string {
 }
 
 export default function AlunoDashboard() {
-  const navigation = useNavigation();
   const router = useRouter();
   const [dados, setDados] = useState<DashboardData>({});
   const [carregando, setCarregando] = useState(true);
@@ -246,11 +245,7 @@ export default function AlunoDashboard() {
       <StatusBar style="dark" backgroundColor={CORES.fundo} />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-          <Ionicons name="menu" size={24} color={CORES.primaria} />
-        </TouchableOpacity>
         <Text style={styles.titulo}>INÍCIO</Text>
-        <View style={{ width: 40 }} />
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scroll}>
@@ -564,7 +559,6 @@ const styles = StyleSheet.create({
     paddingTop: 56, paddingHorizontal: 20, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: CORES.borda,
   },
-  hamburger: { padding: 4 },
   titulo: { color: CORES.primaria, fontSize: 14, fontWeight: 'bold', letterSpacing: 3 },
   scroll: { padding: 20 },
   secaoLabel: {

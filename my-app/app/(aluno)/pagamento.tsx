@@ -1,6 +1,7 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
+import { router } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
@@ -51,7 +52,6 @@ const getStatus = (s: string) => STATUS_CONFIG[s] || STATUS_CONFIG['PENDENTE'];
 const fmt = (v: number) => `R$ ${Number(v).toFixed(2).replace('.', ',')}`;
 
 export default function PagamentoAlunoScreen() {
-  const navigation = useNavigation();
   const [parcelas, setParcelas] = useState<Parcela[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [chavePix, setChavePix] = useState<string | null>(null);
@@ -383,11 +383,12 @@ export default function PagamentoAlunoScreen() {
       <StatusBar style="dark" backgroundColor={CORES.fundo} />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-          <Ionicons name="menu" size={24} color={CORES.primaria} />
-        </TouchableOpacity>
-        <Text style={styles.titulo}>FINANCEIRO</Text>
-        <View style={{ width: 40 }} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
+            <Ionicons name="arrow-back" size={22} color={CORES.primaria} />
+          </TouchableOpacity>
+          <Text style={styles.titulo}>FINANCEIRO</Text>
+        </View>
       </View>
 
       {matriculas.length > 1 && (
@@ -705,7 +706,6 @@ const styles = StyleSheet.create({
     paddingTop: 56, paddingHorizontal: 20, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: CORES.borda,
   },
-  hamburger: { padding: 4 },
   titulo: { color: CORES.primaria, fontSize: 14, fontWeight: 'bold', letterSpacing: 3 },
 
   chipsMatriculaRow: { paddingHorizontal: 20, paddingTop: 16, gap: 8 },

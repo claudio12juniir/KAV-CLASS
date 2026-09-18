@@ -1,31 +1,32 @@
-// Paleta do painel institucional (Pacote Escola) — deliberadamente separada
-// de CORES (constants/theme.ts), que é a identidade do app mobile do
-// professor autônomo. O ERP é outra experiência: shell escuro fixo,
-// conteúdo claro, tabelas densas — não o visual "app de celular".
+// Paleta do painel institucional (Pacote Escola) — segue a mesma
+// linguagem visual "estilo X" de CORES (constants/theme.ts): fundo
+// branco, divisores hairline em vez de sombra/cards flutuantes, sidebar
+// clara em vez de chrome escuro. A única cor de marca preservada é o
+// teal (`acento`/`acentoSoft`/`acentoForte`).
 import { Platform } from 'react-native';
 
 export const ERP = {
-  // Sidebar / chrome
-  sidebarBg:        '#0B1220',
-  sidebarBgAtivo:   '#161F32',
-  sidebarBgHover:   'rgba(255,255,255,0.045)',
-  sidebarBorda:     '#1E293B',
-  sidebarTexto:     '#CBD5E1',
-  sidebarTextoAtivo:'#FFFFFF',
-  sidebarTextoMuted:'#64748B',
+  // Sidebar / chrome — clara, como o rail do X (item ativo = tinta do acento)
+  sidebarBg:        '#FFFFFF',
+  sidebarBgAtivo:   '#E6F8F6',
+  sidebarBgHover:   '#F7F9FA',
+  sidebarBorda:     '#EFF3F4',
+  sidebarTexto:     '#536471',
+  sidebarTextoAtivo:'#0F9C8E',
+  sidebarTextoMuted:'#8B98A5',
 
   // Conteúdo
-  fundo:       '#F5F7FA',
+  fundo:       '#FFFFFF',
   superficie:  '#FFFFFF',
-  borda:       '#E3E8EF',
-  bordaSuave:  '#EEF1F5',
-  bordaForte:  '#CBD5E1',
-  hover:       '#F8FAFC',
+  borda:       '#EFF3F4',
+  bordaSuave:  '#EFF3F4',
+  bordaForte:  '#D0D8DC',
+  hover:       '#F7F9FA',
 
   // Texto
-  texto:        '#101828',
-  textoSecundario: '#475467',
-  textoMuted:   '#98A2B3',
+  texto:        '#0F1419',
+  textoSecundario: '#536471',
+  textoMuted:   '#8B98A5',
 
   // Marca / estado
   acento:      '#32BCAD',
@@ -40,16 +41,17 @@ export const ERP = {
   info:        '#2E90FA',
   infoSoft:    '#EFF8FF',
 
-  raio:  { sm: 6, md: 10, lg: 14, xl: 18 },
+  raio:  { sm: 6, md: 10, lg: 14, xl: 18, pill: 9999 },
   fonte: { xs: 11, sm: 12, base: 13, md: 14, lg: 16, xl: 20, xxl: 26, xxxl: 32 },
 
-  // Elevação — profundidade sutil (cards flutuam levemente sobre o fundo,
-  // hover eleva mais um degrau). shadow* pro iOS/web, elevation pro Android.
+  // Sem elevação por sombra (estilo X é flat) — mantido só como hairline
+  // de 1px pra compatibilidade com quem ainda espreita `...ERP.sombra.xs`.
+  // Preferir `borderBottomWidth`/`borderWidth` com `ERP.borda` daqui pra frente.
   sombra: {
-    xs: { shadowColor: '#0B1220', shadowOpacity: 0.04, shadowRadius: 2, shadowOffset: { width: 0, height: 1 }, elevation: 1 },
-    sm: { shadowColor: '#0B1220', shadowOpacity: 0.06, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 2 },
-    md: { shadowColor: '#0B1220', shadowOpacity: 0.09, shadowRadius: 16, shadowOffset: { width: 0, height: 6 }, elevation: 4 },
-    lg: { shadowColor: '#0B1220', shadowOpacity: 0.16, shadowRadius: 32, shadowOffset: { width: 0, height: 12 }, elevation: 8 },
+    xs: { shadowOpacity: 0, elevation: 0 },
+    sm: { shadowOpacity: 0, elevation: 0 },
+    md: { shadowOpacity: 0, elevation: 0 },
+    lg: { shadowOpacity: 0, elevation: 0 },
   },
 };
 

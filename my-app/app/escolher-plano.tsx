@@ -18,74 +18,26 @@ import {
 } from 'react-native';
 import SyncLoader from '../components/SyncLoader';
 import { CORES } from '../constants/theme';
+import { PlanoId, planosPorPacote } from '../constants/planos';
 
 const API_URL = BASE_URL;
-
-const PLANOS = [
-  {
-    id: 'pro' as const,
-    nome: 'PRO',
-    preco: 'R$ 29,98',
-    periodo: '/mês',
-    limite: 'Até 35 alunos',
-    descricao: 'Ideal para professores que estão começando.',
-    recomendado: false,
-    features: [
-      'Até 35 alunos cadastrados',
-      'Calendário de aulas com recorrência',
-      'Gestão de cobranças mensais',
-      'Código de convite para alunos',
-      'Relatórios financeiros',
-      'Chat com alunos',
-    ],
-  },
-  {
-    id: 'premium' as const,
-    nome: 'PREMIUM',
-    preco: 'R$ 59,98',
-    periodo: '/mês',
-    limite: 'Até 60 alunos',
-    descricao: 'Para quem quer crescer com mais recursos.',
-    recomendado: true,
-    features: [
-      'Até 60 alunos cadastrados',
-      'Calendário avançado com recorrência',
-      'Cobranças automáticas por contrato',
-      'Notificações push para alunos',
-      'Relatórios financeiros detalhados',
-      'Materiais didáticos e chat',
-      'Suporte prioritário',
-    ],
-  },
-  {
-    id: 'one-time' as const,
-    nome: 'ANUAL',
-    preco: 'R$ 427,98',
-    periodo: '/ano',
-    limite: 'Até 70 alunos',
-    descricao: 'Melhor custo-benefício. Renova anualmente.',
-    recomendado: false,
-    features: [
-      'Até 70 alunos cadastrados',
-      'Todos os recursos Premium inclusos',
-      'Renovação anual automática',
-      'Atualizações futuras inclusas',
-      'Suporte prioritário',
-    ],
-  },
-];
-
-type PlanoId = 'pro' | 'premium' | 'one-time';
+const LINK_FALE_CONOSCO = 'https://kavsite.netlify.app';
 
 export default function EscolherPlanoScreen() {
-  const { professorId, email, codigoConvite, nome, telefone, cursos } = useLocalSearchParams<{
+  const { professorId, email, codigoConvite, nome, telefone, cursos, pacote, modalidadeEnsino } = useLocalSearchParams<{
     professorId: string;
     email: string;
     codigoConvite: string;
     nome: string;
     telefone: string;
     cursos: string;
+    pacote: string;
+    modalidadeEnsino: string;
   }>();
+
+  const PLANOS = planosPorPacote(pacote);
+  const modalidades = (modalidadeEnsino || '').split(',').filter(Boolean);
+  const incluiOnline = modalidades.includes('ONLINE');
 
   const [carregando, setCarregando] = useState<PlanoId | null>(null);
   const [verificando, setVerificando] = useState(false);
@@ -120,9 +72,25 @@ export default function EscolherPlanoScreen() {
     );
   };
 
+  const abrirCompletoOnline = () => {
+    Alert.alert(
+      'Plano Completo em desenho para Online',
+      'O pacote Completo (Rede Social) para quem dá aula 100% online ainda está sendo desenhado. Fale com a gente pra saber mais, ou continue com o plano Básico por enquanto.',
+      [
+        { text: 'Falar com a gente', onPress: () => Linking.openURL(LINK_FALE_CONOSCO) },
+        { text: 'Voltar', style: 'cancel' },
+      ],
+    );
+  };
+
   const iniciarCheckout = async (plano: PlanoId) => {
     if (!email) {
       Alert.alert('Erro', 'E-mail do professor não encontrado. Tente se cadastrar novamente.');
+      return;
+    }
+
+    if (incluiOnline && plano.endsWith('_completo')) {
+      abrirCompletoOnline();
       return;
     }
 
@@ -239,11 +207,6 @@ export default function EscolherPlanoScreen() {
             </View>
           </View>
 
-          <View style={styles.limiteBadge}>
-            <Ionicons name="people-outline" size={14} color={CORES.acento} />
-            <Text style={styles.limiteTexto}>{plano.limite}</Text>
-          </View>
-
           <View style={[styles.divider, plano.recomendado && styles.dividerDestaque]} />
 
           {plano.features.map((f, i) => (
@@ -274,14 +237,9 @@ export default function EscolherPlanoScreen() {
               </>
             ) : (
               <>
-                <Ionicons
-                  name={plano.id === 'one-time' ? 'calendar-outline' : 'flash'}
-                  size={16}
-                  color={plano.recomendado ? '#fff' : CORES.acento}
-                  style={{ marginRight: 6 }}
-                />
+                <Ionicons name="flash" size={16} color={plano.recomendado ? '#fff' : CORES.acento} style={{ marginRight: 6 }} />
                 <Text style={[styles.btnTexto, plano.recomendado ? styles.btnTextoDestaque : styles.btnTextoNormal]}>
-                  {plano.id === 'one-time' ? 'Assinar Anualmente' : 'Assinar Agora'}
+                  Assinar Agora
                 </Text>
               </>
             )}
@@ -289,30 +247,14 @@ export default function EscolherPlanoScreen() {
         </View>
       ))}
 
-      {/* Pacote Escola: preço sob consulta (várias escolas usam vários professores
-          e alunos com volumes muito diferentes) — mesmo modelo comercial observado
-          na Emusys para o segmento de escola. Não é checkout self-serve como os
-          planos acima; é um contato comercial que ativa o pacote depois, pelo
-          time interno. Ver docs/roadmap-escola.md, Fase 0. */}
-      <View style={styles.cardEscola}>
-        <View style={styles.escolaTopo}>
-          <Ionicons name="business" size={20} color="#fff" />
-          <Text style={styles.escolaTag}>PARA ESCOLAS</Text>
+      {incluiOnline && (
+        <View style={styles.avisoOnline}>
+          <Ionicons name="information-circle-outline" size={16} color={CORES.secundaria} />
+          <Text style={styles.avisoOnlineTexto}>
+            O plano Completo (Rede Social) para modalidade 100% online ainda está em desenho.
+          </Text>
         </View>
-        <Text style={styles.escolaTitulo}>Pacote Escola</Text>
-        <Text style={styles.escolaDescricao}>
-          Vários professores, alunos e turmas numa conta só, com painel de gestão.
-          Preço sob consulta, de acordo com o tamanho da sua escola.
-        </Text>
-        <TouchableOpacity
-          style={styles.escolaBtn}
-          onPress={() => Linking.openURL('https://kavsite.netlify.app')}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="chatbubble-ellipses-outline" size={16} color="#fff" style={{ marginRight: 6 }} />
-          <Text style={styles.escolaBtnTexto}>Falar com a gente</Text>
-        </TouchableOpacity>
-      </View>
+      )}
 
       <View style={{ height: 40 }} />
     </ScrollView>
@@ -385,13 +327,6 @@ const styles = StyleSheet.create({
   precoDestaque: { color: CORES.acento },
   periodo: { color: CORES.secundaria, fontSize: 12, marginTop: 1 },
 
-  limiteBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: CORES.acentoClaro, alignSelf: 'flex-start',
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, marginBottom: 14,
-  },
-  limiteTexto: { color: CORES.acento, fontSize: 12, fontWeight: '600' },
-
   divider: { height: 1, backgroundColor: CORES.borda, marginBottom: 14 },
   dividerDestaque: { backgroundColor: '#d4f5f2' },
 
@@ -410,16 +345,10 @@ const styles = StyleSheet.create({
   btnTextoNormal: { color: CORES.acento },
   btnTextoDestaque: { color: '#fff' },
 
-  cardEscola: {
-    backgroundColor: CORES.primaria, borderRadius: 16, padding: 20, marginBottom: 16,
+  avisoOnline: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: CORES.superficie, borderRadius: 10, borderWidth: 1, borderColor: CORES.borda,
+    padding: 14, marginBottom: 16,
   },
-  escolaTopo: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
-  escolaTag: { color: '#fff', fontSize: 11, fontWeight: 'bold', letterSpacing: 1.5, opacity: 0.8 },
-  escolaTitulo: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 6 },
-  escolaDescricao: { color: '#fff', fontSize: 13, lineHeight: 19, opacity: 0.85, marginBottom: 16 },
-  escolaBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    borderRadius: 10, height: 48, borderWidth: 1.5, borderColor: '#ffffff55',
-  },
-  escolaBtnTexto: { color: '#fff', fontSize: 14, fontWeight: 'bold', letterSpacing: 0.5 },
+  avisoOnlineTexto: { flex: 1, color: CORES.secundaria, fontSize: 12, lineHeight: 17 },
 });

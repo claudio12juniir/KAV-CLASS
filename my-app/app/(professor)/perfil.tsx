@@ -1,6 +1,6 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
@@ -8,7 +8,6 @@ import { router } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
-  Image,
   Linking,
   ScrollView,
   StyleSheet,
@@ -21,6 +20,7 @@ import {
 import LoadingGlobal from '../../components/LoadingGlobal';
 import SyncLoader from '../../components/SyncLoader';
 import { CORES } from '../../constants/theme';
+import Avatar from '../../components/ui/Avatar';
 
 const API_URL = BASE_URL;
 
@@ -35,13 +35,21 @@ interface Perfil {
   linkPagamentoCartao: string | null;
   fotoUrl: string | null;
   precoAssinaturaPremium: number | null;
-  escola?: { stripeConnectOnboardingCompleto: boolean };
+  escola?: { stripeConnectOnboardingCompleto: boolean; pacote?: string };
   bio: string | null;
   cidade: string | null;
   estado: string | null;
   videoApresentacaoUrl: string | null;
   visivelBuscaSelf: boolean;
+  modalidadeEnsino: ModalidadeEnsino[];
 }
+
+type ModalidadeEnsino = 'PRESENCIAL' | 'REMOTO' | 'ONLINE';
+const MODALIDADES_OPCOES: { valor: ModalidadeEnsino; label: string }[] = [
+  { valor: 'PRESENCIAL', label: 'Presencial' },
+  { valor: 'REMOTO', label: 'Remoto' },
+  { valor: 'ONLINE', label: 'Online' },
+];
 
 interface Assinatura {
   assinaturaStatus: 'PENDENTE' | 'ATIVO' | 'INATIVO' | 'VITALICIO' | 'CANCELADO' | 'TESTE';
@@ -60,7 +68,6 @@ const STATUS_LABEL: Record<Assinatura['assinaturaStatus'], string> = {
 };
 
 export default function PerfilProfessorScreen() {
-  const navigation = useNavigation();
   const [perfil, setPerfil] = useState<Perfil | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
@@ -81,6 +88,7 @@ export default function PerfilProfessorScreen() {
   const [estado, setEstado] = useState('');
   const [videoUrl, setVideoUrl] = useState('');
   const [visivelBusca, setVisivelBusca] = useState(false);
+  const [modalidades, setModalidades] = useState<ModalidadeEnsino[]>(['PRESENCIAL']);
   const [salvandoVitrine, setSalvandoVitrine] = useState(false);
   const [senhaAtual, setSenhaAtual] = useState('');
   const [novaSenha, setNovaSenha] = useState('');
@@ -112,6 +120,7 @@ export default function PerfilProfessorScreen() {
         setEstado(dados.estado || '');
         setVideoUrl(dados.videoApresentacaoUrl || '');
         setVisivelBusca(!!dados.visivelBuscaSelf);
+        setModalidades(dados.modalidadeEnsino?.length ? dados.modalidadeEnsino : ['PRESENCIAL']);
       }
     } catch (err) {
       console.error(err);
@@ -158,6 +167,7 @@ export default function PerfilProfessorScreen() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           professorId, bio, cidade, estado, videoApresentacaoUrl: videoUrl, visivelBuscaSelf: visivelBusca,
+          modalidadeEnsino: modalidades,
         }),
       });
       const dados = await res.json();
@@ -172,6 +182,16 @@ export default function PerfilProfessorScreen() {
     } finally {
       setSalvandoVitrine(false);
     }
+  };
+
+  const alternarModalidade = (valor: ModalidadeEnsino) => {
+    setModalidades((atuais) => {
+      if (atuais.includes(valor)) {
+        // Sempre precisa sobrar pelo menos uma modalidade marcada.
+        return atuais.length > 1 ? atuais.filter((m) => m !== valor) : atuais;
+      }
+      return [...atuais, valor];
+    });
   };
 
   const carregarAssinatura = useCallback(async () => {
@@ -216,7 +236,11 @@ export default function PerfilProfessorScreen() {
     const professorId = await SecureStore.getItemAsync('kav_professor_id') || '';
     router.push({
       pathname: '/escolher-plano',
-      params: { professorId, email: assinatura.email, codigoConvite: assinatura.codigoConvite || '' },
+      params: {
+        professorId, email: assinatura.email, codigoConvite: assinatura.codigoConvite || '',
+        pacote: perfil?.escola?.pacote || '',
+        modalidadeEnsino: (perfil?.modalidadeEnsino || []).join(','),
+      },
     });
   };
 
@@ -361,11 +385,11 @@ export default function PerfilProfessorScreen() {
       <StatusBar style="dark" backgroundColor={CORES.fundo} />
 
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-          <Ionicons name="menu" size={24} color={CORES.primaria} />
+        <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
+          <Ionicons name="arrow-back" size={22} color={CORES.primaria} />
         </TouchableOpacity>
         <Text style={styles.titulo}>MEU PERFIL</Text>
-        <View style={{ width: 40 }} />
+        <View style={{ width: 22 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
@@ -373,13 +397,7 @@ export default function PerfilProfessorScreen() {
         {/* Avatar editável */}
         <View style={styles.avatarContainer}>
           <TouchableOpacity onPress={selecionarFoto} activeOpacity={0.8} style={styles.avatarWrapper}>
-            {fotoUrl ? (
-              <Image source={{ uri: fotoUrl }} style={styles.avatarImg} />
-            ) : (
-              <View style={styles.avatar}>
-                <Text style={styles.avatarLetra}>{perfil?.nome?.[0]?.toUpperCase() || 'P'}</Text>
-              </View>
-            )}
+            <Avatar fotoUrl={fotoUrl} nome={perfil?.nome || 'P'} tamanho={84} />
             <View style={styles.avatarEditBadge}>
               <Ionicons name="camera" size={13} color={CORES.fundo} />
             </View>
@@ -472,6 +490,23 @@ export default function PerfilProfessorScreen() {
             onValueChange={setVisivelBusca}
             trackColor={{ true: CORES.acento }}
           />
+        </View>
+
+        <Text style={styles.fieldLabel}>Modalidade de ensino</Text>
+        <View style={styles.modalidadeLinha}>
+          {MODALIDADES_OPCOES.map((op) => {
+            const ativo = modalidades.includes(op.valor);
+            return (
+              <TouchableOpacity
+                key={op.valor}
+                style={[styles.modalidadeChip, ativo && styles.modalidadeChipAtivo]}
+                onPress={() => alternarModalidade(op.valor)}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.modalidadeChipTexto, ativo && styles.modalidadeChipTextoAtivo]}>{op.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
 
         <Text style={styles.fieldLabel}>Bio</Text>
@@ -747,7 +782,6 @@ const styles = StyleSheet.create({
     paddingTop: 56, paddingHorizontal: 20, paddingBottom: 16,
     borderBottomWidth: 1, borderBottomColor: CORES.borda,
   },
-  hamburger: { padding: 4 },
   titulo: {
     color: CORES.primaria, fontSize: 14, fontWeight: 'bold',
     letterSpacing: 3,
@@ -756,12 +790,6 @@ const styles = StyleSheet.create({
 
   avatarContainer: { alignItems: 'center', marginBottom: 28 },
   avatarWrapper: { position: 'relative', marginBottom: 12 },
-  avatar: {
-    width: 84, height: 84, borderRadius: 42,
-    backgroundColor: CORES.acento, alignItems: 'center', justifyContent: 'center',
-  },
-  avatarImg: { width: 84, height: 84, borderRadius: 42 },
-  avatarLetra: { color: CORES.fundo, fontSize: 32, fontWeight: 'bold' },
   avatarEditBadge: {
     position: 'absolute', bottom: 0, right: 0,
     width: 26, height: 26, borderRadius: 13,
@@ -779,6 +807,14 @@ const styles = StyleSheet.create({
   fieldLabel: { color: CORES.secundaria, fontSize: 12, letterSpacing: 1, marginBottom: 6 },
   vitrineToggleLinha: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
   vitrineToggleAjuda: { color: CORES.secundaria, fontSize: 11, marginTop: 2, lineHeight: 15 },
+  modalidadeLinha: { flexDirection: 'row', gap: 8, marginBottom: 14 },
+  modalidadeChip: {
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1,
+    borderColor: CORES.borda, backgroundColor: CORES.superficie,
+  },
+  modalidadeChipAtivo: { backgroundColor: CORES.acento, borderColor: CORES.acento },
+  modalidadeChipTexto: { fontSize: 12.5, fontWeight: '600', color: CORES.secundaria },
+  modalidadeChipTextoAtivo: { color: '#ffffff', fontWeight: '700' },
   input: {
     backgroundColor: CORES.superficie, borderRadius: 8,
     paddingHorizontal: 14, paddingVertical: 12,

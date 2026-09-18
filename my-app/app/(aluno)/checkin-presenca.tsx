@@ -1,6 +1,6 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
@@ -90,8 +90,8 @@ export default function CheckinPresencaAluno() {
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <StatusBar style="dark" backgroundColor="#ffffff" />
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-          <Ionicons name="menu" size={24} color="#000000" />
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.hamburger}>
+          <Ionicons name="arrow-back" size={24} color="#000000" />
         </TouchableOpacity>
         <Text style={styles.titulo}>CONFIRMAR PRESENÇA</Text>
         <View style={{ width: 40 }} />

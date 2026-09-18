@@ -1,6 +1,6 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
@@ -9,7 +9,6 @@ import React, { useCallback, useState } from 'react';
 import { CORES } from '../../constants/theme';
 import {
   Alert,
-  Image,
   Linking,
   Modal,
   ScrollView,
@@ -20,6 +19,7 @@ import {
   View,
 } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
+import Avatar from '../../components/ui/Avatar';
 
 const API_URL = BASE_URL;
 
@@ -42,7 +42,6 @@ interface PerfilAluno {
 }
 
 export default function PerfilScreen() {
-  const navigation = useNavigation();
   const router = useRouter();
   const [perfil, setPerfil] = useState<PerfilAluno | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -273,25 +272,19 @@ export default function PerfilScreen() {
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <StatusBar style="dark" backgroundColor={CORES.fundo} />
 
-      {/* Barra topo com hamburger */}
+      {/* Barra topo */}
       <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={{ padding: 4 }}>
-          <Ionicons name="menu" size={24} color={CORES.primaria} />
+        <TouchableOpacity onPress={() => router.back()} hitSlop={10}>
+          <Ionicons name="arrow-back" size={22} color={CORES.primaria} />
         </TouchableOpacity>
         <Text style={styles.topBarTitulo}>MEU PERFIL</Text>
-        <View style={{ width: 32 }} />
+        <View style={{ width: 22 }} />
       </View>
 
       {/* Cabeçalho */}
       <View style={styles.header}>
         <TouchableOpacity onPress={selecionarFoto} activeOpacity={0.8} style={styles.avatarWrapper}>
-          {fotoUrl ? (
-            <Image source={{ uri: fotoUrl }} style={styles.avatarImg} />
-          ) : (
-            <View style={styles.avatarCircle}>
-              <Text style={styles.avatarLetra}>{perfil?.nome?.charAt(0).toUpperCase() || '?'}</Text>
-            </View>
-          )}
+          <Avatar fotoUrl={fotoUrl} nome={perfil?.nome} tamanho={84} />
           <View style={styles.avatarEditBadge}>
             <Ionicons name="camera" size={13} color="#fff" />
           </View>
@@ -507,12 +500,6 @@ const styles = StyleSheet.create({
   topBarTitulo: { color: CORES.primaria, fontSize: 13, fontWeight: 'bold', letterSpacing: 3 },
   header: { paddingTop: 28, paddingBottom: 24, alignItems: 'center', backgroundColor: CORES.fundo },
   avatarWrapper: { position: 'relative', marginBottom: 12 },
-  avatarCircle: {
-    width: 84, height: 84, borderRadius: 42, backgroundColor: CORES.acento,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  avatarImg: { width: 84, height: 84, borderRadius: 42 },
-  avatarLetra: { color: CORES.fundo, fontSize: 32, fontWeight: 'bold' },
   avatarEditBadge: {
     position: 'absolute', bottom: 0, right: 0,
     width: 26, height: 26, borderRadius: 13,

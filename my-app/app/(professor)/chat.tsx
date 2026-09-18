@@ -1,6 +1,6 @@
 import { BASE_URL, fetchComRetry } from '../api';
 import { Ionicons } from '@expo/vector-icons';
-import { DrawerActions, useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -36,7 +36,6 @@ function formatarHora(iso: string) {
 }
 
 export default function ChatProfessor() {
-  const navigation = useNavigation();
   const [aba, setAba] = useState<'conversas' | 'mural'>('conversas');
   const [alunoAberto, setAlunoAberto] = useState<{ id: string; nome: string } | null>(null);
 
@@ -47,9 +46,7 @@ export default function ChatProfessor() {
       {!alunoAberto && (
         <>
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => navigation.dispatch(DrawerActions.openDrawer())} style={styles.hamburger}>
-              <Ionicons name="menu" size={24} color="#000000" />
-            </TouchableOpacity>
+            <View style={{ width: 32 }} />
             <Text style={styles.tituloHeader}>MENSAGENS</Text>
             <View style={{ width: 32 }} />
           </View>

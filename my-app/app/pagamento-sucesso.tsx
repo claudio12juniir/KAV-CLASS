@@ -13,25 +13,9 @@ import {
   View,
 } from 'react-native';
 
-const { width } = Dimensions.get('window');
+import { PLANOS } from '../constants/planos';
 
-const INFO_PLANO: Record<string, { badge: string; detalhe: string; icone: any }> = {
-  pro: {
-    badge: 'Plano PRO ativado',
-    detalhe: 'R$ 29,98/mês • Até 35 alunos • Cancele quando quiser',
-    icone: 'shield-checkmark-outline',
-  },
-  premium: {
-    badge: 'Plano PREMIUM ativado',
-    detalhe: 'R$ 59,98/mês • Até 60 alunos • Suporte prioritário',
-    icone: 'star-outline',
-  },
-  'one-time': {
-    badge: 'Acesso Vitalício liberado',
-    detalhe: 'Pagamento único • Até 70 alunos • Sem mensalidade',
-    icone: 'infinite-outline',
-  },
-};
+const { width } = Dimensions.get('window');
 
 export default function PagamentoSucessoScreen() {
   const { plano, codigoConvite } = useLocalSearchParams<{
@@ -67,7 +51,7 @@ export default function PagamentoSucessoScreen() {
     });
   }, []);
 
-  const info = INFO_PLANO[plano] ?? INFO_PLANO['pro'];
+  const info = PLANOS[plano as keyof typeof PLANOS] ?? PLANOS.professor_basico;
 
   return (
     <View style={styles.container}>
@@ -120,7 +104,7 @@ export default function PagamentoSucessoScreen() {
 
           {/* Badge do plano */}
           <View style={styles.planoBadge}>
-            <Ionicons name={info.icone} size={17} color="#32BCAD" />
+            <Ionicons name={info.icone as any} size={17} color="#32BCAD" />
             <Text style={styles.planoBadgeText}>{info.badge}</Text>
           </View>
           <Text style={styles.planoDetalhe}>{info.detalhe}</Text>
