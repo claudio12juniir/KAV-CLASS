@@ -4,11 +4,10 @@ import { useFocusEffect } from '@react-navigation/native';
 import { router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useState } from 'react';
 import { CORES } from '../../constants/theme';
+import { abrirArquivoBase64Material } from '../../utils/abrirArquivoMaterial';
 import {
   Alert,
   FlatList,
@@ -481,28 +480,6 @@ export default function AlunosProfessorScreen() {
       await WebBrowser.openBrowserAsync(url);
     } else {
       await Linking.openURL(url);
-    }
-  };
-
-  const abrirArquivoBase64Material = async (material: any) => {
-    const matches = material.conteudo!.match(/^data:([^;]+);base64,(.+)$/s);
-    if (!matches) {
-      Alert.alert('Erro', 'Formato de arquivo não reconhecido.');
-      return;
-    }
-    const mimeType = matches[1];
-    const base64Data = matches[2];
-    const ext = mimeType.split('/')[1]?.split(';')[0] || 'bin';
-    const fileUri = `${FileSystem.cacheDirectory}kav_${material.id}.${ext}`;
-    await FileSystem.writeAsStringAsync(fileUri, base64Data, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    // Linking.openURL com file:// falha no Android (bloqueado desde o Android 7+);
-    // Sharing usa FileProvider (content://) por baixo dos panos e funciona nas duas plataformas.
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(fileUri, { mimeType, dialogTitle: material.titulo });
-    } else {
-      await Linking.openURL(fileUri);
     }
   };
 

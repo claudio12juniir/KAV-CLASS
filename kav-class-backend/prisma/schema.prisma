@@ -740,11 +740,18 @@ model Pagamento {
 
 // ─── 5. MATERIAIS DIDÁTICOS ──────────────────────────────────────
 model Material {
-  id       String       @id @default(uuid())
-  titulo   String
-  tipo     TipoMaterial
-  url      String?
-  conteudo String?
+  id          String       @id @default(uuid())
+  titulo      String
+  tipo        TipoMaterial
+  url         String?
+  conteudo    String?
+  // Nome do arquivo original (com extensão de verdade, ex.: "prova.docx") —
+  // sem isso, abrir o arquivo tinha que adivinhar a extensão pelo MIME type,
+  // o que quebrava pra Word/Excel/PowerPoint/vários áudios (o subtipo MIME
+  // não bate com a extensão real, ex.: "vnd.openxmlformats-..." em vez de
+  // "docx"). Só preenchido pra ARQUIVO/AUDIO/IMAGEM — TEXTO/LINK/VIDEO não
+  // têm arquivo de verdade por trás.
+  nomeArquivo String?
 
   professorId String
   professor   Professor @relation(fields: [professorId], references: [id])

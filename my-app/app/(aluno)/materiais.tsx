@@ -10,10 +10,9 @@ import { Alert, Image, Linking,
   TouchableOpacity, View,
 } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
-import * as FileSystem from 'expo-file-system/legacy';
-import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import { CORES } from '../../constants/theme';
+import { abrirArquivoBase64Material } from '../../utils/abrirArquivoMaterial';
 
 const API_URL = BASE_URL;
 
@@ -23,6 +22,7 @@ interface Anexo {
   titulo: string;
   url?: string | null;
   conteudo?: string | null;
+  nomeArquivo?: string | null;
 }
 
 interface AulaMaterial {
@@ -67,6 +67,7 @@ export default function MateriaisScreen() {
             titulo: mat.titulo,
             url: mat.url || null,
             conteudo: mat.conteudo || null,
+            nomeArquivo: mat.nomeArquivo || null,
           })),
         }));
 
@@ -102,27 +103,7 @@ export default function MateriaisScreen() {
     }
   };
 
-  const abrirArquivoBase64 = async (anexo: Anexo) => {
-    const matches = anexo.conteudo!.match(/^data:([^;]+);base64,(.+)$/s);
-    if (!matches) {
-      Alert.alert('Erro', 'Formato de arquivo não reconhecido.');
-      return;
-    }
-    const mimeType = matches[1];
-    const base64Data = matches[2];
-    const ext = mimeType.split('/')[1]?.split(';')[0] || 'bin';
-    const fileUri = `${FileSystem.cacheDirectory}kav_${anexo.id}.${ext}`;
-    await FileSystem.writeAsStringAsync(fileUri, base64Data, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    // Linking.openURL com file:// falha no Android (bloqueado desde o Android 7+);
-    // Sharing usa FileProvider (content://) por baixo dos panos e funciona nas duas plataformas.
-    if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(fileUri, { mimeType, dialogTitle: anexo.titulo });
-    } else {
-      await Linking.openURL(fileUri);
-    }
-  };
+  const abrirArquivoBase64 = (anexo: Anexo) => abrirArquivoBase64Material(anexo);
 
   const abrirMaterial = async (anexo: Anexo) => {
     const tipo = anexo.tipo.toLowerCase();

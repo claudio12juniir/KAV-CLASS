@@ -555,11 +555,16 @@ export default function ProfessorDashboard() {
     setEnviandoLote(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
+      const TIPOS_COM_ARQUIVO = ['ARQUIVO', 'AUDIO', 'IMAGEM'];
       const materiais = loteItens.map(item => ({
         titulo: item.titulo,
         tipo: item.tipo,
         conteudo: (item.tipo === 'LINK' || item.tipo === 'VIDEO') ? null : item.conteudo,
         url:      (item.tipo === 'LINK' || item.tipo === 'VIDEO') ? item.conteudo : null,
+        // Nome do arquivo original (com extensão de verdade) — sem isso, abrir
+        // o material tinha que adivinhar a extensão pelo MIME type, o que
+        // quebra pra Word/Excel/PowerPoint/vários áudios.
+        nomeArquivo: TIPOS_COM_ARQUIVO.includes(item.tipo) ? item.nome : null,
       }));
       const res = await fetchComRetry(`${API_URL}/api/aulas/${aulaParaRegistro.id}/materiais-lote`, {
         method: 'POST',

@@ -3980,7 +3980,7 @@ app.put('/api/aulas/:id/reposicao', async (req, res) => {
 
 app.post('/api/aulas/:id/material', exigirProfessor, async (req, res) => {
   try {
-    const { titulo, tipo, conteudo, url } = req.body;
+    const { titulo, tipo, conteudo, url, nomeArquivo } = req.body;
     if (!titulo || !tipo) {
       return res.status(400).json({ erro: 'titulo e tipo são obrigatórios.' });
     }
@@ -3994,6 +3994,7 @@ app.post('/api/aulas/:id/material', exigirProfessor, async (req, res) => {
         tipo: tipo.toUpperCase(),
         conteudo: conteudo || null,
         url: url || null,
+        nomeArquivo: nomeArquivo || null,
         aulaId: req.params.id,
         professorId: aula.professorId,
         alunoId: aula.alunoId,
@@ -4033,7 +4034,7 @@ app.post('/api/aulas/:id/materiais-lote', exigirProfessor, async (req, res) => {
     // Cria o lote em paralelo (cada item com seu próprio try/catch via
     // allSettled) em vez de um create por vez em sequência.
     const resultados = await Promise.allSettled(materiais.map((item) => {
-      const { titulo, tipo, conteudo, url } = item;
+      const { titulo, tipo, conteudo, url, nomeArquivo } = item;
       if (!titulo || !tipo) {
         return Promise.reject(new Error(`Item sem título ou tipo: ${JSON.stringify(item)}`));
       }
@@ -4043,6 +4044,7 @@ app.post('/api/aulas/:id/materiais-lote', exigirProfessor, async (req, res) => {
           tipo: tipo.toUpperCase(),
           conteudo: conteudo || null,
           url: url || null,
+          nomeArquivo: nomeArquivo || null,
           aulaId: req.params.id,
           professorId: aula.professorId,
           alunoId: aula.alunoId,

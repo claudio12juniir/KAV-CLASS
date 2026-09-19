@@ -2,9 +2,7 @@
 // ((aluno)/materiais.tsx), mesmo GET /api/aluno/materiais (sem branch de
 // pacote). Arquivo copiado como base, só tema ERP + shell da INSTITUTION.
 import { Ionicons } from '@expo/vector-icons';
-import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
-import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -12,12 +10,13 @@ import { EstadoVazio, PageHeader, SectionCard } from '../(escola)/_ui';
 import { ERP } from '../../constants/erpTheme';
 import { MobileErpShell } from '../../components/institution/MobileErpShell';
 import { BASE_URL, fetchComRetry } from '../api';
+import { abrirArquivoBase64Material } from '../../utils/abrirArquivoMaterial';
 import { useAlunoEscolaContexto } from './_contexto';
 import { NAV_ALUNO_ESCOLA } from './_nav';
 
 const API_URL = BASE_URL;
 
-interface Anexo { id: string; tipo: string; titulo: string; url?: string | null; conteudo?: string | null }
+interface Anexo { id: string; tipo: string; titulo: string; url?: string | null; conteudo?: string | null; nomeArquivo?: string | null }
 interface AulaMaterial { id: string; data: string; tema: string; anexos: Anexo[] }
 interface MateriaisResposta { aulas: AulaMaterial[]; materiaisAvulsos: Anexo[] }
 
@@ -44,9 +43,9 @@ export default function MateriaisAlunoEscola() {
           id: aula.id,
           data: new Date(aula.dataHora).toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }),
           tema: aula.tipo === 'REGULAR' ? 'Aula Regular' : 'Aula de Reposição',
-          anexos: aula.materiais.map((mat: any) => ({ id: mat.id, tipo: mat.tipo, titulo: mat.titulo, url: mat.url || null, conteudo: mat.conteudo || null })),
+          anexos: aula.materiais.map((mat: any) => ({ id: mat.id, tipo: mat.tipo, titulo: mat.titulo, url: mat.url || null, conteudo: mat.conteudo || null, nomeArquivo: mat.nomeArquivo || null })),
         })));
-        setMateriaisAvulsos((dados.materiaisAvulsos || []).map((mat: any) => ({ id: mat.id, tipo: mat.tipo, titulo: mat.titulo, url: mat.url || null, conteudo: mat.conteudo || null })));
+        setMateriaisAvulsos((dados.materiaisAvulsos || []).map((mat: any) => ({ id: mat.id, tipo: mat.tipo, titulo: mat.titulo, url: mat.url || null, conteudo: mat.conteudo || null, nomeArquivo: mat.nomeArquivo || null })));
       }
     } catch (error) {
       console.error('Erro em materiais:', error);
@@ -64,17 +63,7 @@ export default function MateriaisAlunoEscola() {
     else await Linking.openURL(url);
   };
 
-  const abrirArquivoBase64 = async (anexo: Anexo) => {
-    const matches = anexo.conteudo!.match(/^data:([^;]+);base64,(.+)$/s);
-    if (!matches) { Alert.alert('Erro', 'Formato de arquivo não reconhecido.'); return; }
-    const mimeType = matches[1];
-    const base64Data = matches[2];
-    const ext = mimeType.split('/')[1]?.split(';')[0] || 'bin';
-    const fileUri = `${FileSystem.cacheDirectory}kav_${anexo.id}.${ext}`;
-    await FileSystem.writeAsStringAsync(fileUri, base64Data, { encoding: FileSystem.EncodingType.Base64 });
-    if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(fileUri, { mimeType, dialogTitle: anexo.titulo });
-    else await Linking.openURL(fileUri);
-  };
+  const abrirArquivoBase64 = (anexo: Anexo) => abrirArquivoBase64Material(anexo);
 
   const abrirMaterial = async (anexo: Anexo) => {
     const tipo = anexo.tipo.toLowerCase();
