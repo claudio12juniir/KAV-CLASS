@@ -58,6 +58,7 @@ export default function PerfilInstituicaoEscola() {
   const [diaFechamento, setDiaFechamento] = useState('');
   const [horario, setHorario] = useState<HorarioFuncionamento>(horarioPadrao());
   const [modalidades, setModalidades] = useState<ModalidadeEnsino[]>(['PRESENCIAL']);
+  const [whatsapp, setWhatsapp] = useState('');
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -74,6 +75,7 @@ export default function PerfilInstituicaoEscola() {
         setDiaFechamento(d.diaFechamento != null ? String(d.diaFechamento) : '');
         if (d.horarioFuncionamento?.dias?.length === 7) setHorario(d.horarioFuncionamento);
         setModalidades(d.modalidadeEnsino?.length ? d.modalidadeEnsino : ['PRESENCIAL']);
+        setWhatsapp(d.whatsapp || '');
       }
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
@@ -117,6 +119,7 @@ export default function PerfilInstituicaoEscola() {
           diaFechamento: diaFechamento ? Number(diaFechamento) : null,
           horarioFuncionamento: horario,
           modalidadeEnsino: modalidades,
+          whatsapp,
         }),
       });
       if (res.ok) Alert.alert('Feito!', 'Perfil da Instituição atualizado.');
@@ -144,9 +147,10 @@ export default function PerfilInstituicaoEscola() {
         acao={papel === 'DONO' || papel === 'GESTOR' ? <Botao texto="Salvar tudo" onPress={salvar} carregando={salvando} icone="checkmark-circle-outline" /> : undefined}
       />
 
-      <SectionCard titulo="Dados da instituição" subtitulo="Nome, logo e e-mail de contato">
+      <SectionCard titulo="Dados da instituição" subtitulo="Nome, logo e contato público (perfil vitrine)">
         <Campo label="Nome da instituição" value={nome} onChangeText={setNome} placeholder="Ex.: Academia KAV" />
         <Campo label="E-mail da instituição" value={email} onChangeText={setEmail} placeholder="contato@suaescola.com" keyboardType="email-address" autoCapitalize="none" />
+        <Campo label="WhatsApp de contato" value={whatsapp} onChangeText={(t) => setWhatsapp(t.replace(/\D/g, ''))} placeholder="DDI + DDD + número, ex: 5511999999999" keyboardType="phone-pad" />
         <Campo label="URL do logo" value={logoUrl} onChangeText={setLogoUrl} placeholder="https://..." autoCapitalize="none" />
       </SectionCard>
 

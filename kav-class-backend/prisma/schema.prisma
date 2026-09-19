@@ -255,6 +255,11 @@ model Escola {
   cidade String?
   estado String? // UF, ex: "SP"
 
+  // Contato público no perfil vitrine (Rede Social, 18/09/2026) — email
+  // acima já é o de contato institucional (não é login), reaproveitado
+  // direto. whatsapp fica só dígitos com DDI (ex.: "5511999999999").
+  whatsapp String?
+
   // Classificação de modalidade de ensino (ver enum ModalidadeEnsino acima).
   modalidadeEnsino ModalidadeEnsino[] @default([PRESENCIAL])
 
@@ -372,6 +377,15 @@ model Professor {
   estado               String? // UF, ex: "SP"
   videoApresentacaoUrl String?
   modalidadeEnsino     ModalidadeEnsino[] @default([PRESENCIAL])
+
+  // Contato público no perfil vitrine (Rede Social, 18/09/2026) — de
+  // propósito SEPARADO de email/telefone (login/administrativo, nunca
+  // exposto publicamente): o professor escolhe o que aparece pra
+  // desconhecido contatar, sem precisar divulgar o número/e-mail pessoal
+  // que usa pra entrar no app. whatsapp fica só dígitos com DDI (ex.:
+  // "5511999999999"), pronto pra montar o link wa.me.
+  whatsapp     String?
+  emailContato String?
 
   // Paywall de conteúdo (Rede Social Fase 5) — preço mensal (BRL) do
   // conteúdo exclusivo no feed. Null/0 = professor não oferece premium,

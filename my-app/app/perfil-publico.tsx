@@ -30,6 +30,8 @@ const MODALIDADE_LABEL: Record<ModalidadeEnsino, string> = {
   PRESENCIAL: 'Presencial', REMOTO: 'Remoto', ONLINE: 'Online',
 };
 
+type PostComMidia = { id: string; midiaUrl: string; conteudo: string | null; createdAt: string };
+
 type AvaliacaoPublica = {
   id: string; nota: number; comentario: string | null; createdAt: string;
   aluno: { nome: string; fotoUrl: string | null };
@@ -41,6 +43,7 @@ type PerfilProfessor = {
   videoApresentacaoUrl: string | null; notaMedia: number | null; totalAvaliacoes: number;
   precoAssinaturaPremium: number | null; modalidadeEnsino: ModalidadeEnsino[];
   avaliacoes: AvaliacaoPublica[];
+  whatsapp: string | null; emailContato: string | null;
 };
 
 type PerfilEscola = {
@@ -48,6 +51,7 @@ type PerfilEscola = {
   cidade: string | null; estado: string | null; cursos: string[];
   notaMedia: number | null; totalAvaliacoes: number; modalidadeEnsino: ModalidadeEnsino[];
   avaliacoes: AvaliacaoPublica[];
+  whatsapp: string | null; email: string | null;
 };
 
 export default function PerfilPublicoScreen() {
@@ -63,6 +67,8 @@ export default function PerfilPublicoScreen() {
   const [processandoPremium, setProcessandoPremium] = useState(false);
   const [reels, setReels] = useState<Omit<Reel, 'autor'>[]>([]);
   const [reelAberto, setReelAberto] = useState<Reel | null>(null);
+  const [posts, setPosts] = useState<PostComMidia[]>([]);
+  const [postAberto, setPostAberto] = useState<PostComMidia | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -93,30 +99,34 @@ export default function PerfilPublicoScreen() {
     } as any);
   };
 
-  const [enviandoInteresse, setEnviandoInteresse] = useState(false);
-  const querSerAluno = async () => {
-    if (!perfil || enviandoInteresse) return;
-    setEnviandoInteresse(true);
-    try {
-      const endpoint = tipo === 'escola' ? `/escolas/${perfil.id}/quero-ser-aluno` : `/professores/${perfil.id}/quero-ser-aluno`;
-      const resposta = await apiFetch(endpoint, { method: 'POST' });
-      const dados = await resposta.json();
-      if (resposta.ok) {
-        Alert.alert('Pronto!', dados.mensagem);
-      } else {
-        Alert.alert('Não foi possível', dados.erro || 'Tente novamente mais tarde.');
-      }
-    } catch {
-      Alert.alert('Erro de conexão', 'Não foi possível falar com o servidor.');
-    } finally {
-      setEnviandoInteresse(false);
-    }
+  const whatsappDoPerfil = perfil ? ('whatsapp' in perfil ? perfil.whatsapp : null) : null;
+  const emailDoPerfil = perfil ? (tipo === 'escola' ? (perfil as PerfilEscola).email : (perfil as PerfilProfessor).emailContato) : null;
+
+  const abrirWhatsapp = () => {
+    if (!whatsappDoPerfil) return;
+    Linking.openURL(`https://wa.me/${whatsappDoPerfil}`);
+  };
+
+  const abrirEmail = () => {
+    if (!emailDoPerfil) return;
+    Linking.openURL(`mailto:${emailDoPerfil}`);
   };
 
   useEffect(() => {
-    const endpoint = tipo === 'escola' ? `/escolas/${id}/reels` : `/professores/${id}/reels`;
-    apiFetch(endpoint).then((r) => r.ok && r.json()).then((d) => d && setReels(d.reels || [])).catch(() => {});
+    const endpointReels = tipo === 'escola' ? `/escolas/${id}/reels` : `/professores/${id}/reels`;
+    apiFetch(endpointReels).then((r) => r.ok && r.json()).then((d) => d && setReels(d.reels || [])).catch(() => {});
+
+    const endpointPosts = tipo === 'escola' ? `/escolas/${id}/posts` : `/professores/${id}/posts`;
+    apiFetch(endpointPosts).then((r) => r.ok && r.json()).then((d) => d && setPosts(d.posts || [])).catch(() => {});
   }, [id, tipo]);
+
+  // Grid único estilo LinkedIn/Instagram: fotos (Post) e vídeos (Reel)
+  // misturados, mais recente primeiro — quem visita o perfil não precisa
+  // saber a diferença técnica entre os dois tipos de conteúdo.
+  const galeria = [
+    ...reels.map((r) => ({ tipoItem: 'reel' as const, id: r.id, createdAt: r.createdAt, reel: r })),
+    ...posts.map((p) => ({ tipoItem: 'post' as const, id: p.id, createdAt: p.createdAt, post: p })),
+  ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   const abrirReel = (r: Omit<Reel, 'autor'>) => {
     if (!perfil) return;
@@ -252,25 +262,24 @@ export default function PerfilPublicoScreen() {
                 ))}
               </View>
             )}
-            {(papel === 'professor' || papel === 'aluno' || papel === 'conta') && perfil.id !== meuId && (
+            {perfil.id !== meuId && (whatsappDoPerfil || emailDoPerfil || (tipo === 'professor' && (papel === 'professor' || papel === 'aluno'))) && (
               <View style={styles.acoesLinha}>
+                {whatsappDoPerfil && (
+                  <TouchableOpacity style={[styles.botaoContato, styles.botaoWhatsapp]} onPress={abrirWhatsapp} activeOpacity={0.85}>
+                    <Ionicons name="logo-whatsapp" size={20} color="#ffffff" />
+                  </TouchableOpacity>
+                )}
+                {emailDoPerfil && (
+                  <TouchableOpacity style={[styles.botaoContato, styles.botaoEmail]} onPress={abrirEmail} activeOpacity={0.85}>
+                    <Ionicons name="mail-outline" size={20} color={CORES.primaria} />
+                  </TouchableOpacity>
+                )}
                 {tipo === 'professor' && (papel === 'professor' || papel === 'aluno') && (
                   <TouchableOpacity style={styles.botaoMensagem} onPress={abrirMensagem} activeOpacity={0.85}>
                     <Ionicons name="chatbubble-outline" size={16} color={CORES.acento} />
                     <Text style={styles.botaoMensagemTexto}>Mensagem</Text>
                   </TouchableOpacity>
                 )}
-                <TouchableOpacity
-                  style={[styles.botaoMensagem, styles.botaoQuerSerAluno]}
-                  onPress={querSerAluno}
-                  disabled={enviandoInteresse}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="hand-right-outline" size={16} color="#ffffff" />
-                  <Text style={[styles.botaoMensagemTexto, { color: '#ffffff' }]}>
-                    {enviandoInteresse ? 'Enviando...' : 'Quero ser aluno'}
-                  </Text>
-                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -326,14 +335,22 @@ export default function PerfilPublicoScreen() {
             </View>
           )}
 
-          {reels.length > 0 && (
+          {galeria.length > 0 && (
             <View style={styles.secao}>
-              <Text style={styles.secaoTitulo}>Reels</Text>
+              <Text style={styles.secaoTitulo}>Publicações</Text>
               <View style={styles.reelsGrid}>
-                {reels.map((r) => (
-                  <TouchableOpacity key={r.id} style={styles.reelGridItem} onPress={() => abrirReel(r)} activeOpacity={0.85}>
-                    <Image source={{ uri: reelThumbnailUrl(r as any) }} style={styles.reelGridThumb} />
-                    <Ionicons name="play" size={16} color="#ffffff" style={styles.reelGridPlayIcone} />
+                {galeria.map((item) => (
+                  <TouchableOpacity
+                    key={`${item.tipoItem}-${item.id}`}
+                    style={styles.reelGridItem}
+                    onPress={() => item.tipoItem === 'reel' ? abrirReel(item.reel) : setPostAberto(item.post)}
+                    activeOpacity={0.85}
+                  >
+                    <Image
+                      source={{ uri: item.tipoItem === 'reel' ? reelThumbnailUrl(item.reel as any) : item.post.midiaUrl }}
+                      style={styles.reelGridThumb}
+                    />
+                    {item.tipoItem === 'reel' && <Ionicons name="play" size={16} color="#ffffff" style={styles.reelGridPlayIcone} />}
                   </TouchableOpacity>
                 ))}
               </View>
@@ -398,6 +415,18 @@ export default function PerfilPublicoScreen() {
           </View>
         )}
       </Modal>
+
+      <Modal visible={!!postAberto} animationType="fade" transparent onRequestClose={() => setPostAberto(null)}>
+        {postAberto && (
+          <View style={styles.postViewerFundo}>
+            <TouchableOpacity style={styles.reelFecharBotao} onPress={() => setPostAberto(null)} hitSlop={10}>
+              <Ionicons name="close" size={26} color="#ffffff" />
+            </TouchableOpacity>
+            <Image source={{ uri: postAberto.midiaUrl }} style={styles.postViewerImagem} resizeMode="contain" />
+            {postAberto.conteudo ? <Text style={styles.postViewerTexto}>{postAberto.conteudo}</Text> : null}
+          </View>
+        )}
+      </Modal>
     </View>
   );
 }
@@ -420,14 +449,16 @@ const styles = StyleSheet.create({
   modalidadeLista: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10, justifyContent: 'center' },
   modalidadeBadge: { backgroundColor: CORES.acentoClaro, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
   modalidadeBadgeTexto: { color: CORES.acento, fontSize: 11, fontWeight: '700' },
-  acoesLinha: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  acoesLinha: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 },
+  botaoContato: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  botaoWhatsapp: { backgroundColor: '#25D366' },
+  botaoEmail: { backgroundColor: CORES.superficie, borderWidth: 1, borderColor: CORES.borda },
   botaoMensagem: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     borderWidth: 1, borderColor: CORES.acento, borderRadius: RAIO.pill,
     paddingHorizontal: 18, paddingVertical: 8,
   },
   botaoMensagemTexto: { color: CORES.acento, fontWeight: '700', fontSize: 13 },
-  botaoQuerSerAluno: { backgroundColor: CORES.acento },
   secao: { marginBottom: 20 },
   secaoTitulo: { fontSize: 13, fontWeight: '700', color: CORES.secundaria, marginBottom: 8, letterSpacing: 0.5 },
   bioTexto: { fontSize: 14, color: CORES.primaria, lineHeight: 20 },
@@ -445,6 +476,9 @@ const styles = StyleSheet.create({
   reelGridThumb: { width: '100%', height: '100%' },
   reelGridPlayIcone: { position: 'absolute', top: 6, right: 6 },
   reelFecharBotao: { position: 'absolute', top: 52, left: 16, zIndex: 10, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
+  postViewerFundo: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center', padding: 20 },
+  postViewerImagem: { width: '100%', height: '70%' },
+  postViewerTexto: { color: '#ffffff', fontSize: 14, textAlign: 'center', marginTop: 16, paddingHorizontal: 10 },
   videoBotao: { flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: CORES.primaria, borderRadius: RAIO.pill, paddingVertical: 12, marginTop: 4 },
   videoBotaoTexto: { color: '#ffffff', fontWeight: '700', fontSize: 14 },
   premiumBox: { backgroundColor: CORES.acentoClaro, borderRadius: 12, padding: 16, marginTop: 8 },

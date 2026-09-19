@@ -1521,7 +1521,7 @@ app.get('/api/professores/:id/perfil-publico', autenticar, async (req, res) => {
   try {
     const professor = await prisma.professor.findFirst({
       where: { id: req.params.id, visivelBuscaSelf: true, ativoNaEscola: true, nivelPlano: 'COMPLETO' },
-      select: { id: true, nome: true, fotoUrl: true, bio: true, cidade: true, estado: true, cursos: true, videoApresentacaoUrl: true, precoAssinaturaPremium: true, modalidadeEnsino: true },
+      select: { id: true, nome: true, fotoUrl: true, bio: true, cidade: true, estado: true, cursos: true, videoApresentacaoUrl: true, precoAssinaturaPremium: true, modalidadeEnsino: true, whatsapp: true, emailContato: true },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
 
@@ -1561,7 +1561,7 @@ app.get('/api/escolas/:id/perfil-publico', autenticar, async (req, res) => {
   try {
     const escola = await prisma.escola.findFirst({
       where: { id: req.params.id, pacote: 'PACOTE_ESCOLA', nivelPlano: 'COMPLETO' },
-      select: { id: true, nome: true, logoUrl: true, bio: true, cidade: true, estado: true, modalidadeEnsino: true },
+      select: { id: true, nome: true, logoUrl: true, bio: true, cidade: true, estado: true, modalidadeEnsino: true, whatsapp: true, email: true },
     });
     if (!escola) return res.status(404).json({ erro: 'Escola não encontrada.' });
 
@@ -1657,116 +1657,32 @@ app.get('/api/professores/:id/reels', autenticar, (req, res) =>
 app.get('/api/escolas/:id/reels', autenticar, (req, res) =>
   listarReelsPublicos(req, res, { autorEscolaId: req.params.id }));
 
-// ============================================================================
-// "QUERO SER ALUNO" — self-service a partir do perfil público (Rede Social,
-// 18/09/2026). Pedido explícito do usuário: dá pra virar aluno de várias
-// instituições sem precisar de código de convite privado. Antifraude: isto
-// NÃO cria um Aluno/Matricula na hora — vira um Lead (mesmo pipeline de
-// captação que o professor já usa, reaproveitado 100%), com uma TarefaLead
-// de follow-up pro professor/DONO confirmar. A pessoa só vira Aluno de
-// verdade (e só fica elegível a avaliar — POST /api/aluno/avaliacoes exige
-// presença confirmada, ver acima) depois que o professor faz o cadastro de
-// sempre — um clique aqui nunca gera matrícula, cobrança nem direito de
-// avaliação sozinho.
-// ============================================================================
-
-const LIMITE_INTERESSES_POR_DIA = 5;
-
-async function resolverIdentidadeSolicitante(req) {
-  if (req.auth.papel === 'aluno') {
-    return prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { nome: true, email: true, telefone: true } });
-  }
-  if (req.auth.papel === 'professor') {
-    return prisma.professor.findUnique({ where: { id: req.auth.id }, select: { nome: true, email: true, telefone: true } });
-  }
-  if (req.auth.papel === 'conta') {
-    const conta = await prisma.conta.findUnique({ where: { id: req.auth.id }, select: { nome: true, email: true } });
-    return conta ? { ...conta, telefone: null } : null;
-  }
-  return null;
-}
-
-// Cria o Lead + TarefaLead de follow-up. Compartilhado pelas duas rotas
-// abaixo (professor e escola) — só muda o que preenche professorId.
-async function registrarInteresseComoLead(res, { escolaId, professorId, solicitante }) {
-  const emailNorm = solicitante.email?.toLowerCase().trim() || null;
-
-  if (emailNorm) {
-    const desde = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const totalHoje = await prisma.lead.count({ where: { email: emailNorm, createdAt: { gte: desde } } });
-    if (totalHoje >= LIMITE_INTERESSES_POR_DIA) {
-      return res.status(429).json({ erro: 'Você já demonstrou interesse em vários lugares hoje. Tente de novo amanhã.' });
-    }
-    const jaExiste = await prisma.lead.findFirst({ where: { escolaId, professorId, email: emailNorm, arquivado: false } });
-    if (jaExiste) {
-      return res.json({ mensagem: 'Você já demonstrou interesse aqui — em breve alguém entra em contato.' });
-    }
-  }
-
-  const primeiroEstagio = await prisma.estagioFunil.findFirst({ where: { escolaId, ativo: true }, orderBy: { ordem: 'asc' } });
-  if (!primeiroEstagio) {
-    return res.status(503).json({ erro: 'Essa instituição ainda não está pronta pra receber solicitações. Tente novamente mais tarde.' });
-  }
-
-  const lead = await prisma.lead.create({
-    data: {
-      nome: solicitante.nome || 'Interessado via app',
-      telefone: solicitante.telefone || null,
-      email: emailNorm,
-      origem: 'Rede Social (perfil público)',
-      estagioId: primeiroEstagio.id,
-      professorId: professorId || null,
-      escolaId,
-    },
-  });
-
-  const amanha = new Date();
-  amanha.setDate(amanha.getDate() + 1);
-  await prisma.tarefaLead.create({
-    data: {
-      descricao: 'Entrar em contato — interesse registrado pelo perfil público no app.',
-      dataPrevista: amanha,
-      leadId: lead.id,
-      responsavelId: professorId || null,
-      escolaId,
-    },
-  });
-
-  res.status(201).json({ mensagem: 'Interesse enviado! Em breve alguém entra em contato com você.' });
-}
-
-app.post('/api/professores/:id/quero-ser-aluno', autenticar, async (req, res) => {
+// GET /api/professores/:id/posts e /api/escolas/:id/posts — galeria de
+// fotos do perfil público (Rede Social, 18/09/2026), estilo LinkedIn: só
+// posts com mídia, nunca conteúdo exclusivo/pago (exclusivo:false sempre —
+// visitante do perfil público não passou pelo gate de paywall nenhum).
+async function listarPostsComMidiaPublicos(req, res, filtroAutor) {
   try {
-    const professor = await prisma.professor.findFirst({
-      where: { id: req.params.id, visivelBuscaSelf: true, ativoNaEscola: true },
-      select: { id: true, escolaId: true },
+    const cursor = req.query.cursor;
+    const posts = await prisma.post.findMany({
+      where: { ...filtroAutor, exclusivo: false, midiaUrl: { not: null } },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      ...(cursor ? { cursor: { id: String(cursor) }, skip: 1 } : {}),
+      select: { id: true, midiaUrl: true, conteudo: true, createdAt: true },
     });
-    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
-
-    const solicitante = await resolverIdentidadeSolicitante(req);
-    if (!solicitante) return res.status(403).json({ erro: 'Entre com sua conta pra demonstrar interesse.' });
-
-    await registrarInteresseComoLead(res, { escolaId: professor.escolaId, professorId: professor.id, solicitante });
+    res.json({ posts, proximoCursor: posts.length === 20 ? posts[posts.length - 1].id : null });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ erro: 'Erro ao registrar interesse.' });
+    res.status(500).json({ erro: 'Erro ao carregar publicações.' });
   }
-});
+}
 
-app.post('/api/escolas/:id/quero-ser-aluno', autenticar, async (req, res) => {
-  try {
-    const escola = await prisma.escola.findFirst({ where: { id: req.params.id, pacote: 'PACOTE_ESCOLA' }, select: { id: true } });
-    if (!escola) return res.status(404).json({ erro: 'Escola não encontrada.' });
+app.get('/api/professores/:id/posts', autenticar, (req, res) =>
+  listarPostsComMidiaPublicos(req, res, { autorProfessorId: req.params.id }));
 
-    const solicitante = await resolverIdentidadeSolicitante(req);
-    if (!solicitante) return res.status(403).json({ erro: 'Entre com sua conta pra demonstrar interesse.' });
-
-    await registrarInteresseComoLead(res, { escolaId: escola.id, professorId: null, solicitante });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro ao registrar interesse.' });
-  }
-});
+app.get('/api/escolas/:id/posts', autenticar, (req, res) =>
+  listarPostsComMidiaPublicos(req, res, { autorEscolaId: req.params.id }));
 
 // ============================================================================
 // FEED / POSTS — Rede Social Fase 4. Comunidade fechada por Escola: o feed
@@ -3019,7 +2935,7 @@ app.get('/api/professor/perfil', exigirProfessor, async (req, res) => {
         papel: true, escola: { select: { pacote: true, nome: true, stripeConnectOnboardingCompleto: true } },
         precoAssinaturaPremium: true,
         bio: true, cidade: true, estado: true, videoApresentacaoUrl: true, visivelBuscaSelf: true,
-        modalidadeEnsino: true,
+        modalidadeEnsino: true, whatsapp: true, emailContato: true,
       },
     });
     if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
@@ -3036,6 +2952,7 @@ app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
     const {
       nome, telefone, chavePix, linkPagamentoCartao, fotoUrl, senhaAtual, novaSenha,
       bio, cidade, estado, videoApresentacaoUrl, visivelBuscaSelf, modalidadeEnsino,
+      whatsapp, emailContato,
     } = req.body;
 
     const professor = await prisma.professor.findUnique({ where: { id: professorId } });
@@ -3053,6 +2970,8 @@ app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
     if (cidade !== undefined) dados.cidade = cidade?.trim() || null;
     if (estado !== undefined) dados.estado = estado?.trim().toUpperCase() || null;
     if (videoApresentacaoUrl !== undefined) dados.videoApresentacaoUrl = videoApresentacaoUrl?.trim() || null;
+    if (whatsapp !== undefined) dados.whatsapp = whatsapp?.replace(/\D/g, '') || null;
+    if (emailContato !== undefined) dados.emailContato = emailContato?.trim().toLowerCase() || null;
     if (modalidadeEnsino !== undefined) {
       const valores = Array.isArray(modalidadeEnsino) ? modalidadeEnsino : [];
       if (!valores.length || !valores.every((m) => ['PRESENCIAL', 'REMOTO', 'ONLINE'].includes(m))) {
@@ -3082,7 +3001,7 @@ app.put('/api/professor/perfil', exigirProfessor, async (req, res) => {
         id: true, nome: true, email: true, telefone: true,
         cursos: true, codigoConvite: true, chavePix: true, linkPagamentoCartao: true, fotoUrl: true,
         bio: true, cidade: true, estado: true, videoApresentacaoUrl: true, visivelBuscaSelf: true,
-        modalidadeEnsino: true,
+        modalidadeEnsino: true, whatsapp: true, emailContato: true,
       },
     });
     if (dados.senha) await sincronizarConta(atualizado.email, { senha: dados.senha });
@@ -9182,7 +9101,7 @@ async function exigirPapelNaEscola(req, res, papeisPermitidos) {
       // bio/cidade/estado/modalidadeEnsino adicionados aqui pelo mesmo motivo do
       // comentário acima: sem estar neste select, GET /api/escola/perfil devolve
       // esses campos sempre undefined mesmo já gravados pelo PUT.
-      escola: { select: { id: true, nome: true, pacote: true, codigoConvite: true, logoUrl: true, email: true, horarioFuncionamento: true, valorPorAula: true, tipoRemuneracaoProfessor: true, diaFechamento: true, bio: true, cidade: true, estado: true, modalidadeEnsino: true } },
+      escola: { select: { id: true, nome: true, pacote: true, codigoConvite: true, logoUrl: true, email: true, horarioFuncionamento: true, valorPorAula: true, tipoRemuneracaoProfessor: true, diaFechamento: true, bio: true, cidade: true, estado: true, modalidadeEnsino: true, whatsapp: true } },
     },
   });
   if (!professor) {
@@ -9412,6 +9331,7 @@ app.get('/api/escola/perfil', async (req, res) => {
       cidade: professor.escola.cidade,
       estado: professor.escola.estado,
       modalidadeEnsino: professor.escola.modalidadeEnsino,
+      whatsapp: professor.escola.whatsapp,
     });
   } catch (err) {
     console.error(err);
@@ -9432,7 +9352,7 @@ app.put('/api/escola/perfil', async (req, res) => {
 
     const {
       nome, logoUrl, email, horarioFuncionamento, valorPorAula, tipoRemuneracaoProfessor, diaFechamento,
-      bio, cidade, estado, modalidadeEnsino,
+      bio, cidade, estado, modalidadeEnsino, whatsapp,
     } = req.body;
 
     const data = {};
@@ -9447,6 +9367,7 @@ app.put('/api/escola/perfil', async (req, res) => {
     if (bio !== undefined) data.bio = bio?.trim() || null;
     if (cidade !== undefined) data.cidade = cidade?.trim() || null;
     if (estado !== undefined) data.estado = estado?.trim().toUpperCase() || null;
+    if (whatsapp !== undefined) data.whatsapp = whatsapp?.replace(/\D/g, '') || null;
     if (modalidadeEnsino !== undefined) {
       const valores = Array.isArray(modalidadeEnsino) ? modalidadeEnsino : [];
       if (!valores.length || !valores.every((m) => ['PRESENCIAL', 'REMOTO', 'ONLINE'].includes(m))) {

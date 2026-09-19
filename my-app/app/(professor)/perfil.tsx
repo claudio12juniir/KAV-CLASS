@@ -42,6 +42,8 @@ interface Perfil {
   videoApresentacaoUrl: string | null;
   visivelBuscaSelf: boolean;
   modalidadeEnsino: ModalidadeEnsino[];
+  whatsapp: string | null;
+  emailContato: string | null;
 }
 
 type ModalidadeEnsino = 'PRESENCIAL' | 'REMOTO' | 'ONLINE';
@@ -89,6 +91,8 @@ export default function PerfilProfessorScreen() {
   const [videoUrl, setVideoUrl] = useState('');
   const [visivelBusca, setVisivelBusca] = useState(false);
   const [modalidades, setModalidades] = useState<ModalidadeEnsino[]>(['PRESENCIAL']);
+  const [whatsapp, setWhatsapp] = useState('');
+  const [emailContato, setEmailContato] = useState('');
   const [salvandoVitrine, setSalvandoVitrine] = useState(false);
   const [senhaAtual, setSenhaAtual] = useState('');
   const [novaSenha, setNovaSenha] = useState('');
@@ -121,6 +125,8 @@ export default function PerfilProfessorScreen() {
         setVideoUrl(dados.videoApresentacaoUrl || '');
         setVisivelBusca(!!dados.visivelBuscaSelf);
         setModalidades(dados.modalidadeEnsino?.length ? dados.modalidadeEnsino : ['PRESENCIAL']);
+        setWhatsapp(dados.whatsapp || '');
+        setEmailContato(dados.emailContato || '');
       }
     } catch (err) {
       console.error(err);
@@ -167,7 +173,7 @@ export default function PerfilProfessorScreen() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           professorId, bio, cidade, estado, videoApresentacaoUrl: videoUrl, visivelBuscaSelf: visivelBusca,
-          modalidadeEnsino: modalidades,
+          modalidadeEnsino: modalidades, whatsapp, emailContato,
         }),
       });
       const dados = await res.json();
@@ -551,6 +557,29 @@ export default function PerfilProfessorScreen() {
           selectionColor={CORES.acento}
           autoCapitalize="none"
           keyboardType="url"
+        />
+
+        <Text style={styles.fieldLabel}>WhatsApp de contato</Text>
+        <TextInput
+          style={styles.input}
+          value={whatsapp}
+          onChangeText={(t) => setWhatsapp(t.replace(/\D/g, ''))}
+          placeholder="DDI + DDD + número, ex: 5511999999999"
+          placeholderTextColor={CORES.secundaria}
+          selectionColor={CORES.acento}
+          keyboardType="phone-pad"
+        />
+
+        <Text style={styles.fieldLabel}>E-mail de contato (opcional)</Text>
+        <TextInput
+          style={styles.input}
+          value={emailContato}
+          onChangeText={setEmailContato}
+          placeholder="Deixe em branco pra não mostrar e-mail"
+          placeholderTextColor={CORES.secundaria}
+          selectionColor={CORES.acento}
+          autoCapitalize="none"
+          keyboardType="email-address"
         />
 
         <TouchableOpacity
