@@ -122,7 +122,7 @@ export default function PerfilInstituicaoEscola() {
           whatsapp,
         }),
       });
-      if (res.ok) Alert.alert('Feito!', 'Perfil da Instituição atualizado.');
+      if (res.ok) Alert.alert('Feito!', 'Configurações atualizadas.');
       else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível salvar.');
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
@@ -133,16 +133,16 @@ export default function PerfilInstituicaoEscola() {
 
   if (carregando) {
     return (
-      <ErpShell titulo="Perfil da Instituição">
+      <ErpShell titulo="Configurações">
         <View style={{ paddingTop: 60, alignItems: 'center' }}><ActivityIndicator color={ERP.acento} /></View>
       </ErpShell>
     );
   }
 
   return (
-    <ErpShell titulo="Perfil da Instituição">
+    <ErpShell titulo="Configurações">
       <PageHeader
-        titulo="Perfil da Instituição"
+        titulo="Configurações"
         subtitulo="Dados gerais, horário de funcionamento e a base do cálculo de pagamento dos professores."
         acao={papel === 'DONO' || papel === 'GESTOR' ? <Botao texto="Salvar tudo" onPress={salvar} carregando={salvando} icone="checkmark-circle-outline" /> : undefined}
       />

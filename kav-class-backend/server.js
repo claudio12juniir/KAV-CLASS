@@ -2932,7 +2932,7 @@ app.get('/api/professor/perfil', exigirProfessor, async (req, res) => {
         id: true, nome: true, email: true, telefone: true,
         cursos: true, codigoConvite: true, chavePix: true,
         linkPagamentoCartao: true, fotoUrl: true, createdAt: true,
-        papel: true, escola: { select: { pacote: true, nome: true, stripeConnectOnboardingCompleto: true } },
+        papel: true, permissoesSecretaria: true, escola: { select: { pacote: true, nome: true, stripeConnectOnboardingCompleto: true } },
         precoAssinaturaPremium: true,
         bio: true, cidade: true, estado: true, videoApresentacaoUrl: true, visivelBuscaSelf: true,
         modalidadeEnsino: true, whatsapp: true, emailContato: true,
@@ -4263,7 +4263,7 @@ app.get('/api/turmas', exigirProfessor, async (req, res) => {
 // a contagem de matrículas ativas pra dar noção de ocupação (X/limite).
 app.get('/api/escola/turmas', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'logistica');
     if (!professor) return;
 
     const turmas = await prisma.turma.findMany({
@@ -4768,7 +4768,7 @@ app.patch('/api/matriculas/:id', exigirProfessor, async (req, res) => {
 // aqui numa mensagem clara em vez do 500 genérico.
 app.delete('/api/matriculas/:id', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
     if (!professor) return;
 
     const matricula = await prisma.matricula.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
@@ -4789,7 +4789,7 @@ app.delete('/api/matriculas/:id', async (req, res) => {
 // (se existir), pra dar a visão de "quem falta assinar" sem abrir uma a uma.
 app.get('/api/escola/matriculas', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
     if (!professor) return;
 
     const matriculas = await prisma.matricula.findMany({
@@ -5114,7 +5114,7 @@ app.get('/api/escola/cronograma-conteudo', exigirProfessor, carregarEscolaDoProf
 
 app.post('/api/escola/cronograma-conteudo', async (req, res) => {
   try {
-    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'coordenacao');
     if (!professorLogado) return;
 
     const { cursoId, tipo, professorId, anexoUrl, titulo } = req.body;
@@ -5142,7 +5142,7 @@ app.post('/api/escola/cronograma-conteudo', async (req, res) => {
 
 app.delete('/api/escola/cronograma-conteudo/:id', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'coordenacao');
     if (!professor) return;
     const { count } = await prisma.cronogramaConteudo.deleteMany({ where: { id: req.params.id, escolaId: professor.escolaId } });
     if (!count) return res.status(404).json({ erro: 'Cronograma não encontrado.' });
@@ -5193,7 +5193,7 @@ app.post('/api/escola/relatorios-aluno', exigirProfessor, async (req, res) => {
 // contagem de relatórios dos alunos daquele curso.
 app.get('/api/escola/coordenacao/resumo', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'coordenacao');
     if (!professor) return;
 
     const cursos = await prisma.curso.findMany({ where: { escolaId: professor.escolaId, ativo: true }, orderBy: { nome: 'asc' } });
@@ -5456,7 +5456,7 @@ app.get('/api/escola/reservas', exigirProfessor, carregarEscolaDoProfessor, asyn
 app.get('/api/escola/stripe-connect/status', async (req, res) => {
   if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const escola = await prisma.escola.findUnique({
@@ -5803,7 +5803,7 @@ app.post('/api/matriculas/:id/cobranca-automatica/desativar', autenticar, async 
 // (cartão recusado/expirado na última tentativa) de quem está em dia.
 app.get('/api/escola/cobranca-automatica/resumo', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const matriculas = await prisma.matricula.findMany({
@@ -5835,7 +5835,7 @@ app.get('/api/escola/cobranca-automatica/resumo', async (req, res) => {
 // recentes primeiro.
 app.get('/api/escola/cobranca-automatica/historico', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const pagamentos = await prisma.pagamento.findMany({
@@ -5865,7 +5865,7 @@ app.get('/api/escola/cobranca-automatica/historico', async (req, res) => {
 app.get('/api/escola/asaas/status', async (req, res) => {
   if (!ASAAS_ENCRYPTION_KEY) return res.status(503).json({ erro: 'Serviço de pagamento (Asaas) não configurado.' });
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const escola = await prisma.escola.findUnique({
@@ -6473,7 +6473,7 @@ async function calcularDre(escolaId, mes, ano) {
 
 app.get('/api/escola/dre', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const agora = new Date();
@@ -6507,7 +6507,7 @@ function validarMesAno(req, res) {
 // da escola no topo quando cadastrado (Perfil da Instituição, Sprint 1).
 app.get('/api/escola/dre/:mes/:ano/pdf', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
     const periodo = validarMesAno(req, res);
     if (!periodo) return;
@@ -6583,7 +6583,7 @@ app.get('/api/escola/dre/:mes/:ano/pdf', async (req, res) => {
 // GET /api/escola/dre/:mes/:ano/excel — mesma planilha, em Excel.
 app.get('/api/escola/dre/:mes/:ano/excel', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
     const periodo = validarMesAno(req, res);
     if (!periodo) return;
@@ -6642,7 +6642,7 @@ app.get('/api/escola/dre/:mes/:ano/excel', async (req, res) => {
 // no mês corrente; "Em dia" = tem pendência mas ainda dentro do vencimento.
 app.get('/api/escola/pagamentos-status', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const agora = new Date();
@@ -6690,7 +6690,7 @@ app.get('/api/escola/pagamentos-status', async (req, res) => {
 // rede externa toda vez que a tela abre, sem perder a exatidão do número.
 app.get('/api/escola/faturamento-atual', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const agora = new Date();
@@ -6742,7 +6742,7 @@ async function calcularOuAtualizarFolha(professorId, escolaId, mes, ano) {
 // preservados — só valorCalculado é sempre recalculado na leitura.
 app.get('/api/escola/folha-pagamento', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const agora = new Date();
@@ -6761,7 +6761,7 @@ app.get('/api/escola/folha-pagamento', async (req, res) => {
 // escola, quando necessário (briefing: "campo de edição manual").
 app.put('/api/escola/folha-pagamento/:id/ajustar', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const { valorAjustado } = req.body;
@@ -6784,7 +6784,7 @@ app.put('/api/escola/folha-pagamento/:id/ajustar', async (req, res) => {
 // outras sprints por falta de storage integrado).
 app.post('/api/escola/folha-pagamento/:id/comprovantes', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const folha = await prisma.folhaPagamentoProfessor.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
@@ -6807,7 +6807,7 @@ app.post('/api/escola/folha-pagamento/:id/comprovantes', async (req, res) => {
 // PUT /api/escola/folha-pagamento/:id/status — abre/fecha a folha do mês.
 app.put('/api/escola/folha-pagamento/:id/status', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const { status } = req.body;
@@ -6869,7 +6869,7 @@ app.get('/api/professor/folha-pagamento', exigirProfessor, async (req, res) => {
 // ─── DESPESAS FIXAS (INSTITUTION Sprint 7, briefing 08/09/2026) ──────────
 app.get('/api/escola/despesas-fixas', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
     const despesas = await prisma.despesaFixa.findMany({ where: { escolaId: professor.escolaId }, orderBy: { descricao: 'asc' } });
     res.json(despesas);
@@ -6880,7 +6880,7 @@ app.get('/api/escola/despesas-fixas', async (req, res) => {
 
 app.post('/api/escola/despesas-fixas', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
     const { descricao, valor } = req.body;
     if (!descricao?.trim() || typeof valor !== 'number' || valor <= 0) {
@@ -6895,7 +6895,7 @@ app.post('/api/escola/despesas-fixas', async (req, res) => {
 
 app.put('/api/escola/despesas-fixas/:id', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
     const { descricao, valor, ativa } = req.body;
     const data = {};
@@ -6912,7 +6912,7 @@ app.put('/api/escola/despesas-fixas/:id', async (req, res) => {
 
 app.delete('/api/escola/despesas-fixas/:id', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
     const { count } = await prisma.despesaFixa.deleteMany({ where: { id: req.params.id, escolaId: professor.escolaId } });
     if (!count) return res.status(404).json({ erro: 'Despesa fixa não encontrada.' });
@@ -7609,7 +7609,7 @@ app.put('/api/aulas-experimentais/:id/checkin-biometrico', exigirProfessor, asyn
 // Escola como um todo, não de uma aula/lead específico.
 app.put('/api/escola/regra-conversao', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'captacao');
     if (!professor) return;
     const { regra } = req.body;
     if (!['QUALQUER_MATRICULA', 'MESMO_CURSO_PROFESSOR'].includes(regra)) {
@@ -7694,7 +7694,7 @@ app.get('/api/relatorios/conversao-experimental', exigirProfessor, carregarEscol
 // denormalizada exatamente pra isso.
 app.get('/api/escola/metricas/faturamento', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'relatorios');
     if (!professor) return;
     const escolaId = professor.escolaId;
 
@@ -7754,7 +7754,7 @@ app.get('/api/escola/metricas/faturamento', async (req, res) => {
 // usa vencimento, espelhando exatamente o agrupamento feito no endpoint acima.
 app.get('/api/escola/metricas/faturamento/detalhe', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'relatorios');
     if (!professor) return;
     const escolaId = professor.escolaId;
 
@@ -7835,7 +7835,7 @@ const TIPOS_DIA_NAO_LETIVO = ['FERIADO', 'RECESSO', 'PALESTRA', 'PASSEIO', 'FEST
 // afeta — vazio/omitido = escola inteira, igual ao comportamento de antes).
 app.post('/api/escola/calendario', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'calendario');
     if (!professor) return;
     const { data, dataFim, descricao, tipo, cursosIds } = req.body;
     if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data) || !descricao?.trim()) {
@@ -7875,7 +7875,7 @@ app.post('/api/escola/calendario', async (req, res) => {
 
 app.delete('/api/escola/calendario/:id', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'calendario');
     if (!professor) return;
     const { count } = await prisma.diaNaoLetivo.deleteMany({ where: { id: req.params.id, escolaId: professor.escolaId } });
     if (!count) return res.status(404).json({ erro: 'Não encontrado.' });
@@ -7891,7 +7891,7 @@ app.delete('/api/escola/calendario/:id', async (req, res) => {
 // resposta já vem com professor/sala/aluno/turma inclusos pra isso.
 app.get('/api/escola/agenda', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'calendario');
     if (!professor) return;
     const { de, ate } = req.query;
     const where = { professor: { escolaId: professor.escolaId } };
@@ -7920,7 +7920,7 @@ app.get('/api/escola/agenda', async (req, res) => {
 // Carrega a Aula garantindo que pertence à Escola de quem está pedindo (via
 // DONO/GESTOR) — usada pelas três ações inline abaixo.
 async function carregarAulaDaEscola(req, res) {
-  const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+  const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'calendario');
   if (!professor) return null;
   const aula = await prisma.aula.findFirst({ where: { id: req.params.id, professor: { escolaId: professor.escolaId } } });
   if (!aula) { res.status(404).json({ erro: 'Aula não encontrada.' }); return null; }
@@ -8055,7 +8055,7 @@ async function coletarDestinatariosComunicado(escolaId, publico) {
 
 app.get('/api/comunicados', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'comunicados');
     if (!professor) return;
     const comunicados = await prisma.comunicado.findMany({
       where: { escolaId: professor.escolaId },
@@ -8071,7 +8071,7 @@ app.get('/api/comunicados', async (req, res) => {
 
 app.post('/api/comunicados', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'comunicados');
     if (!professor) return;
     const { titulo, corpo, publico } = req.body;
     if (!titulo?.trim() || !corpo?.trim()) {
@@ -8092,7 +8092,7 @@ app.post('/api/comunicados', async (req, res) => {
 
 app.put('/api/comunicados/:id', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'comunicados');
     if (!professor) return;
     const { titulo, corpo, publico } = req.body;
     const dados = {};
@@ -8115,7 +8115,7 @@ app.put('/api/comunicados/:id', async (req, res) => {
 
 app.delete('/api/comunicados/:id', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'comunicados');
     if (!professor) return;
     const { count } = await prisma.comunicado.deleteMany({ where: { id: req.params.id, escolaId: professor.escolaId, status: 'RASCUNHO' } });
     if (!count) return res.status(404).json({ erro: 'Comunicado não encontrado, ou já foi enviado (não dá mais pra apagar).' });
@@ -8127,7 +8127,7 @@ app.delete('/api/comunicados/:id', async (req, res) => {
 
 app.post('/api/comunicados/:id/duplicar', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'comunicados');
     if (!professor) return;
     const original = await prisma.comunicado.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
     if (!original) return res.status(404).json({ erro: 'Comunicado não encontrado.' });
@@ -8149,7 +8149,7 @@ app.post('/api/comunicados/:id/duplicar', async (req, res) => {
 // aluno não deve travar o broadcast pros outros).
 app.post('/api/comunicados/:id/enviar', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'comunicados');
     if (!professor) return;
     const comunicado = await prisma.comunicado.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
     if (!comunicado) return res.status(404).json({ erro: 'Comunicado não encontrado.' });
@@ -8198,7 +8198,7 @@ app.post('/api/comunicados/:id/enviar', async (req, res) => {
 
 app.get('/api/comunicados/:id/envios', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'comunicados');
     if (!professor) return;
     const comunicado = await prisma.comunicado.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId } });
     if (!comunicado) return res.status(404).json({ erro: 'Comunicado não encontrado.' });
@@ -9085,7 +9085,16 @@ function autenticarProfessor(req, res) {
 // Autentica e carrega o Professor + Escola, garantindo que o papel dele na
 // Escola está entre os permitidos pra essa rota. Devolve null (já com o
 // status certo respondido) se qualquer checagem falhar.
-async function exigirPapelNaEscola(req, res, papeisPermitidos) {
+// `chaveModulo` (INSTITUTION, 21/09/2026 — persona Secretaria): quando
+// informado, SECRETARIA também passa (além de quem já está em
+// papeisPermitidos), mas só se a chave estiver em
+// professor.permissoesSecretaria — a chave é a mesma de `chave` em
+// NAV_ESCOLA (frontend). Chamada sem esse argumento (a esmagadora maioria
+// das 69 chamadas existentes) mantém o comportamento de sempre: SECRETARIA
+// nunca passa, DONO/GESTOR passam se estiverem em papeisPermitidos — zero
+// mudança de comportamento pra quem já usava o sistema antes desta persona
+// existir.
+async function exigirPapelNaEscola(req, res, papeisPermitidos, chaveModulo) {
   const professorId = autenticarProfessor(req, res);
   if (!professorId) return null;
 
@@ -9096,6 +9105,7 @@ async function exigirPapelNaEscola(req, res, papeisPermitidos) {
       nome: true,
       papel: true,
       escolaId: true,
+      permissoesSecretaria: true,
       // Sprint 1 (INSTITUTION, briefing 08/09/2026): logoUrl/email/horarioFuncionamento/
       // valorPorAula/tipoRemuneracaoProfessor/diaFechamento adicionados aqui —
       // sem isso, GET /api/escola/perfil (que lê professor.escola.*) sempre
@@ -9110,7 +9120,11 @@ async function exigirPapelNaEscola(req, res, papeisPermitidos) {
     res.status(404).json({ erro: 'Professor não encontrado.' });
     return null;
   }
-  if (!papeisPermitidos.includes(professor.papel)) {
+
+  const papelPermitidoDireto = papeisPermitidos.includes(professor.papel);
+  const papelPermitidoPorFuncao = chaveModulo && professor.papel === 'SECRETARIA'
+    && (professor.permissoesSecretaria || []).includes(chaveModulo);
+  if (!papelPermitidoDireto && !papelPermitidoPorFuncao) {
     res.status(403).json({ erro: 'Você não tem permissão para acessar isso.' });
     return null;
   }
@@ -9249,14 +9263,15 @@ app.post('/api/escola/convites/aceitar', async (req, res) => {
 // GET /api/escola/professores — DONO/GESTOR vê todo mundo da própria Escola.
 app.get('/api/escola/professores', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'equipe');
     if (!professor) return;
 
     const professores = await prisma.professor.findMany({
       // ativoNaEscola: true — professor desligado (soft delete) some da
       // lista da Equipe, mas continua intacto no banco (auditoria
-      // INSTITUTION, 11/09/2026).
-      where: { escolaId: professor.escolaId, ativoNaEscola: true },
+      // INSTITUTION, 11/09/2026). papel != SECRETARIA — secretaria tem
+      // aba própria (GET /api/escola/secretarias), fora da Equipe.
+      where: { escolaId: professor.escolaId, ativoNaEscola: true, papel: { not: 'SECRETARIA' } },
       select: { id: true, nome: true, email: true, papel: true, fotoUrl: true, telefone: true, dataNascimento: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
@@ -9272,7 +9287,7 @@ app.get('/api/escola/professores', async (req, res) => {
 // pelos alunos dele, sem mudança nenhuma).
 app.get('/api/escola/alunos', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
     if (!professor) return;
 
     const alunos = await prisma.aluno.findMany({
@@ -9309,7 +9324,7 @@ app.get('/api/escola/alunos', async (req, res) => {
 // mesmo padrão preguiçoso do codigoConvite de Professor em /api/dashboard.
 app.get('/api/escola/perfil', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'configuracoes');
     if (!professor) return;
 
     let codigoConvite = professor.escola.codigoConvite;
@@ -9349,7 +9364,7 @@ app.get('/api/escola/perfil', async (req, res) => {
 // quando a Fase 7/RBAC estiver pronta).
 app.put('/api/escola/perfil', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'configuracoes');
     if (!professor) return;
 
     const {
@@ -9400,7 +9415,7 @@ app.put('/api/escola/perfil', async (req, res) => {
 // (POST /api/configurar-aluno) pra ativar horário/cobrança.
 app.patch('/api/escola/alunos/:id/atribuir-professor', async (req, res) => {
   try {
-    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
     if (!professorLogado) return;
 
     const { professorId } = req.body;
@@ -9448,7 +9463,7 @@ app.post('/api/escola/professores/criar', async (req, res) => {
 
     const {
       nome, email, senha, papel, telefone, contatoEmergencia,
-      dataNascimento, dataPagamento, contratoUrl, cursos, fotoUrl,
+      dataNascimento, dataPagamento, contratoUrl, cursos, fotoUrl, permissoesSecretaria,
     } = req.body;
     if (!nome?.trim() || !email?.trim() || !senha) {
       return res.status(400).json({ erro: 'nome, email e senha são obrigatórios.' });
@@ -9460,7 +9475,13 @@ app.post('/api/escola/professores/criar', async (req, res) => {
       return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
     }
 
-    const papelNovo = papel === 'GESTOR' ? 'GESTOR' : 'PROFESSOR'; // nunca cria DONO por aqui
+    // nunca cria DONO por aqui
+    const papelNovo = papel === 'GESTOR' ? 'GESTOR' : papel === 'SECRETARIA' ? 'SECRETARIA' : 'PROFESSOR';
+    let permissoesValidas = [];
+    if (papelNovo === 'SECRETARIA') {
+      const pedidas = Array.isArray(permissoesSecretaria) ? permissoesSecretaria : [];
+      permissoesValidas = pedidas.filter((p) => CHAVES_PERMISSAO_SECRETARIA.includes(p));
+    }
     const senhaHash = await bcrypt.hash(senha, await bcrypt.genSalt(10));
     const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome: nome.trim(), fotoUrl: fotoUrl || null });
 
@@ -9481,18 +9502,75 @@ app.post('/api/escola/professores/criar', async (req, res) => {
         assinaturaStatus: 'ATIVO', // parte de uma Escola já paga
         escolaId: professor.escolaId,
         papel: papelNovo,
+        permissoesSecretaria: permissoesValidas,
       },
       select: {
         id: true, nome: true, email: true, papel: true, telefone: true,
         contatoEmergencia: true, dataNascimento: true, dataPagamento: true,
-        contratoUrl: true, cursos: true, fotoUrl: true, createdAt: true,
+        contratoUrl: true, cursos: true, fotoUrl: true, createdAt: true, permissoesSecretaria: true,
       },
     });
 
-    res.status(201).json({ mensagem: 'Professor criado!', professor: novoProfessor });
+    res.status(201).json({ mensagem: papelNovo === 'SECRETARIA' ? 'Secretaria criada!' : 'Professor criado!', professor: novoProfessor });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao criar professor.' });
+  }
+});
+
+// Chaves válidas de permissoesSecretaria — mesma `chave` dos itens de
+// Gestão/Crescimento/Operação/Instituição em NAV_ESCOLA (frontend). Social
+// e Painel ficam sempre visíveis pra qualquer papel, por isso não entram
+// aqui (ver components/institution/SidebarNavGrupos.tsx).
+const CHAVES_PERMISSAO_SECRETARIA = [
+  'equipe', 'alunos', 'logistica', 'coordenacao', 'calendario', 'chats',
+  'captacao', 'comunicados',
+  'recursos', 'financeiro', 'relatorios',
+  'configuracoes',
+];
+
+// GET /api/escola/secretarias — DONO/GESTOR lista as secretarias da própria
+// Escola, com as permissões atuais de cada uma (Sprint Secretaria,
+// 21/09/2026, aba própria em Gestão, separada da Equipe).
+app.get('/api/escola/secretarias', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const secretarias = await prisma.professor.findMany({
+      where: { escolaId: professor.escolaId, papel: 'SECRETARIA', ativoNaEscola: true },
+      select: { id: true, nome: true, email: true, fotoUrl: true, permissoesSecretaria: true, createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    res.json({ secretarias, chavesDisponiveis: CHAVES_PERMISSAO_SECRETARIA });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao listar secretarias.' });
+  }
+});
+
+// PUT /api/escola/secretarias/:id/permissoes — DONO/GESTOR ajusta o
+// limitador de acesso por função de uma secretaria específica.
+app.put('/api/escola/secretarias/:id/permissoes', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId, papel: 'SECRETARIA' } });
+    if (!alvo) return res.status(404).json({ erro: 'Secretaria não encontrada nesta Escola.' });
+
+    const pedidas = Array.isArray(req.body.permissoesSecretaria) ? req.body.permissoesSecretaria : [];
+    const permissoesValidas = pedidas.filter((p) => CHAVES_PERMISSAO_SECRETARIA.includes(p));
+
+    const atualizada = await prisma.professor.update({
+      where: { id: alvo.id },
+      data: { permissoesSecretaria: permissoesValidas },
+      select: { id: true, nome: true, email: true, permissoesSecretaria: true },
+    });
+    res.json({ mensagem: 'Permissões atualizadas!', secretaria: atualizada });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro ao atualizar permissões.' });
   }
 });
 
@@ -9618,7 +9696,7 @@ app.delete('/api/escola/professores/:id', async (req, res) => {
 // — não faz sentido travar isso a nível de banco).
 app.get('/api/escola/professores/:id/disponibilidade', async (req, res) => {
   try {
-    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'equipe');
     if (!professorLogado) return;
 
     const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
@@ -9641,7 +9719,7 @@ app.get('/api/escola/professores/:id/disponibilidade', async (req, res) => {
 // usado em outras telas do painel pra listas pequenas e editadas em bloco).
 app.put('/api/escola/professores/:id/disponibilidade', async (req, res) => {
   try {
-    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'equipe');
     if (!professorLogado) return;
 
     const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
@@ -9773,7 +9851,7 @@ app.post('/api/professores/:id/chat-turma', async (req, res) => {
 // resolverAcessoChatTurma, mas agregada pra escola inteira de uma vez.
 app.get('/api/escola/chats-turma', async (req, res) => {
   try {
-    const gestor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const gestor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'chats');
     if (!gestor) return;
 
     const professores = await prisma.professor.findMany({
@@ -9835,7 +9913,7 @@ app.get('/api/escola/chats-turma', async (req, res) => {
 // em /api/alunos/cadastro).
 app.post('/api/escola/alunos/criar', async (req, res) => {
   try {
-    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
     if (!professorLogado) return;
 
     const {
@@ -9917,7 +9995,7 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
 // menor risco, reaproveita Matricula que já existe pra isso).
 app.put('/api/escola/alunos/:id', async (req, res) => {
   try {
-    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
     if (!professorLogado) return;
 
     const alunoAlvo = await prisma.aluno.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
@@ -10111,7 +10189,7 @@ app.get('/api/escola/grade-hoje', async (req, res) => {
 // definições diferentes de "inadimplente" convivendo no mesmo produto.
 app.get('/api/escola/inadimplentes', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
     if (!professor) return;
 
     const pagamentosAtrasados = await prisma.pagamento.findMany({
@@ -10185,7 +10263,7 @@ app.post('/api/escola/alunos/:id/notificar-vencimento', async (req, res) => {
 // sala, pra dar a visão de grade que faltava.
 app.get('/api/escola/logistica/grade', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'logistica');
     if (!professor) return;
 
     const dataBase = req.query.data ? new Date(`${req.query.data}T00:00:00`) : new Date();

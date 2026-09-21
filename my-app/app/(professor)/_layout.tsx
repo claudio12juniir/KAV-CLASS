@@ -33,7 +33,11 @@ function RedirecionadorEscola({ children }: { children: React.ReactNode }) {
         });
         if (res.ok) {
           const perfil = await res.json();
-          const ehAdminDeEscola = (perfil.papel === 'DONO' || perfil.papel === 'GESTOR') && perfil.escola?.pacote === 'PACOTE_ESCOLA';
+          // SECRETARIA (INSTITUTION, 21/09/2026) entra pelo mesmo painel do
+          // DONO/GESTOR — as telas que ela alcança (Equipe, Alunos,
+          // Financeiro etc.) são as de app/(escola)/, só que filtradas por
+          // permissoesSecretaria; não tem shell próprio.
+          const ehAdminDeEscola = (perfil.papel === 'DONO' || perfil.papel === 'GESTOR' || perfil.papel === 'SECRETARIA') && perfil.escola?.pacote === 'PACOTE_ESCOLA';
           if (ehAdminDeEscola) {
             setVaiRedirecionar(true);
             router.replace('/(escola)');

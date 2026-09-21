@@ -2,7 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { BASE_URL, fetchComRetry } from '../api';
 
-type Papel = 'DONO' | 'GESTOR' | 'PROFESSOR';
+type Papel = 'DONO' | 'GESTOR' | 'PROFESSOR' | 'SECRETARIA';
 type Pacote = 'PACOTE_PROFESSOR' | 'PACOTE_ESCOLA';
 
 type EscolaContextoValor = {
@@ -14,6 +14,11 @@ type EscolaContextoValor = {
   fotoAdmin: string | null;
   professorId: string;
   ehDono: boolean;
+  // Limitador de acesso por função (INSTITUTION, 21/09/2026) — só tem
+  // sentido quando papel === 'SECRETARIA'; DONO/GESTOR/PROFESSOR sempre
+  // enxergam tudo, sem checar esta lista (ver SidebarNavGrupos filtrando
+  // NAV_ESCOLA e server.js exigirPapelNaEscola conferindo o mesmo lado).
+  permissoesSecretaria: string[];
   recarregarPerfil: () => Promise<void>;
 };
 
@@ -27,6 +32,7 @@ export function EscolaProvider({ children }: { children: React.ReactNode }) {
   const [nomeAdmin, setNomeAdmin] = useState('');
   const [fotoAdmin, setFotoAdmin] = useState<string | null>(null);
   const [professorId, setProfessorId] = useState('');
+  const [permissoesSecretaria, setPermissoesSecretaria] = useState<string[]>([]);
 
   const recarregarPerfil = useCallback(async () => {
     setCarregando(true);
@@ -44,6 +50,7 @@ export function EscolaProvider({ children }: { children: React.ReactNode }) {
         setNomeEscola(perfil.escola?.nome || '');
         setNomeAdmin(perfil.nome || '');
         setFotoAdmin(perfil.fotoUrl || null);
+        setPermissoesSecretaria(perfil.permissoesSecretaria || []);
       }
     } catch (err) {
       console.error('Erro ao carregar perfil da Escola:', err);
@@ -57,6 +64,7 @@ export function EscolaProvider({ children }: { children: React.ReactNode }) {
   const valor: EscolaContextoValor = {
     carregando, papel, pacote, nomeEscola, nomeAdmin, fotoAdmin, professorId,
     ehDono: papel === 'DONO',
+    permissoesSecretaria,
     recarregarPerfil,
   };
 

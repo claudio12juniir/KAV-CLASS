@@ -153,10 +153,17 @@ enum TipoDisponibilidade {
 // GESTOR e o convite de mais professores para a mesma Escola só existem depois
 // que a Escola assina o Pacote Escola (ver Escola.pacote). Sem isso, nada muda
 // pra quem já usa o app hoje.
+// SECRETARIA (INSTITUTION, 21/09/2026): terceira persona da Escola — login
+// criado direto pelo DONO/GESTOR (mesmo fluxo de POST
+// /api/escola/professores/criar), sem acesso a nada por padrão. O que ela
+// alcança é decidido função a função em Professor.permissoesSecretaria,
+// checado em exigirPapelNaEscola() — nunca conta como DONO/GESTOR pra
+// nenhuma regra existente (contarGestaoAtiva, etc.).
 enum PapelUsuario {
   DONO
   GESTOR
   PROFESSOR
+  SECRETARIA
 }
 
 // Pacote comercial assinado pela Escola — decide qual conjunto de telas/rotas
@@ -422,6 +429,12 @@ model Professor {
   escolaId String
   escola   Escola       @relation(fields: [escolaId], references: [id])
   papel    PapelUsuario @default(DONO)
+
+  // Limitador de acesso por função (INSTITUTION, 21/09/2026) — só usado
+  // quando papel=SECRETARIA; lista de `chave` do NAV_ESCOLA (ex.:
+  // "financeiro", "alunos") que essa secretaria pode abrir. Vazio por
+  // padrão: acesso zero até o DONO/GESTOR liberar módulo a módulo.
+  permissoesSecretaria String[] @default([])
 
   // Soft delete de "remover professor da Equipe" (auditoria INSTITUTION,
   // 11/09/2026): professorId é obrigatório (sem `?`) em 11 tabelas (Aula,

@@ -46,6 +46,7 @@ export const NAV_ESCOLA: GrupoNav[] = [
   ]},
   { titulo: 'Gestão', itens: [
     { chave: 'equipe', rota: '/(escola)/equipe', rotulo: 'Equipe', icone: 'people-outline' },
+    { chave: 'secretarias', rota: '/(escola)/secretarias', rotulo: 'Secretaria', icone: 'key-outline' },
     { chave: 'alunos', rota: '/(escola)/alunos', rotulo: 'Alunos', icone: 'school-outline' },
     { chave: 'logistica', rota: '/(escola)/logistica', rotulo: 'Logística', icone: 'apps-outline' },
     { chave: 'coordenacao', rota: '/(escola)/coordenacao', rotulo: 'Coordenação', icone: 'ribbon-outline' },
@@ -62,7 +63,7 @@ export const NAV_ESCOLA: GrupoNav[] = [
     { chave: 'relatorios', rota: '/(escola)/relatorios', rotulo: 'Relatórios', icone: 'bar-chart-outline' },
   ]},
   { titulo: 'Instituição', itens: [
-    { chave: 'perfil-instituicao', rota: '/(escola)/perfil-instituicao', rotulo: 'Perfil da Instituição', icone: 'options-outline' },
+    { chave: 'configuracoes', rota: '/(escola)/perfil-instituicao', rotulo: 'Configurações', icone: 'options-outline' },
   ]},
 ];
 
@@ -74,10 +75,31 @@ function comBadgeMensagens(navGrupos: GrupoNav[], naoLidas: number): GrupoNav[] 
   }));
 }
 
+// Limitador de acesso por função (INSTITUTION, 21/09/2026) — Painel e
+// Social ficam sempre visíveis pra qualquer papel; as demais categorias
+// (Gestão/Crescimento/Operação/Instituição) só mostram, pra SECRETARIA, os
+// itens cuja `chave` está em permissoesSecretaria. Grupo que fica sem
+// nenhum item some da lista inteira. DONO/GESTOR/PROFESSOR não passam por
+// aqui (retornam o menu completo) — o backend (exigirPapelNaEscola) aplica
+// a mesma trava do lado da API, então esconder o item aqui é UX, não a
+// única linha de defesa.
+function filtrarPorPermissao(navGrupos: GrupoNav[], papel: string | null, permissoes: string[]): GrupoNav[] {
+  if (papel !== 'SECRETARIA') return navGrupos;
+  return navGrupos
+    .map((grupo) => {
+      if (grupo.titulo === 'Principal' || grupo.titulo === 'Social') return grupo;
+      return { ...grupo, itens: grupo.itens.filter((item) => permissoes.includes(item.chave)) };
+    })
+    .filter((grupo) => grupo.itens.length > 0);
+}
+
 function SidebarConteudo({ onNavegar }: { onNavegar?: () => void }) {
-  const { nomeEscola, nomeAdmin, fotoAdmin, papel } = useEscolaContexto();
+  const { nomeEscola, nomeAdmin, fotoAdmin, papel, permissoesSecretaria } = useEscolaContexto();
   const mensagensNaoLidas = useMensagensNaoLidas();
-  const navGrupos = React.useMemo(() => comBadgeMensagens(NAV_ESCOLA, mensagensNaoLidas), [mensagensNaoLidas]);
+  const navGrupos = React.useMemo(
+    () => comBadgeMensagens(filtrarPorPermissao(NAV_ESCOLA, papel, permissoesSecretaria), mensagensNaoLidas),
+    [papel, permissoesSecretaria, mensagensNaoLidas],
+  );
 
   const sair = async () => {
     await SecureStore.deleteItemAsync('kav_token');
@@ -113,7 +135,9 @@ function SidebarConteudo({ onNavegar }: { onNavegar?: () => void }) {
         )}
         <View style={{ flex: 1 }}>
           <Text style={estilos.perfilNome} numberOfLines={1}>{nomeAdmin || '—'}</Text>
-          <Text style={estilos.perfilPapel}>{papel === 'DONO' ? 'Dono da escola' : 'Gestor'}</Text>
+          <Text style={estilos.perfilPapel}>
+            {papel === 'DONO' ? 'Dono da escola' : papel === 'SECRETARIA' ? 'Secretaria' : papel === 'PROFESSOR' ? 'Professor' : 'Gestor'}
+          </Text>
         </View>
       </Pressable>
       <Pressable style={({ hovered }: any) => [estilos.sairBtn, hovered && estilos.itemNavHover]} onPress={sair}>
