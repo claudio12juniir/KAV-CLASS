@@ -5,7 +5,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router, usePathname } from 'expo-router';
 import React from 'react';
-import { StyleSheet, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { ERP } from '../../constants/erpTheme';
 import type { ItemNav } from '../../app/(escola)/_ui';
 
@@ -24,7 +24,14 @@ export default function BottomTabBar({
         const ativo = normalizar(pathname, rotaBase) === normalizar(item.rota, rotaBase);
         return (
           <TouchableOpacity key={item.chave} style={styles.item} onPress={() => router.push(item.rota as any)} hitSlop={6}>
-            <Ionicons name={item.icone} size={23} color={ativo ? ERP.acento : ERP.textoMuted} />
+            <View>
+              <Ionicons name={item.icone} size={23} color={ativo ? ERP.acento : ERP.textoMuted} />
+              {!!item.badge && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeTexto}>{item.badge > 99 ? '99+' : item.badge}</Text>
+                </View>
+              )}
+            </View>
           </TouchableOpacity>
         );
       })}
@@ -41,4 +48,9 @@ const styles = StyleSheet.create({
     height: 56, backgroundColor: ERP.superficie, borderTopWidth: 1, borderTopColor: ERP.borda,
   },
   item: { flex: 1, alignItems: 'center', justifyContent: 'center', height: '100%' },
+  badge: {
+    position: 'absolute', top: -4, right: -8, minWidth: 16, height: 16, borderRadius: 8,
+    backgroundColor: ERP.acento, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3,
+  },
+  badgeTexto: { color: '#fff', fontSize: 9, fontWeight: '700' },
 });

@@ -24,6 +24,13 @@ type AulaGrade = {
 };
 type ProfessorGrade = { professorId: string; nome: string; aulas: AulaGrade[] };
 
+// Sem campo de "estoque mínimo" configurável no schema ainda (Produto só
+// tem quantidadeEstoque — ver kav-class-backend/prisma/schema.prisma) —
+// limiar fixo por ora, pra não depender de migração pra entregar o alerta
+// já pedido. Se o valor não servir pra alguma escola, dá pra virar campo
+// por produto depois sem quebrar nada aqui.
+const LIMIAR_ESTOQUE_BAIXO = 5;
+
 function horaCurta(iso: string) {
   return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
@@ -140,6 +147,7 @@ export default function PainelEscola() {
   const [gradeHoje, setGradeHoje] = useState<ProfessorGrade[]>([]);
   const [professorSelecionado, setProfessorSelecionado] = useState<ProfessorGrade | null>(null);
   const [aniversariantes, setAniversariantes] = useState<any[]>([]);
+  const [estoqueBaixo, setEstoqueBaixo] = useState<any[]>([]);
 
   const [aulaParaCancelar, setAulaParaCancelar] = useState<any | null>(null);
   const [dataPropostaCancelar, setDataPropostaCancelar] = useState('');
@@ -152,7 +160,7 @@ export default function PainelEscola() {
       const token = await SecureStore.getItemAsync('kav_token');
       const headers = { Authorization: `Bearer ${token}` };
 
-      const [resProfessores, resAlunos, resTarefas, resReposicoes, resVencendo, resInadimplentes, resAulasReposicao, resGradeHoje] = await Promise.all([
+      const [resProfessores, resAlunos, resTarefas, resReposicoes, resVencendo, resInadimplentes, resAulasReposicao, resGradeHoje, resProdutos] = await Promise.all([
         fetchComRetry(`${BASE_URL}/api/escola/professores`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/alunos`, { headers }),
         fetchComRetry(`${BASE_URL}/api/tarefas-lead`, { headers }),
@@ -161,6 +169,7 @@ export default function PainelEscola() {
         fetchComRetry(`${BASE_URL}/api/escola/inadimplentes`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/aulas-para-reposicao`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/grade-hoje`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/produtos`, { headers }),
       ]);
 
       if (resProfessores.ok) {
@@ -183,6 +192,10 @@ export default function PainelEscola() {
       if (resInadimplentes.ok) setInadimplentes(await resInadimplentes.json());
       if (resAulasReposicao.ok) setAulasParaReposicao(await resAulasReposicao.json());
       if (resGradeHoje.ok) setGradeHoje(await resGradeHoje.json());
+      if (resProdutos.ok) {
+        const produtos = await resProdutos.json();
+        setEstoqueBaixo(produtos.filter((p: any) => p.ativo !== false && p.quantidadeEstoque <= LIMIAR_ESTOQUE_BAIXO));
+      }
     } catch (err) {
       console.error('Erro ao carregar Painel:', err);
     } finally {
@@ -283,6 +296,7 @@ export default function PainelEscola() {
         <Kpi label="Professores" valor={totalProfessores} icone="people-outline" onPress={() => router.push('/(escola)/equipe')} />
         <Kpi label="Alunos matriculados" valor={totalAlunos} icone="school-outline" onPress={() => router.push('/(escola)/alunos')} />
         <Kpi label="Inadimplentes" valor={inadimplentes.length} icone="alert-circle-outline" tom={inadimplentes.length > 0 ? 'alerta' : 'default'} onPress={() => router.push('/(escola)/financeiro')} />
+        <Kpi label="Estoque baixo" valor={estoqueBaixo.length} icone="cube-outline" tom={estoqueBaixo.length > 0 ? 'alerta' : 'default'} onPress={() => router.push('/(escola)/recursos')} />
       </View>
 
       <SectionCard titulo="Grade de hoje" subtitulo="Toque num professor pra ver a grade em horas do dia">
@@ -337,6 +351,23 @@ export default function PainelEscola() {
                 )},
                 { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (a: any) => (
                   <Botao texto="Cancelar + repor" variante="secundario" onPress={() => abrirCancelarComReposicao(a)} />
+                )},
+              ]}
+            />
+          )}
+        </SectionCard>
+
+        <SectionCard titulo="Estoque baixo" subtitulo={`Itens com ${LIMIAR_ESTOQUE_BAIXO} unidades ou menos`} style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
+          {estoqueBaixo.length === 0 ? (
+            <EstadoVazio icone="checkmark-circle-outline" texto="Nenhum item acabando." />
+          ) : (
+            <Tabela
+              vazioTexto=""
+              dados={estoqueBaixo}
+              colunas={[
+                { chave: 'nome', titulo: 'Item', flex: 2, render: (p: any) => <Text style={estilos.linhaTitulo}>{p.nome}</Text> },
+                { chave: 'quantidade', titulo: '', flex: 1, alinhar: 'right', render: (p: any) => (
+                  <Badge texto={`${p.quantidadeEstoque} un.`} tom={p.quantidadeEstoque === 0 ? 'alerta' : 'aviso'} />
                 )},
               ]}
             />

@@ -9,7 +9,6 @@
 // mais usados + "Mais") em mobile — os 4 pinados são os primeiros itens de
 // navGrupos, na ordem em que a tela os define.
 import { Ionicons } from '@expo/vector-icons';
-import { router, usePathname } from 'expo-router';
 import React, { useState } from 'react';
 import {
   Image,
@@ -26,14 +25,12 @@ import SyncLoader from '../SyncLoader';
 import { ERP, ERP_BREAKPOINT_DESKTOP } from '../../constants/erpTheme';
 import type { GrupoNav } from '../../app/(escola)/_ui';
 import BottomTabBar from './BottomTabBar';
+import SidebarNavGrupos from './SidebarNavGrupos';
+import useMensagensNaoLidas from '../../hooks/useMensagensNaoLidas';
 
 function useEhDesktop() {
   const { width } = useWindowDimensions();
   return width >= ERP_BREAKPOINT_DESKTOP;
-}
-
-function normalizar(rota: string, rotaBase: string) {
-  return rota.replace(rotaBase, '') || '/';
 }
 
 function SidebarConteudo({
@@ -43,8 +40,6 @@ function SidebarConteudo({
   nome: string; fotoUrl: string | null; subtitulo: string; tag: string;
   aoSair: () => void; onNavegar?: () => void;
 }) {
-  const pathname = usePathname();
-
   return (
     <View style={estilos.sidebar}>
       <View style={estilos.marca}>
@@ -56,30 +51,7 @@ function SidebarConteudo({
       </View>
 
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-        {navGrupos.map((grupo) => (
-          <View key={grupo.titulo} style={estilos.grupoNav}>
-            {grupo.titulo ? <Text style={estilos.grupoTitulo}>{grupo.titulo}</Text> : null}
-            {grupo.itens.map((item) => {
-              const ativo = normalizar(pathname, rotaBase) === normalizar(item.rota, rotaBase);
-              return (
-                <Pressable
-                  key={item.chave}
-                  style={({ hovered, pressed }: any) => [
-                    estilos.itemNav,
-                    ativo && estilos.itemNavAtivo,
-                    !ativo && hovered && estilos.itemNavHover,
-                    pressed && { opacity: 0.85 },
-                  ]}
-                  onPress={() => { router.push(item.rota as any); onNavegar?.(); }}
-                >
-                  {ativo && <View style={estilos.itemNavBarraAtiva} />}
-                  <Ionicons name={item.icone} size={18} color={ativo ? ERP.sidebarTextoAtivo : ERP.sidebarTexto} />
-                  <Text style={[estilos.itemNavTexto, ativo && estilos.itemNavTextoAtivo]}>{item.rotulo}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ))}
+        <SidebarNavGrupos navGrupos={navGrupos} rotaBase={rotaBase} onNavegar={onNavegar} />
       </ScrollView>
 
       <View style={estilos.perfilRodape}>
@@ -119,7 +91,15 @@ export function MobileErpShell({
 }) {
   const ehDesktop = useEhDesktop();
   const [menuAberto, setMenuAberto] = useState(false);
-  const itensPinados = navGrupos.flatMap((g) => g.itens).slice(0, 4);
+  const mensagensNaoLidas = useMensagensNaoLidas();
+  const navGruposComBadge = React.useMemo(() => {
+    if (!mensagensNaoLidas) return navGrupos;
+    return navGrupos.map((grupo) => ({
+      ...grupo,
+      itens: grupo.itens.map((item) => item.chave === 'mensagens' ? { ...item, badge: mensagensNaoLidas } : item),
+    }));
+  }, [navGrupos, mensagensNaoLidas]);
+  const itensPinados = navGruposComBadge.flatMap((g) => g.itens).slice(0, 4);
 
   if (carregando) {
     return (
@@ -133,7 +113,7 @@ export function MobileErpShell({
     <View style={estilos.appRow}>
       {ehDesktop && (
         <SidebarConteudo
-          navGrupos={navGrupos}
+          navGrupos={navGruposComBadge}
           rotaBase={rotaBase}
           nome={identidade.nome}
           fotoUrl={identidade.fotoUrl}
@@ -148,7 +128,7 @@ export function MobileErpShell({
           <TouchableOpacity style={estilos.overlay} activeOpacity={1} onPress={() => setMenuAberto(false)}>
             <TouchableOpacity activeOpacity={1} style={estilos.overlaySidebar}>
               <SidebarConteudo
-                navGrupos={navGrupos}
+                navGrupos={navGruposComBadge}
                 rotaBase={rotaBase}
                 nome={identidade.nome}
                 fotoUrl={identidade.fotoUrl}

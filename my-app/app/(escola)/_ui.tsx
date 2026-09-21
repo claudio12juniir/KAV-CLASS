@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { router, usePathname } from 'expo-router';
+import { router } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useState } from 'react';
 import {
@@ -15,7 +15,9 @@ import {
   View,
 } from 'react-native';
 import BottomTabBar from '../../components/institution/BottomTabBar';
+import SidebarNavGrupos from '../../components/institution/SidebarNavGrupos';
 import SyncLoader from '../../components/SyncLoader';
+import useMensagensNaoLidas from '../../hooks/useMensagensNaoLidas';
 import { ERP, ERP_BREAKPOINT_DESKTOP, transicaoWeb } from '../../constants/erpTheme';
 import { useEscolaContexto } from './_contexto';
 
@@ -26,12 +28,21 @@ export function useEhDesktop() {
 
 // ─── Navegação ──────────────────────────────────────────────────────────
 
-export type ItemNav = { chave: string; rota: string; rotulo: string; icone: keyof typeof Ionicons.glyphMap };
-export type GrupoNav = { titulo: string; itens: ItemNav[] };
+export type ItemNav = { chave: string; rota: string; rotulo: string; icone: keyof typeof Ionicons.glyphMap; badge?: number };
+export type GrupoNav = { titulo: string; itens: ItemNav[]; colapsavel?: boolean };
 
 export const NAV_ESCOLA: GrupoNav[] = [
-  { titulo: 'Principal', itens: [
+  { titulo: 'Principal', colapsavel: false, itens: [
     { chave: 'painel', rota: '/(escola)', rotulo: 'Painel', icone: 'grid-outline' },
+  ]},
+  { titulo: 'Social', itens: [
+    { chave: 'feed', rota: '/(escola)/feed', rotulo: 'Feed', icone: 'newspaper-outline' },
+    { chave: 'reels', rota: '/(escola)/reels', rotulo: 'Reels', icone: 'film-outline' },
+    { chave: 'mensagens', rota: '/(escola)/mensagens', rotulo: 'Mensagens', icone: 'paper-plane-outline' },
+    { chave: 'busca', rota: '/(escola)/busca', rotulo: 'Pesquisa', icone: 'search-outline' },
+    { chave: 'notificacoes', rota: '/(escola)/notificacoes', rotulo: 'Notificações', icone: 'notifications-outline' },
+    { chave: 'criar', rota: '/(escola)/criar', rotulo: 'Criar', icone: 'add-circle-outline' },
+    { chave: 'perfil-social', rota: '/(escola)/perfil-instituicao', rotulo: 'Perfil', icone: 'person-circle-outline' },
   ]},
   { titulo: 'Gestão', itens: [
     { chave: 'equipe', rota: '/(escola)/equipe', rotulo: 'Equipe', icone: 'people-outline' },
@@ -42,8 +53,7 @@ export const NAV_ESCOLA: GrupoNav[] = [
     { chave: 'chats', rota: '/(escola)/chats', rotulo: 'Chats das Turmas', icone: 'chatbubbles-outline' },
   ]},
   { titulo: 'Crescimento', itens: [
-    { chave: 'reels', rota: '/(escola)/reels', rotulo: 'Reels', icone: 'film-outline' },
-    { chave: 'captacao', rota: '/(escola)/captacao', rotulo: 'Experimentais', icone: 'megaphone-outline' },
+    { chave: 'captacao', rota: '/(escola)/captacao', rotulo: 'Captação', icone: 'megaphone-outline' },
     { chave: 'comunicados', rota: '/(escola)/comunicados', rotulo: 'Comunicados', icone: 'mail-outline' },
   ]},
   { titulo: 'Operação', itens: [
@@ -56,11 +66,18 @@ export const NAV_ESCOLA: GrupoNav[] = [
   ]},
 ];
 
-function normalizar(rota: string) { return rota.replace('/(escola)', '') || '/'; }
+function comBadgeMensagens(navGrupos: GrupoNav[], naoLidas: number): GrupoNav[] {
+  if (!naoLidas) return navGrupos;
+  return navGrupos.map((grupo) => ({
+    ...grupo,
+    itens: grupo.itens.map((item) => item.chave === 'mensagens' ? { ...item, badge: naoLidas } : item),
+  }));
+}
 
 function SidebarConteudo({ onNavegar }: { onNavegar?: () => void }) {
-  const pathname = usePathname();
   const { nomeEscola, nomeAdmin, fotoAdmin, papel } = useEscolaContexto();
+  const mensagensNaoLidas = useMensagensNaoLidas();
+  const navGrupos = React.useMemo(() => comBadgeMensagens(NAV_ESCOLA, mensagensNaoLidas), [mensagensNaoLidas]);
 
   const sair = async () => {
     await SecureStore.deleteItemAsync('kav_token');
@@ -80,31 +97,7 @@ function SidebarConteudo({ onNavegar }: { onNavegar?: () => void }) {
       </View>
 
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-        {NAV_ESCOLA.map((grupo) => (
-          <View key={grupo.titulo} style={estilos.grupoNav}>
-            <Text style={estilos.grupoTitulo}>{grupo.titulo}</Text>
-            {grupo.itens.map((item) => {
-              const ativo = normalizar(pathname) === normalizar(item.rota) ||
-                (item.chave !== 'painel' && normalizar(pathname).startsWith(normalizar(item.rota)));
-              return (
-                <Pressable
-                  key={item.chave}
-                  style={({ hovered, pressed }: any) => [
-                    estilos.itemNav,
-                    ativo && estilos.itemNavAtivo,
-                    !ativo && hovered && estilos.itemNavHover,
-                    pressed && { opacity: 0.85 },
-                  ]}
-                  onPress={() => { router.push(item.rota as any); onNavegar?.(); }}
-                >
-                  {ativo && <View style={estilos.itemNavBarraAtiva} />}
-                  <Ionicons name={item.icone} size={18} color={ativo ? ERP.sidebarTextoAtivo : ERP.sidebarTexto} />
-                  <Text style={[estilos.itemNavTexto, ativo && estilos.itemNavTextoAtivo]}>{item.rotulo}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ))}
+        <SidebarNavGrupos navGrupos={navGrupos} rotaBase="/(escola)" onNavegar={onNavegar} />
       </ScrollView>
 
       <Pressable
