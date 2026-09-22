@@ -1,4 +1,3 @@
-import * as Clipboard from 'expo-clipboard';
 import { useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useMemo, useState } from 'react';
@@ -53,7 +52,6 @@ export default function AlunosEscola() {
   const [professores, setProfessores] = useState<any[]>([]);
   const [turmas, setTurmas] = useState<any[]>([]);
   const [planos, setPlanos] = useState<any[]>([]);
-  const [codigoEscola, setCodigoEscola] = useState<string | null>(null);
 
   // Filtros (INSTITUTION Sprint 5, briefing 08/09/2026)
   const [filtroNome, setFiltroNome] = useState('');
@@ -77,16 +75,14 @@ export default function AlunosEscola() {
     try {
       const token = await SecureStore.getItemAsync('kav_token');
       const headers = { Authorization: `Bearer ${token}` };
-      const [resAlunos, resProfessores, resPerfil, resTurmas, resPlanos] = await Promise.all([
+      const [resAlunos, resProfessores, resTurmas, resPlanos] = await Promise.all([
         fetchComRetry(`${BASE_URL}/api/escola/alunos`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/professores`, { headers }),
-        fetchComRetry(`${BASE_URL}/api/escola/perfil`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/turmas`, { headers }),
         fetchComRetry(`${BASE_URL}/api/planos-pagamento`, { headers }),
       ]);
       if (resAlunos.ok) setAlunos(await resAlunos.json());
       if (resProfessores.ok) setProfessores(await resProfessores.json());
-      if (resPerfil.ok) setCodigoEscola((await resPerfil.json()).codigoConvite);
       if (resTurmas.ok) setTurmas(await resTurmas.json());
       if (resPlanos.ok) setPlanos(await resPlanos.json());
     } catch (err) {
@@ -137,12 +133,6 @@ export default function AlunosEscola() {
     }
   };
 
-  const copiarCodigoEscola = async () => {
-    if (!codigoEscola) return;
-    await Clipboard.setStringAsync(codigoEscola);
-    Alert.alert('Copiado!', 'Código da escola copiado — envie pro aluno se cadastrar sozinho.');
-  };
-
   const alunosSemProfessor = alunos.filter((a) => !a.professor);
 
   return (
@@ -151,16 +141,6 @@ export default function AlunosEscola() {
         titulo="Alunos da escola"
         subtitulo={`${alunos.length} ${alunos.length === 1 ? 'aluno matriculado' : 'alunos matriculados'}, de todos os professores`}
       />
-
-      <SectionCard titulo="Código de autoingresso da escola" subtitulo="Aluno que digitar este código no cadastro entra sem escolher professor — você atribui aqui embaixo.">
-        <TouchableOpacity
-          onPress={copiarCodigoEscola}
-          disabled={!codigoEscola}
-          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: ERP.fundo, borderWidth: 1, borderColor: ERP.borda, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10, alignSelf: 'flex-start' }}
-        >
-          <Text style={{ fontSize: 15, fontWeight: '800', color: ERP.texto, letterSpacing: 1 }}>{codigoEscola || '...'}</Text>
-        </TouchableOpacity>
-      </SectionCard>
 
       {alunosSemProfessor.length > 0 && (
         <SectionCard titulo={`${alunosSemProfessor.length} ${alunosSemProfessor.length === 1 ? 'aluno aguardando' : 'alunos aguardando'} atribuição de professor`}>

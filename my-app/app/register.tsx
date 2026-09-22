@@ -97,7 +97,7 @@ export default function RegisterScreen() {
   const [senhaVisivel, setSenhaVisivel] = useState(false);
   const [confirmSenhaVisivel, setConfirmSenhaVisivel] = useState(false);
   const [cadastroEnviado, setCadastroEnviado] = useState(false);
-  const [codigosEscolaCriada, setCodigosEscolaCriada] = useState<{ escola: string; professor: string } | null>(null);
+  const [escolaCriada, setEscolaCriada] = useState(false);
   const [codigoConvite, setCodigoConvite] = useState('');
   const [cursosSelecionados, setCursosSelecionados] = useState<string[]>([]);
   const [dropdownAberto, setDropdownAberto] = useState(false);
@@ -290,7 +290,7 @@ export default function RegisterScreen() {
         await SecureStore.setItemAsync('kav_token', dados.token);
         await SecureStore.setItemAsync('kav_papel', 'professor');
         await SecureStore.setItemAsync('kav_professor_id', String(dados.usuario.id));
-        setCodigosEscolaCriada({ escola: dados.codigoConviteEscola, professor: dados.codigoConviteProfessor });
+        setEscolaCriada(true);
       } catch {
         Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.\nVerifique sua internet e tente novamente.');
       }
@@ -368,22 +368,13 @@ export default function RegisterScreen() {
     );
   }
 
-  if (codigosEscolaCriada) {
+  if (escolaCriada) {
     return (
       <View style={styles.successContainer}>
         <Stack.Screen options={{ headerShown: false }} />
         <Ionicons name="business" size={72} color="#32BCAD" style={{ marginBottom: 20 }} />
         <Text style={styles.successTitle}>Escola criada!</Text>
-        <Text style={styles.successSubtitle}>15 dias grátis ativados. Guarde os dois códigos abaixo — você também os encontra no painel a qualquer momento.</Text>
-
-        <View style={{ width: '100%', marginTop: 16, marginBottom: 8 }}>
-          <Text style={{ fontSize: 12, fontWeight: '700', color: '#888', marginBottom: 4 }}>CÓDIGO PARA ALUNOS ENTRAREM</Text>
-          <Text style={{ fontSize: 22, fontWeight: '800', letterSpacing: 2, color: '#000' }}>{codigosEscolaCriada.escola}</Text>
-        </View>
-        <View style={{ width: '100%', marginTop: 12, marginBottom: 8 }}>
-          <Text style={{ fontSize: 12, fontWeight: '700', color: '#888', marginBottom: 4 }}>SEU CÓDIGO PESSOAL DE PROFESSOR</Text>
-          <Text style={{ fontSize: 22, fontWeight: '800', letterSpacing: 2, color: '#000' }}>{codigosEscolaCriada.professor}</Text>
-        </View>
+        <Text style={styles.successSubtitle}>15 dias grátis ativados. No painel da escola, você já pode cadastrar direto seus alunos, professores e equipe.</Text>
 
         <TouchableOpacity style={styles.button} onPress={() => router.replace('/(escola)')}>
           <Text style={styles.buttonText}>Ir para o painel da escola</Text>
@@ -441,18 +432,13 @@ export default function RegisterScreen() {
         </TouchableOpacity>
       </View>
       {papel === 'professor' && (
-        <>
-          <Text style={[styles.ajudaTexto, { marginTop: -12, marginBottom: 16 }]}>
-            Este cadastro é para quem dá aula por conta própria, sem equipe — você é dono do seu próprio espaço no Kav Class. Professor que trabalha numa escola já cadastrada deve entrar pelo convite que a escola enviar, não por aqui.
-          </Text>
-          <TouchableOpacity onPress={() => router.push('/aceitar-convite-professor')} style={{ marginTop: -12, marginBottom: 16 }}>
-            <Text style={[styles.ajudaTexto, { textDecorationLine: 'underline' }]}>Entrar com convite de escola</Text>
-          </TouchableOpacity>
-        </>
+        <Text style={[styles.ajudaTexto, { marginTop: -12, marginBottom: 16 }]}>
+          Este cadastro é para quem dá aula por conta própria, sem equipe — você é dono do seu próprio espaço no Kav Class. Professor que trabalha numa escola já cadastrada não se cadastra por aqui: peça o login (e-mail e senha) diretamente à escola.
+        </Text>
       )}
       {papel === 'escola' && (
         <Text style={[styles.ajudaTexto, { marginTop: -12, marginBottom: 16 }]}>
-          Cadastre sua escola direto pelo celular: ganha 15 dias grátis com painel de gestão, código próprio para os alunos entrarem e convite para sua equipe de professores.
+          Cadastre sua escola direto pelo celular: ganha 15 dias grátis com painel de gestão completo para cadastrar alunos, professores e equipe direto por lá.
         </Text>
       )}
 
@@ -548,7 +534,7 @@ export default function RegisterScreen() {
       {/* Código de convite (aluno) */}
       {papel === 'aluno' && (
         <>
-          <Text style={styles.label}>Código de Convite (Professor ou Escola)</Text>
+          <Text style={styles.label}>Código de Convite do Professor</Text>
           <TextInput
             style={styles.input}
             placeholder="Ex: KAV-7X9P"
@@ -558,7 +544,7 @@ export default function RegisterScreen() {
             onChangeText={setCodigoConvite}
           />
           <Text style={styles.ajudaTexto}>
-            Peça o código a quem vai te dar aula: pode ser o código pessoal do professor ou o código da escola — nesse caso, a escola escolhe o professor por você.
+            Peça o código pessoal ao professor autônomo que vai te dar aula. Se sua aula é numa escola, não use este cadastro — peça o login direto a ela.
           </Text>
         </>
       )}

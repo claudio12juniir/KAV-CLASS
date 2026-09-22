@@ -1,8 +1,9 @@
 // Fase 6 (S6.2) — trava um invariante de segurança: um Professor só entra
-// numa Escola de terceiros com um convite válido (ConviteProfessor) ou sendo
-// criado diretamente por um DONO/GESTOR daquela Escola. Nenhum payload de
-// autocadastro público deve conseguir anexar um professor a um escolaId
-// arbitrário.
+// numa Escola de terceiros sendo criado diretamente por um DONO/GESTOR
+// daquela Escola (convite por código foi removido do lado INSTITUTION —
+// segue existindo só como código pessoal do professor autônomo/SELF).
+// Nenhum payload de autocadastro público deve conseguir anexar um professor
+// a um escolaId arbitrário.
 //
 // O Prisma é mockado por inteiro — nenhum teste aqui toca o banco real. Ver
 // server.js: `module.exports = app` só conecta no banco quando executado
@@ -21,11 +22,6 @@ jest.mock('@prisma/client', () => {
     escola: {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
-      update: jest.fn(),
-    },
-    conviteProfessor: {
-      findUnique: jest.fn(),
-      create: jest.fn(),
       update: jest.fn(),
     },
     aluno: {
@@ -84,80 +80,6 @@ describe('POST /api/professores/cadastro — autocadastro público de professor'
     expect(dadosCriados.escola).toEqual({ create: { nome: 'Fulano de Tal' } });
     expect(dadosCriados.escolaId).toBeUndefined();
     expect(JSON.stringify(dadosCriados)).not.toContain(escolaAlheiaId);
-  });
-});
-
-describe('POST /api/escola/convites/aceitar — professor só entra em Escola existente com convite válido', () => {
-  test('rejeita código de convite inexistente e não cria professor nenhum', async () => {
-    prismaMock.conviteProfessor.findUnique.mockResolvedValue(null);
-
-    const resposta = await request(app)
-      .post('/api/escola/convites/aceitar')
-      .send({ nome: 'Invasor', email: 'invasor@teste.com', senha: 'senha123', codigo: 'CODIGO-INVENTADO' });
-
-    expect(resposta.status).toBe(400);
-    expect(prismaMock.professor.create).not.toHaveBeenCalled();
-  });
-
-  test('rejeita quando o e-mail informado não é o mesmo do convite', async () => {
-    prismaMock.conviteProfessor.findUnique.mockResolvedValue({
-      id: 'convite-1',
-      email: 'convidado@escola.com',
-      token: 'CODIGO-VALIDO',
-      papel: 'PROFESSOR',
-      escolaId: 'escola-legitima-id',
-      aceitoEm: null,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-
-    const resposta = await request(app)
-      .post('/api/escola/convites/aceitar')
-      .send({ nome: 'Invasor', email: 'outro@teste.com', senha: 'senha123', codigo: 'CODIGO-VALIDO' });
-
-    expect(resposta.status).toBe(400);
-    expect(prismaMock.professor.create).not.toHaveBeenCalled();
-  });
-
-  test('rejeita convite expirado mesmo com e-mail e código corretos', async () => {
-    prismaMock.conviteProfessor.findUnique.mockResolvedValue({
-      id: 'convite-2',
-      email: 'convidado@escola.com',
-      token: 'CODIGO-VENCIDO',
-      papel: 'PROFESSOR',
-      escolaId: 'escola-legitima-id',
-      aceitoEm: null,
-      expiresAt: new Date(Date.now() - 60_000), // já expirou
-    });
-
-    const resposta = await request(app)
-      .post('/api/escola/convites/aceitar')
-      .send({ nome: 'Convidado', email: 'convidado@escola.com', senha: 'senha123', codigo: 'CODIGO-VENCIDO' });
-
-    expect(resposta.status).toBe(400);
-    expect(prismaMock.professor.create).not.toHaveBeenCalled();
-  });
-
-  test('aceita convite válido e vincula o professor exatamente à Escola do convite', async () => {
-    prismaMock.conviteProfessor.findUnique.mockResolvedValue({
-      id: 'convite-3',
-      email: 'convidado@escola.com',
-      token: 'CODIGO-OK',
-      papel: 'PROFESSOR',
-      escolaId: 'escola-legitima-id',
-      aceitoEm: null,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-    prismaMock.professor.findFirst.mockResolvedValue(null);
-    prismaMock.professor.create.mockResolvedValue({ id: 'prof-novo', nome: 'Convidado' });
-    prismaMock.conviteProfessor.update.mockResolvedValue({});
-
-    const resposta = await request(app)
-      .post('/api/escola/convites/aceitar')
-      .send({ nome: 'Convidado', email: 'convidado@escola.com', senha: 'senha123', codigo: 'CODIGO-OK' });
-
-    expect(resposta.status).toBe(201);
-    const dadosCriados = prismaMock.professor.create.mock.calls[0][0].data;
-    expect(dadosCriados.escolaId).toBe('escola-legitima-id');
   });
 });
 

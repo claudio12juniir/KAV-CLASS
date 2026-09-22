@@ -1,4 +1,3 @@
-import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useState } from 'react';
@@ -7,7 +6,7 @@ import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
 import { useEscolaContexto } from './_contexto';
-import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, PageHeader, SectionCard, SubAbasSimples, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, PageHeader, SectionCard, Tabela } from './_ui';
 
 const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
@@ -88,7 +87,6 @@ export default function EquipeEscola() {
   const [professores, setProfessores] = useState<any[]>([]);
 
   const [modalAberto, setModalAberto] = useState(false);
-  const [modo, setModo] = useState<'criar' | 'convite'>('criar');
   const [etapa, setEtapa] = useState<'dados' | 'grade'>('dados');
   const [professorCriadoId, setProfessorCriadoId] = useState<string | null>(null);
 
@@ -105,7 +103,6 @@ export default function EquipeEscola() {
   const [papelNovo, setPapelNovo] = useState<'PROFESSOR' | 'GESTOR'>('PROFESSOR');
   const [slots, setSlots] = useState<Slot[]>([]);
   const [salvando, setSalvando] = useState(false);
-  const [ultimoCodigo, setUltimoCodigo] = useState<string | null>(null);
 
   // Modais de ação por professor (INSTITUTION Sprint 4, briefing 08/09/2026)
   const [modalAlunos, setModalAlunos] = useState<any | null>(null);
@@ -144,9 +141,9 @@ export default function EquipeEscola() {
   const limparForm = () => {
     setNome(''); setEmail(''); setSenha(''); setTelefone(''); setContatoEmergencia('');
     setDataNascimento(''); setDataPagamento(''); setContratoUrl(''); setCursos(''); setFotoUrl('');
-    setPapelNovo('PROFESSOR'); setUltimoCodigo(null); setEtapa('dados'); setProfessorCriadoId(null); setSlots([]);
+    setPapelNovo('PROFESSOR'); setEtapa('dados'); setProfessorCriadoId(null); setSlots([]);
   };
-  const abrirModal = () => { limparForm(); setModo('criar'); setModalAberto(true); };
+  const abrirModal = () => { limparForm(); setModalAberto(true); };
 
   const criarProfessor = async () => {
     if (!nome.trim() || !email.trim() || senha.length < 6) {
@@ -206,37 +203,6 @@ export default function EquipeEscola() {
     } finally {
       setSalvando(false);
     }
-  };
-
-  const enviarConvite = async () => {
-    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!re.test(email.trim())) {
-      Alert.alert('Atenção', 'Informe um e-mail válido.');
-      return;
-    }
-    setSalvando(true);
-    setUltimoCodigo(null);
-    try {
-      const token = await SecureStore.getItemAsync('kav_token');
-      const res = await fetchComRetry(`${BASE_URL}/api/escola/convites`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim().toLowerCase(), papel: papelNovo }),
-      });
-      const dados = await res.json();
-      if (res.ok) { setUltimoCodigo(dados.codigo); carregarDados(); }
-      else Alert.alert('Não foi possível convidar', dados.erro || 'Tente novamente.');
-    } catch {
-      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
-    } finally {
-      setSalvando(false);
-    }
-  };
-
-  const copiarCodigo = async () => {
-    if (!ultimoCodigo) return;
-    await Clipboard.setStringAsync(ultimoCodigo);
-    Alert.alert('Copiado!', 'Código do convite copiado.');
   };
 
   const abrirModalAlunos = async (professor: any) => {
@@ -495,28 +461,16 @@ export default function EquipeEscola() {
       >
         {etapa === 'dados' ? (
           <>
-            <SubAbasSimples
-              opcoes={[{ chave: 'criar', rotulo: 'Criar login direto' }, { chave: 'convite', rotulo: 'Convidar por e-mail' }]}
-              ativa={modo}
-              onMudar={(m) => { setModo(m); setUltimoCodigo(null); }}
-            />
-
-            {modo === 'criar' && (
-              <Campo label="Nome completo" value={nome} onChangeText={setNome} placeholder="Nome do professor" />
-            )}
+            <Campo label="Nome completo" value={nome} onChangeText={setNome} placeholder="Nome do professor" />
             <Campo label="E-mail" value={email} onChangeText={setEmail} placeholder="email@exemplo.com" autoCapitalize="none" keyboardType="email-address" />
-            {modo === 'criar' && (
-              <>
-                <Campo label="Senha de acesso" value={senha} onChangeText={setSenha} placeholder="Mínimo 6 caracteres" secureTextEntry />
-                <Campo label="Número de contato" value={telefone} onChangeText={setTelefone} placeholder="(11) 90000-0000" keyboardType="phone-pad" />
-                <Campo label="Contato de emergência" value={contatoEmergencia} onChangeText={setContatoEmergencia} placeholder="Nome e telefone" />
-                <Campo label="Data de nascimento" value={dataNascimento} onChangeText={setDataNascimento} placeholder="AAAA-MM-DD" />
-                <Campo label="Dia do mês em que a escola paga" value={dataPagamento} onChangeText={setDataPagamento} placeholder="Ex.: 5" keyboardType="number-pad" />
-                <Campo label="URL do contrato (anexo)" value={contratoUrl} onChangeText={setContratoUrl} placeholder="https://..." autoCapitalize="none" />
-                <Campo label="Cursos que leciona" value={cursos} onChangeText={setCursos} placeholder="Separe por vírgula" />
-                <Campo label="URL da foto" value={fotoUrl} onChangeText={setFotoUrl} placeholder="https://..." autoCapitalize="none" />
-              </>
-            )}
+            <Campo label="Senha de acesso" value={senha} onChangeText={setSenha} placeholder="Mínimo 6 caracteres" secureTextEntry />
+            <Campo label="Número de contato" value={telefone} onChangeText={setTelefone} placeholder="(11) 90000-0000" keyboardType="phone-pad" />
+            <Campo label="Contato de emergência" value={contatoEmergencia} onChangeText={setContatoEmergencia} placeholder="Nome e telefone" />
+            <Campo label="Data de nascimento" value={dataNascimento} onChangeText={setDataNascimento} placeholder="AAAA-MM-DD" />
+            <Campo label="Dia do mês em que a escola paga" value={dataPagamento} onChangeText={setDataPagamento} placeholder="Ex.: 5" keyboardType="number-pad" />
+            <Campo label="URL do contrato (anexo)" value={contratoUrl} onChangeText={setContratoUrl} placeholder="https://..." autoCapitalize="none" />
+            <Campo label="Cursos que leciona" value={cursos} onChangeText={setCursos} placeholder="Separe por vírgula" />
+            <Campo label="URL da foto" value={fotoUrl} onChangeText={setFotoUrl} placeholder="https://..." autoCapitalize="none" />
 
             <View style={{ flexDirection: 'row', gap: 8, marginBottom: 18 }}>
               {(['PROFESSOR', 'GESTOR'] as const).map((p) => (
@@ -529,16 +483,9 @@ export default function EquipeEscola() {
               ))}
             </View>
 
-            {ultimoCodigo && (
-              <SectionCard style={{ backgroundColor: ERP.acentoSoft, borderColor: ERP.acento, marginBottom: 16, alignItems: 'center' }}>
-                <Text style={{ fontSize: 11, fontWeight: '700', color: ERP.acentoForte, marginBottom: 4 }}>CÓDIGO DO CONVITE</Text>
-                <Text style={{ fontSize: 20, fontWeight: '800', color: ERP.texto, letterSpacing: 2 }} onPress={copiarCodigo}>{ultimoCodigo}</Text>
-              </SectionCard>
-            )}
-
             <Botao
-              texto={modo === 'criar' ? 'Avançar para a grade de horários' : 'Enviar convite'}
-              onPress={modo === 'criar' ? criarProfessor : enviarConvite}
+              texto="Avançar para a grade de horários"
+              onPress={criarProfessor}
               carregando={salvando}
             />
           </>

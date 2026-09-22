@@ -993,11 +993,10 @@ app.post('/api/escola/cadastro', async (req, res) => {
           create: {
             nome: nomeEscola.trim(),
             pacote: 'PACOTE_ESCOLA',
-            codigoConvite: gerarCodigoConvite(),
           },
         },
       },
-      include: { escola: { select: { codigoConvite: true, nome: true } } },
+      include: { escola: { select: { nome: true } } },
     });
 
     const token = jwt.sign({ id: novoDono.id, papel: 'professor', contaId: contaId || undefined }, SEGREDO_JWT, { expiresIn: '7d' });
@@ -1005,8 +1004,6 @@ app.post('/api/escola/cadastro', async (req, res) => {
       mensagem: 'Escola criada! Teste grátis de 15 dias ativado.',
       token,
       usuario: { id: novoDono.id, nome: novoDono.nome, papel: 'professor' },
-      codigoConviteProfessor: novoDono.codigoConvite,
-      codigoConviteEscola: novoDono.escola.codigoConvite,
       nomeEscola: novoDono.escola.nome,
     });
   } catch (err) {
@@ -1041,16 +1038,18 @@ app.post('/api/alunos/cadastro', async (req, res) => {
 
     const emailNorm = email.toLowerCase().trim();
 
-    // O código pode ser de um Professor específico (fluxo de sempre — o
-    // aluno já sabe quem vai dar aula) ou de uma Escola (S6.1 — o aluno só
-    // sabe o nome da escola, entra sem professor e um DONO/GESTOR atribui
-    // depois). Testa Professor primeiro por ser o caso majoritário hoje.
+    // Código de convite é exclusivo do professor autônomo (SELF) — aluno de
+    // Escola (INSTITUTION) é cadastrado direto por DONO/GESTOR/SECRETARIA em
+    // /api/escola/alunos/criar, sem código. Por isso o filtro exige
+    // pacote PACOTE_PROFESSOR: mesmo um código válido de professor
+    // institucional não deve funcionar aqui.
     const codigoNorm = codigoConvite.toUpperCase().trim();
-    const professor = await prisma.professor.findFirst({ where: { codigoConvite: codigoNorm } });
-    const escolaPorCodigo = professor ? null : await prisma.escola.findFirst({ where: { codigoConvite: codigoNorm } });
-    if (!professor && !escolaPorCodigo) return res.status(404).json({ erro: 'Código de convite inválido.' });
+    const professor = await prisma.professor.findFirst({
+      where: { codigoConvite: codigoNorm, escola: { pacote: 'PACOTE_PROFESSOR' } },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Código de convite inválido.' });
 
-    const escolaIdAlvo = professor ? professor.escolaId : escolaPorCodigo.id;
+    const escolaIdAlvo = professor.escolaId;
 
     if (await prisma.aluno.findFirst({ where: { email: emailNorm, escolaId: escolaIdAlvo } })) {
       return res.status(400).json({ erro: 'E-mail já em uso nesta Escola.' });
@@ -1117,9 +1116,7 @@ app.post('/api/alunos/cadastro', async (req, res) => {
           email: emailNorm,
           senha: senhaHash,
           contaId,
-          // Sem professor definido quando o código é da Escola (S6.1) — fica
-          // pendente de atribuição por um DONO/GESTOR, não de um professor.
-          professorId: professor ? professor.id : null,
+          professorId: professor.id,
           escolaId: escolaIdAlvo,
           status: 'PENDENTE',
           fotoUrl: fotoUrl || null,
@@ -1128,21 +1125,6 @@ app.post('/api/alunos/cadastro', async (req, res) => {
         },
       });
     });
-
-    // Sem professor definido (código da Escola, S6.1) — avisa DONO/GESTOR
-    // que tem gente esperando atribuição, senão só descobrem abrindo a tela
-    // manualmente (auditoria INSTITUTION, 11/09/2026). Tolerante a falha
-    // por item, mesmo padrão já usado no mural/comunicados.
-    if (!professor) {
-      prisma.professor.findMany({
-        where: { escolaId: escolaIdAlvo, papel: { in: ['DONO', 'GESTOR'] }, ativoNaEscola: true },
-        select: { expoPushToken: true },
-      }).then((gestores) => Promise.all(
-        gestores.filter((g) => g.expoPushToken).map((g) => enviarPushNotificacao(
-          g.expoPushToken, 'Novo aluno pendente', `${nome} se cadastrou e está esperando atribuição de professor.`, { tipo: 'NOVO_ALUNO' }
-        ))
-      )).catch((err) => console.error('[Push] Falha ao notificar novo aluno pendente:', err.message));
-    }
 
     res.status(201).json({ mensagem: 'Aluno cadastrado!', aluno: { id: novoAluno.id, nome: novoAluno.nome } });
   } catch (err) {
@@ -2289,14 +2271,15 @@ app.post('/api/auth/google/cadastrar', async (req, res) => {
       });
     } else {
       if (!codigoConvite) return res.status(400).json({ erro: 'codigoConvite é obrigatório.' });
-      // Mesmo padrão de /api/alunos/cadastro (S6.1): o código pode ser de um
-      // Professor específico ou de uma Escola — nesse caso o aluno entra
-      // sem professor atribuído, pendente de um DONO/GESTOR designar um.
+      // Mesmo padrão de /api/alunos/cadastro: código é exclusivo do
+      // professor autônomo (SELF) — aluno de Escola entra por cadastro
+      // direto de um DONO/GESTOR/SECRETARIA, não por código.
       const codigoNorm = codigoConvite.toUpperCase().trim();
-      const professor = await prisma.professor.findFirst({ where: { codigoConvite: codigoNorm } });
-      const escolaPorCodigo = professor ? null : await prisma.escola.findFirst({ where: { codigoConvite: codigoNorm } });
-      if (!professor && !escolaPorCodigo) return res.status(404).json({ erro: 'Código de convite inválido.' });
-      const escolaIdAlvo = professor ? professor.escolaId : escolaPorCodigo.id;
+      const professor = await prisma.professor.findFirst({
+        where: { codigoConvite: codigoNorm, escola: { pacote: 'PACOTE_PROFESSOR' } },
+      });
+      if (!professor) return res.status(404).json({ erro: 'Código de convite inválido.' });
+      const escolaIdAlvo = professor.escolaId;
 
       const menorDeIdade = calcularIdadeAnos(dataNasc) < 18;
       if (menorDeIdade && !responsavel?.nome?.trim()) {
@@ -2327,7 +2310,7 @@ app.post('/api/auth/google/cadastrar', async (req, res) => {
             fotoUrl: payload.picture || null,
             googleId,
             contaId,
-            professorId: professor ? professor.id : null,
+            professorId: professor.id,
             escolaId: escolaIdAlvo,
             status: 'PENDENTE',
             responsavelId: respCriado.id,
@@ -9131,135 +9114,6 @@ async function exigirPapelNaEscola(req, res, papeisPermitidos, chaveModulo) {
   return professor;
 }
 
-async function enviarEmailConviteProfessor(destinatario, escolaNome, codigo) {
-  // Checa antes de carregar o módulo — sem isso, um require() que trava
-  // (visto em sandbox local) prende a chamada mesmo sem credencial nenhuma
-  // configurada, quando o certo é falhar rápido e claro.
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-    throw new Error('Variáveis EMAIL_USER e EMAIL_PASS não configuradas no servidor.');
-  }
-  const nodemailer = require('nodemailer');
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-    // Sem isso, uma conexão SMTP que trava (rede bloqueando a porta, Gmail
-    // fora do ar) prende essa chamada indefinidamente — e com ela, quem
-    // estiver esperando a resposta HTTP.
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 10000,
-  });
-  await transporter.sendMail({
-    from: `"KAV Class" <${process.env.EMAIL_USER}>`,
-    to: destinatario,
-    subject: `Convite para dar aula em ${escolaNome} – KAV Class`,
-    html: `<h2>Você foi convidado</h2><p><b>${escolaNome}</b> te convidou pra dar aula pelo KAV Class.</p><p>No app, toque em "Entrar com convite de escola" e use o código abaixo (válido por 7 dias):</p><h1 style="letter-spacing:6px">${codigo}</h1>`,
-  });
-}
-
-// POST /api/escola/convites — DONO ou GESTOR convida um professor pra
-// própria Escola. Só existe pra quem já está no Pacote Escola: no Pacote
-// Professor não há conceito de "convidar outro professor pra mesma escola".
-app.post('/api/escola/convites', async (req, res) => {
-  try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
-    if (!professor) return;
-
-    if (professor.escola.pacote !== 'PACOTE_ESCOLA') {
-      return res.status(403).json({
-        erro: 'Convidar outro professor é um recurso do Pacote Escola. Fale com a gente pra migrar de plano.',
-      });
-    }
-
-    const { email, papel } = req.body;
-    if (!email) return res.status(400).json({ erro: 'email é obrigatório.' });
-    const papelConvite = papel === 'GESTOR' ? 'GESTOR' : 'PROFESSOR'; // nunca cria DONO por convite
-
-    const emailNorm = email.toLowerCase().trim();
-    if (await prisma.professor.findFirst({ where: { email: emailNorm } }))
-      return res.status(400).json({ erro: 'Já existe uma conta de professor com esse e-mail.' });
-
-    const codigo = gerarCodigoConvite();
-    await prisma.conviteProfessor.create({
-      data: {
-        email: emailNorm,
-        token: codigo,
-        papel: papelConvite,
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-        escolaId: professor.escolaId,
-      },
-    });
-
-    let emailEnviado = true;
-    try {
-      await enviarEmailConviteProfessor(emailNorm, professor.escola.nome, codigo);
-    } catch (err) {
-      emailEnviado = false; // sem EMAIL_USER/PASS configurado, por exemplo — o código já foi gerado, quem convidou compartilha na mão
-      console.error('[Convite] Falha ao enviar e-mail (código segue válido):', err.message);
-    }
-
-    res.status(201).json({
-      mensagem: emailEnviado ? 'Convite enviado por e-mail.' : 'Convite criado. Compartilhe o código manualmente — o e-mail não pôde ser enviado.',
-      codigo,
-      emailEnviado,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro ao criar convite.' });
-  }
-});
-
-// POST /api/escola/convites/aceitar — mesmo padrão de /api/alunos/cadastro
-// (código digitado no próprio formulário de cadastro), só que pra um
-// Professor entrar numa Escola já existente em vez de criar a sua própria.
-app.post('/api/escola/convites/aceitar', async (req, res) => {
-  try {
-    const { nome, email, senha, telefone, cursos, fotoUrl, codigo } = req.body;
-    if (!nome || !email || !senha || !codigo)
-      return res.status(400).json({ erro: 'nome, email, senha e codigo são obrigatórios.' });
-
-    const emailNorm = email.toLowerCase().trim();
-    const convite = await prisma.conviteProfessor.findUnique({ where: { token: codigo.toUpperCase().trim() } });
-    if (!convite || convite.aceitoEm || convite.expiresAt < new Date())
-      return res.status(400).json({ erro: 'Código de convite inválido ou expirado.' });
-    if (convite.email !== emailNorm)
-      return res.status(400).json({ erro: 'Esse convite foi feito para outro e-mail.' });
-
-    if (await prisma.professor.findFirst({ where: { email: emailNorm } }))
-      return res.status(400).json({ erro: 'E-mail já em uso.' });
-
-    const salt = await bcrypt.genSalt(10);
-    const senhaHash = await bcrypt.hash(senha, salt);
-    const contaId = await sincronizarConta(emailNorm, { senha: senhaHash, nome, fotoUrl: fotoUrl || null });
-    const novoProfessor = await prisma.professor.create({
-      data: {
-        nome,
-        email: emailNorm,
-        telefone: telefone || null,
-        senha: senhaHash,
-        contaId,
-        cursos: Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []),
-        codigoConvite: gerarCodigoConvite(), // esse aqui é o convite dele pros próprios alunos, não tem relação com o convite de escola
-        fotoUrl: fotoUrl || null,
-        assinaturaStatus: 'ATIVO', // faz parte de uma Escola já paga — não entra no fluxo de teste grátis individual
-        escolaId: convite.escolaId,
-        papel: convite.papel,
-      },
-    });
-    await prisma.conviteProfessor.update({ where: { id: convite.id }, data: { aceitoEm: new Date() } });
-
-    const token = jwt.sign({ id: novoProfessor.id, papel: 'professor', contaId: contaId || undefined }, SEGREDO_JWT, { expiresIn: '7d' });
-    res.status(201).json({
-      mensagem: 'Bem-vindo à equipe!',
-      token,
-      usuario: { id: novoProfessor.id, nome: novoProfessor.nome, papel: 'professor' },
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ erro: 'Erro ao aceitar convite.' });
-  }
-});
-
 // GET /api/escola/professores — DONO/GESTOR vê todo mundo da própria Escola.
 app.get('/api/escola/professores', async (req, res) => {
   try {
@@ -9318,26 +9172,16 @@ app.get('/api/escola/alunos', async (req, res) => {
   }
 });
 
-// GET /api/escola/perfil — dados da Escola pro painel do DONO/GESTOR,
-// incluindo o codigoConvite (S6.1) que o aluno usa pra se autocadastrar sem
-// precisar saber o código de um Professor específico. Gerado sob demanda,
-// mesmo padrão preguiçoso do codigoConvite de Professor em /api/dashboard.
+// GET /api/escola/perfil — dados da Escola pro painel do DONO/GESTOR.
 app.get('/api/escola/perfil', async (req, res) => {
   try {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'configuracoes');
     if (!professor) return;
 
-    let codigoConvite = professor.escola.codigoConvite;
-    if (!codigoConvite) {
-      codigoConvite = gerarCodigoConvite();
-      await prisma.escola.update({ where: { id: professor.escolaId }, data: { codigoConvite } });
-    }
-
     res.json({
       id: professor.escola.id,
       nome: professor.escola.nome,
       pacote: professor.escola.pacote,
-      codigoConvite,
       logoUrl: professor.escola.logoUrl,
       email: professor.escola.email,
       horarioFuncionamento: professor.escola.horarioFuncionamento,

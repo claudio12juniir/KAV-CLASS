@@ -318,10 +318,6 @@ export default function LoginScreen() {
         Já tem login passado pela sua escola? Use o mesmo e-mail e senha que ela te deu — não precisa se cadastrar.
       </Text>
 
-      <TouchableOpacity onPress={() => router.push('/aceitar-convite-professor')}>
-        <Text style={styles.textoEsqueceuCentro}>Entrar com convite de escola</Text>
-      </TouchableOpacity>
-
       <View style={styles.rodapeLinha} />
 
       <Link href="/register" asChild>
@@ -551,13 +547,6 @@ const styles = StyleSheet.create({
     color: CORES.secundaria,
     fontSize: 13,
     fontWeight: '500',
-  },
-  textoEsqueceuCentro: {
-    color: CORES.secundaria,
-    fontSize: 13,
-    fontWeight: '500',
-    textAlign: 'center',
-    marginTop: 14,
   },
   avisoInstitucional: {
     color: CORES.secundaria,
