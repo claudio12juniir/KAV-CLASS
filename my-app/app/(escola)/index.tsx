@@ -16,6 +16,13 @@ type AulaGrade = {
   presencaProfessorEm: string | null;
   presencaAlunoEm: string | null;
   decisaoReposicao: boolean | null;
+  // Repasse de aula (INSTITUTION Sprint 12, briefing 22/09/2026) — quando
+  // preenchido, é quem efetivamente leciona esta aula (não o dono da
+  // grade); a folha de pagamento paga este professor por ela, não o outro.
+  professorSubstituto: { id: string; nome: string } | null;
+  // Confirmação de presença do aluno 24h antes (Sprint 13) — null = ainda
+  // não pediu/não respondeu; true/false = respondeu.
+  confirmacaoAlunoResposta: boolean | null;
   // Experimentais aparecem na mesma grade (INSTITUTION Sprint 11, briefing
   // 08/09/2026) — ações de reposição/override manual não fazem sentido
   // pra elas (Lead ainda não é Aluno, não tem Matricula/senha), por isso
@@ -23,13 +30,13 @@ type AulaGrade = {
   experimental?: boolean;
 };
 type ProfessorGrade = { professorId: string; nome: string; aulas: AulaGrade[] };
+type ProfessorResumo = { id: string; nome: string };
 
-// Sem campo de "estoque mínimo" configurável no schema ainda (Produto só
-// tem quantidadeEstoque — ver kav-class-backend/prisma/schema.prisma) —
-// limiar fixo por ora, pra não depender de migração pra entregar o alerta
-// já pedido. Se o valor não servir pra alguma escola, dá pra virar campo
-// por produto depois sem quebrar nada aqui.
-const LIMIAR_ESTOQUE_BAIXO = 5;
+// Produto.estoqueMinimo (INSTITUTION Sprint 18, briefing 22/09/2026) agora
+// é configurável por produto — este limiar só entra como fallback pra
+// produto que nunca teve um mínimo definido (nullable de propósito).
+const LIMIAR_ESTOQUE_BAIXO_PADRAO = 5;
+const estaComEstoqueBaixo = (p: any) => p.quantidadeEstoque <= (p.estoqueMinimo ?? LIMIAR_ESTOQUE_BAIXO_PADRAO);
 
 function horaCurta(iso: string) {
   return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -40,14 +47,15 @@ function horaCurta(iso: string) {
 // fluxo de aprovação de Reposicao) e pode intervir manualmente na presença
 // quando professor ou aluno não conseguiram usar o celular (exige a senha
 // de quem está sendo marcado).
-function ModalGradeProfessor({ professor, onFechar, aoAtualizar }: {
-  professor: ProfessorGrade | null; onFechar: () => void; aoAtualizar: () => void;
+function ModalGradeProfessor({ professor, todosProfessores, onFechar, aoAtualizar }: {
+  professor: ProfessorGrade | null; todosProfessores: ProfessorResumo[]; onFechar: () => void; aoAtualizar: () => void;
 }) {
   const [overrideAulaId, setOverrideAulaId] = useState<string | null>(null);
   const [overrideAlvo, setOverrideAlvo] = useState<'PROFESSOR' | 'ALUNO'>('ALUNO');
   const [senha, setSenha] = useState('');
   const [motivo, setMotivo] = useState('');
   const [enviando, setEnviando] = useState(false);
+  const [substituindoAulaId, setSubstituindoAulaId] = useState<string | null>(null);
 
   const chamarApi = async (path: string, body: any) => {
     const token = await SecureStore.getItemAsync('kav_token');
@@ -62,6 +70,15 @@ function ModalGradeProfessor({ professor, onFechar, aoAtualizar }: {
     const res = await chamarApi(`/api/aulas/${aula.id}/reposicao`, { decisaoReposicao: !aula.decisaoReposicao });
     if (res.ok) aoAtualizar();
     else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível atualizar.');
+  };
+
+  // Repasse de aula (Sprint 12): marcar/remover quem efetivamente leciona
+  // esta aula específica, quando é outro professor da escola. professorId
+  // continua sendo o dono da grade — só o valor na folha muda de mão.
+  const marcarSubstituto = async (aula: AulaGrade, professorSubstitutoId: string | null) => {
+    const res = await chamarApi(`/api/aulas/${aula.id}/substituto`, { professorSubstitutoId });
+    if (res.ok) { setSubstituindoAulaId(null); aoAtualizar(); }
+    else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível registrar a substituição.');
   };
 
   const abrirOverride = (aula: AulaGrade) => {
@@ -101,7 +118,28 @@ function ModalGradeProfessor({ professor, onFechar, aoAtualizar }: {
                 <Badge texto={aula.presencaAlunoEm ? 'Aluno ok' : 'Aluno pendente'} tom={aula.presencaAlunoEm ? 'sucesso' : 'aviso'} />
                 {aula.decisaoReposicao ? <Badge texto="Reposição" tom="info" /> : null}
                 {aula.experimental ? <Badge texto="Experimental" tom="aviso" /> : null}
+                {aula.professorSubstituto ? <Badge texto={`Lecionada por ${aula.professorSubstituto.nome}`} tom="info" /> : null}
+                {aula.confirmacaoAlunoResposta === false ? <Badge texto="Aluno não confirmou" tom="alerta" /> : null}
+                {aula.confirmacaoAlunoResposta === true ? <Badge texto="Aluno confirmou" tom="sucesso" /> : null}
               </View>
+              {!aula.experimental && substituindoAulaId === aula.id && (
+                <View style={estilos.overrideBox}>
+                  <Text style={{ color: ERP.textoSecundario, fontSize: 12, marginBottom: 8 }}>
+                    Qual professor efetivamente vai lecionar esta aula?
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                    {todosProfessores.filter((p) => p.id !== professor.professorId).map((p) => (
+                      <Botao key={p.id} texto={p.nome} variante={aula.professorSubstituto?.id === p.id ? 'primario' : 'secundario'} onPress={() => marcarSubstituto(aula, p.id)} />
+                    ))}
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    {aula.professorSubstituto && (
+                      <Botao texto="Remover substituição" variante="secundario" onPress={() => marcarSubstituto(aula, null)} />
+                    )}
+                    <Botao texto="Fechar" variante="secundario" onPress={() => setSubstituindoAulaId(null)} />
+                  </View>
+                </View>
+              )}
               {!aula.experimental && overrideAulaId === aula.id && (
                 <View style={estilos.overrideBox}>
                   <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
@@ -123,6 +161,9 @@ function ModalGradeProfessor({ professor, onFechar, aoAtualizar }: {
                 {(!aula.presencaProfessorEm || !aula.presencaAlunoEm) && overrideAulaId !== aula.id && (
                   <Botao texto="Marcar presença manual" variante="secundario" onPress={() => abrirOverride(aula)} />
                 )}
+                {substituindoAulaId !== aula.id && (
+                  <Botao texto={aula.professorSubstituto ? 'Trocar substituição' : 'Outro professor lecionou'} variante="secundario" onPress={() => setSubstituindoAulaId(aula.id)} />
+                )}
               </View>
             )}
           </View>
@@ -138,6 +179,7 @@ export default function PainelEscola() {
   const [carregando, setCarregando] = useState(true);
 
   const [totalProfessores, setTotalProfessores] = useState(0);
+  const [todosProfessores, setTodosProfessores] = useState<ProfessorResumo[]>([]);
   const [totalAlunos, setTotalAlunos] = useState(0);
   const [inadimplentes, setInadimplentes] = useState<any[]>([]);
   const [tarefasPendentes, setTarefasPendentes] = useState<any[]>([]);
@@ -175,6 +217,7 @@ export default function PainelEscola() {
       if (resProfessores.ok) {
         const professores = await resProfessores.json();
         setTotalProfessores(professores.length);
+        setTodosProfessores(professores.map((p: any) => ({ id: p.id, nome: p.nome })));
         const hoje = new Date();
         setAniversariantes(professores.filter((p: any) => {
           if (!p.dataNascimento) return false;
@@ -194,7 +237,7 @@ export default function PainelEscola() {
       if (resGradeHoje.ok) setGradeHoje(await resGradeHoje.json());
       if (resProdutos.ok) {
         const produtos = await resProdutos.json();
-        setEstoqueBaixo(produtos.filter((p: any) => p.ativo !== false && p.quantidadeEstoque <= LIMIAR_ESTOQUE_BAIXO));
+        setEstoqueBaixo(produtos.filter((p: any) => p.ativo !== false && estaComEstoqueBaixo(p)));
       }
     } catch (err) {
       console.error('Erro ao carregar Painel:', err);
@@ -357,7 +400,7 @@ export default function PainelEscola() {
           )}
         </SectionCard>
 
-        <SectionCard titulo="Estoque baixo" subtitulo={`Itens com ${LIMIAR_ESTOQUE_BAIXO} unidades ou menos`} style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
+        <SectionCard titulo="Estoque baixo" subtitulo="Abaixo do mínimo configurado (ou 5 un., quando não configurado)" style={{ flex: 1, minWidth: ehDesktop ? 340 : undefined }}>
           {estoqueBaixo.length === 0 ? (
             <EstadoVazio icone="checkmark-circle-outline" texto="Nenhum item acabando." />
           ) : (
@@ -423,6 +466,7 @@ export default function PainelEscola() {
 
       <ModalGradeProfessor
         professor={professorSelecionado}
+        todosProfessores={todosProfessores}
         onFechar={() => setProfessorSelecionado(null)}
         aoAtualizar={() => { carregarDados(); setProfessorSelecionado(null); }}
       />

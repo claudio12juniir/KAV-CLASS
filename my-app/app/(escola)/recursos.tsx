@@ -26,6 +26,10 @@ export default function RecursosEscola() {
 
   const [modalProdutoAberto, setModalProdutoAberto] = useState(false);
   const [nomeProduto, setNomeProduto] = useState('');
+  const [categoriaProduto, setCategoriaProduto] = useState('');
+  const [valorCustoProduto, setValorCustoProduto] = useState('');
+  const [valorVendaProduto, setValorVendaProduto] = useState('');
+  const [estoqueMinimoProduto, setEstoqueMinimoProduto] = useState('');
   const [criandoProduto, setCriandoProduto] = useState(false);
 
   const [movProdutoId, setMovProdutoId] = useState<string | null>(null);
@@ -88,10 +92,20 @@ export default function RecursosEscola() {
       const token = await SecureStore.getItemAsync('kav_token');
       const res = await fetchComRetry(`${BASE_URL}/api/produtos`, {
         method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nome: nomeProduto.trim() }),
+        body: JSON.stringify({
+          nome: nomeProduto.trim(),
+          categoria: categoriaProduto.trim() || undefined,
+          valorCusto: valorCustoProduto ? Number(valorCustoProduto.replace(',', '.')) : undefined,
+          valorVenda: valorVendaProduto ? Number(valorVendaProduto.replace(',', '.')) : undefined,
+          estoqueMinimo: estoqueMinimoProduto ? Number(estoqueMinimoProduto) : undefined,
+        }),
       });
       const dados = await res.json();
-      if (res.ok) { setModalProdutoAberto(false); setNomeProduto(''); carregarDados(); }
+      if (res.ok) {
+        setModalProdutoAberto(false);
+        setNomeProduto(''); setCategoriaProduto(''); setValorCustoProduto(''); setValorVendaProduto(''); setEstoqueMinimoProduto('');
+        carregarDados();
+      }
       else Alert.alert('Erro', dados.erro || 'Não foi possível criar o produto.');
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
@@ -172,7 +186,9 @@ export default function RecursosEscola() {
               dados={produtos}
               colunas={[
                 { chave: 'nome', titulo: 'Produto', flex: 3, render: (p: any) => <Text style={estilos.linhaTitulo}>{p.nome}</Text> },
-                { chave: 'estoque', titulo: 'Em estoque', flex: 2, render: (p: any) => <Badge texto={`${p.quantidadeEstoque} un.`} /> },
+                { chave: 'estoque', titulo: 'Em estoque', flex: 2, render: (p: any) => (
+                  <Badge texto={`${p.quantidadeEstoque} un.`} tom={p.quantidadeEstoque === 0 ? 'alerta' : p.quantidadeEstoque <= 5 ? 'aviso' : 'default'} />
+                )},
                 { chave: 'acao', titulo: '', flex: 1, alinhar: 'right', render: (p: any) => (
                   <Botao texto="Movimentar" variante="secundario" onPress={() => abrirMovimentacao(p.id)} />
                 )},
@@ -197,6 +213,12 @@ export default function RecursosEscola() {
 
       <Modal visivel={modalProdutoAberto} titulo="Novo produto" onFechar={() => setModalProdutoAberto(false)}>
         <Campo label="Nome do produto" value={nomeProduto} onChangeText={setNomeProduto} placeholder="Ex: Metrônomo" />
+        <Campo label="Categoria" value={categoriaProduto} onChangeText={setCategoriaProduto} placeholder="Ex: Instrumentos" />
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          <View style={{ flex: 1 }}><Campo label="Valor de custo" value={valorCustoProduto} onChangeText={setValorCustoProduto} placeholder="0,00" keyboardType="decimal-pad" /></View>
+          <View style={{ flex: 1 }}><Campo label="Valor de venda" value={valorVendaProduto} onChangeText={setValorVendaProduto} placeholder="0,00" keyboardType="decimal-pad" /></View>
+        </View>
+        <Campo label="Estoque mínimo (alerta)" value={estoqueMinimoProduto} onChangeText={setEstoqueMinimoProduto} placeholder="Ex: 5" keyboardType="number-pad" />
         <Botao texto="Criar produto" onPress={criarProduto} carregando={criandoProduto} />
       </Modal>
 

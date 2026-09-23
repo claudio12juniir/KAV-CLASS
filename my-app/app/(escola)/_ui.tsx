@@ -46,12 +46,14 @@ export const NAV_ESCOLA: GrupoNav[] = [
   ]},
   { titulo: 'Gestão', itens: [
     { chave: 'equipe', rota: '/(escola)/equipe', rotulo: 'Equipe', icone: 'people-outline' },
-    { chave: 'secretarias', rota: '/(escola)/secretarias', rotulo: 'Secretaria', icone: 'key-outline' },
+    { chave: 'secretarias', rota: '/(escola)/secretarias', rotulo: 'Funcionários', icone: 'key-outline' },
     { chave: 'alunos', rota: '/(escola)/alunos', rotulo: 'Alunos', icone: 'school-outline' },
     { chave: 'logistica', rota: '/(escola)/logistica', rotulo: 'Logística', icone: 'apps-outline' },
+    { chave: 'reposicoes', rota: '/(escola)/reposicoes', rotulo: 'Reposições', icone: 'repeat-outline' },
     { chave: 'coordenacao', rota: '/(escola)/coordenacao', rotulo: 'Coordenação', icone: 'ribbon-outline' },
     { chave: 'calendario', rota: '/(escola)/calendario', rotulo: 'Cronograma', icone: 'calendar-outline' },
     { chave: 'chats', rota: '/(escola)/chats', rotulo: 'Chats das Turmas', icone: 'chatbubbles-outline' },
+    { chave: 'grupo-equipe', rota: '/(escola)/grupo-equipe', rotulo: 'Grupo da Equipe', icone: 'people-circle-outline' },
   ]},
   { titulo: 'Crescimento', itens: [
     { chave: 'captacao', rota: '/(escola)/captacao', rotulo: 'Captação', icone: 'megaphone-outline' },
@@ -75,16 +77,17 @@ function comBadgeMensagens(navGrupos: GrupoNav[], naoLidas: number): GrupoNav[] 
   }));
 }
 
-// Limitador de acesso por função (INSTITUTION, 21/09/2026) — Painel e
-// Social ficam sempre visíveis pra qualquer papel; as demais categorias
-// (Gestão/Crescimento/Operação/Instituição) só mostram, pra SECRETARIA, os
-// itens cuja `chave` está em permissoesSecretaria. Grupo que fica sem
+// Limitador de acesso por função (INSTITUTION, 21/09/2026; generalizado pra
+// FUNCIONARIO no Sprint 16, briefing 22/09/2026) — Painel e Social ficam
+// sempre visíveis pra qualquer papel; as demais categorias (Gestão/
+// Crescimento/Operação/Instituição) só mostram, pra SECRETARIA/FUNCIONARIO,
+// os itens cuja `chave` está em permissoesSecretaria. Grupo que fica sem
 // nenhum item some da lista inteira. DONO/GESTOR/PROFESSOR não passam por
-// aqui (retornam o menu completo) — o backend (exigirPapelNaEscola) aplica
-// a mesma trava do lado da API, então esconder o item aqui é UX, não a
-// única linha de defesa.
+// aqui (retornam o menu completo) — o backend (exigirPapelNaEscola/
+// exigirModuloEscola) aplica a mesma trava do lado da API, então esconder o
+// item aqui é UX, não a única linha de defesa.
 function filtrarPorPermissao(navGrupos: GrupoNav[], papel: string | null, permissoes: string[]): GrupoNav[] {
-  if (papel !== 'SECRETARIA') return navGrupos;
+  if (papel !== 'SECRETARIA' && papel !== 'FUNCIONARIO') return navGrupos;
   return navGrupos
     .map((grupo) => {
       if (grupo.titulo === 'Principal' || grupo.titulo === 'Social') return grupo;

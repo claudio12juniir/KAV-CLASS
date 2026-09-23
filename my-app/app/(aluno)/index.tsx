@@ -20,6 +20,11 @@ interface ProximaAula {
   dataHora: string;
   tipo: string;
   professor: { nome: string };
+  // Confirmação de presença 24h antes (INSTITUTION Sprint 13, briefing
+  // 22/09/2026) — solicitada = cron já pediu; resposta null = ainda não
+  // respondeu (mostra o prompt); true/false = já respondeu.
+  confirmacaoAlunoSolicitadaEm?: string | null;
+  confirmacaoAlunoResposta?: boolean | null;
 }
 
 interface DashboardData {
@@ -87,6 +92,7 @@ export default function AlunoDashboard() {
   const [mostrarPickerHora, setMostrarPickerHora] = useState(false);
   const [horasReserva, setHorasReserva] = useState('1');
   const [reservando, setReservando] = useState(false);
+  const [enviandoConfirmacao, setEnviandoConfirmacao] = useState(false);
 
   const progressAnim = useRef(new Animated.Value(0)).current;
   const frequenciaAnim = useRef(new Animated.Value(0)).current;
@@ -239,6 +245,31 @@ export default function AlunoDashboard() {
     }
   };
 
+  // Confirmação de presença 24h antes (Sprint 13): resposta simples de
+  // "vou"/"não vou" pro pedido disparado pelo cron — distinta do check-in
+  // biométrico do momento da aula (tela própria, checkin-presenca.tsx).
+  const responderConfirmacao = async (confirma: boolean) => {
+    if (!dados.proximaAula) return;
+    setEnviandoConfirmacao(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/aulas/${dados.proximaAula.id}/confirmar-presenca-previa`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ confirma }),
+      });
+      if (res.ok) {
+        setDados((d) => ({ ...d, proximaAula: d.proximaAula ? { ...d.proximaAula, confirmacaoAlunoResposta: confirma } : d.proximaAula }));
+      } else {
+        Alert.alert('Erro', 'Não foi possível registrar sua resposta.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Falha na conexão.');
+    } finally {
+      setEnviandoConfirmacao(false);
+    }
+  };
+
   if (carregando) return <LoadingGlobal />;
 
   const { pendente, inativo, proximaAula, frequencia, pagamento, plano } = dados;
@@ -312,6 +343,35 @@ export default function AlunoDashboard() {
                 </View>
                 <View style={styles.statusDot} />
               </View>
+            )}
+
+            {proximaAula && proximaAula.confirmacaoAlunoSolicitadaEm && proximaAula.confirmacaoAlunoResposta === null && (
+              <View style={[styles.cardAviso, { borderColor: CORES.aviso, marginTop: 12, paddingVertical: 16 }]}>
+                <Text style={{ color: CORES.primaria, fontSize: 14, fontWeight: '600', marginBottom: 12, textAlign: 'center' }}>
+                  Você confirma presença na sua aula?
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <TouchableOpacity
+                    disabled={enviandoConfirmacao}
+                    onPress={() => responderConfirmacao(true)}
+                    style={{ flex: 1, backgroundColor: '#4CAF50', borderRadius: 8, paddingVertical: 10, alignItems: 'center' }}
+                  >
+                    <Text style={{ color: '#fff', fontWeight: '700' }}>Vou sim</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    disabled={enviandoConfirmacao}
+                    onPress={() => responderConfirmacao(false)}
+                    style={{ flex: 1, backgroundColor: CORES.erro, borderRadius: 8, paddingVertical: 10, alignItems: 'center' }}
+                  >
+                    <Text style={{ color: '#fff', fontWeight: '700' }}>Não vou</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+            {proximaAula && proximaAula.confirmacaoAlunoResposta !== null && proximaAula.confirmacaoAlunoResposta !== undefined && (
+              <Text style={{ color: proximaAula.confirmacaoAlunoResposta ? '#4CAF50' : CORES.erro, fontSize: 12.5, fontWeight: '600', marginTop: 8 }}>
+                {proximaAula.confirmacaoAlunoResposta ? '✓ Você confirmou presença' : '✕ Você avisou que não vai'}
+              </Text>
             )}
 
             {/* ── Widgets ── */}

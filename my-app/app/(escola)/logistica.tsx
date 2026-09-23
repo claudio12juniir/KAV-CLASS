@@ -1,7 +1,7 @@
 import { useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
@@ -14,6 +14,12 @@ function hojeYYYYMMDD() {
 function horaCurta(iso: string) {
   return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
+
+// Grade visível 06h–23h (INSTITUTION Sprint 14, briefing 22/09/2026) —
+// mesma janela de horas usada na grade de disponibilidade do professor
+// (equipe.tsx), aqui com salas nas colunas em vez de dias da semana.
+const HORAS_GRADE = Array.from({ length: 17 }, (_, i) => i + 6);
+const horaDe = (iso: string) => new Date(iso).getHours();
 
 // Grade diária sala×horário×turma (INSTITUTION Sprint 6, briefing
 // 08/09/2026). "Salvar como recorrente" não é um motor novo: reaproveita
@@ -102,21 +108,51 @@ export default function LogisticaEscola() {
         <View style={{ paddingVertical: 40, alignItems: 'center' }}><SyncLoader size="large" color={ERP.texto} /></View>
       ) : aulas.length === 0 ? (
         <SectionCard><EstadoVazio icone="calendar-outline" texto="Nenhuma aula agendada nesta data." /></SectionCard>
+      ) : salas.length === 0 ? (
+        <SectionCard><EstadoVazio icone="business-outline" texto="Nenhuma sala cadastrada ainda — cadastre salas no Perfil da Instituição." /></SectionCard>
       ) : (
         <>
-          {salas.map((sala) => {
-            const doSala = aulasPorSala.get(sala.id) || [];
-            if (doSala.length === 0) return null;
-            return (
-              <SectionCard key={sala.id} titulo={sala.nome} subtitulo={`${doSala.length} ${doSala.length === 1 ? 'aula' : 'aulas'}`}>
-                {doSala.map((aula) => (
-                  <LinhaAula key={aula.id} aula={aula} onMudarSala={() => abrirTrocaSala(aula)} />
+          <SectionCard titulo="Grade do dia" subtitulo="Toque numa aula marcada pra trocar de sala.">
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View>
+                <View style={{ flexDirection: 'row' }}>
+                  <View style={estilos.celulaHoraLabel} />
+                  {salas.map((sala) => (
+                    <View key={sala.id} style={estilos.celulaSalaLabel}><Text style={estilos.salaLabelTexto} numberOfLines={2}>{sala.nome}</Text></View>
+                  ))}
+                </View>
+                {HORAS_GRADE.map((hora) => (
+                  <View key={hora} style={{ flexDirection: 'row' }}>
+                    <View style={estilos.celulaHoraLabel}><Text style={estilos.horaLabelTexto}>{String(hora).padStart(2, '0')}:00</Text></View>
+                    {salas.map((sala) => {
+                      const aula = (aulasPorSala.get(sala.id) || []).find((a) => horaDe(a.dataHora) === hora);
+                      return (
+                        <Pressable
+                          key={sala.id}
+                          onPress={() => aula && abrirTrocaSala(aula)}
+                          style={[estilos.celulaGrade, aula ? { backgroundColor: ERP.acentoSoft, borderColor: ERP.acento } : { backgroundColor: ERP.superficie, borderColor: ERP.bordaSuave }]}
+                        >
+                          {aula && (
+                            <>
+                              <Text style={estilos.celulaTextoOcupada} numberOfLines={1}>{aula.professor?.nome}</Text>
+                              <Text style={estilos.celulaTextoOcupadaSub} numberOfLines={1}>{aula.aluno?.nome}</Text>
+                            </>
+                          )}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
                 ))}
-              </SectionCard>
-            );
-          })}
+              </View>
+            </ScrollView>
+          </SectionCard>
+
           {semSala.length > 0 && (
-            <SectionCard titulo="Sem sala definida" subtitulo={`${semSala.length} ${semSala.length === 1 ? 'aula' : 'aulas'}`}>
+            <SectionCard
+              titulo="Sem sala definida"
+              subtitulo={`${semSala.length} ${semSala.length === 1 ? 'aula' : 'aulas'}`}
+              acao={<Badge texto="Pendente" tom="alerta" />}
+            >
               {semSala.map((aula) => (
                 <LinhaAula key={aula.id} aula={aula} onMudarSala={() => abrirTrocaSala(aula)} />
               ))}
@@ -160,4 +196,11 @@ const estilos = StyleSheet.create({
   linha: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: ERP.bordaSuave },
   linhaTitulo: { fontSize: 13.5, fontWeight: '700', color: ERP.texto },
   linhaSub: { fontSize: 12, color: ERP.textoSecundario, marginTop: 2 },
+  celulaHoraLabel: { width: 52, justifyContent: 'center', alignItems: 'flex-end', paddingRight: 6 },
+  horaLabelTexto: { fontSize: 10.5, color: ERP.textoMuted },
+  celulaSalaLabel: { width: 92, alignItems: 'center', paddingBottom: 6, paddingHorizontal: 2 },
+  salaLabelTexto: { fontSize: 11, fontWeight: '700', color: ERP.textoSecundario, textAlign: 'center' },
+  celulaGrade: { width: 90, height: 40, marginLeft: 2, marginBottom: 2, borderRadius: 4, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 2 },
+  celulaTextoOcupada: { fontSize: 9.5, color: ERP.acentoForte, fontWeight: '700', textAlign: 'center' },
+  celulaTextoOcupadaSub: { fontSize: 9, color: ERP.textoSecundario, textAlign: 'center' },
 });

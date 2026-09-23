@@ -19,6 +19,7 @@ const ROTULOS_PERMISSAO: Record<string, string> = {
   equipe: 'Equipe',
   alunos: 'Alunos',
   logistica: 'Logística',
+  reposicoes: 'Reposições',
   coordenacao: 'Coordenação',
   calendario: 'Cronograma',
   chats: 'Chats das Turmas',
@@ -45,9 +46,11 @@ export default function SecretariasEscola() {
   const [chaves, setChaves] = useState<string[]>([]);
 
   const [modalCriarAberto, setModalCriarAberto] = useState(false);
+  const [papelNovo, setPapelNovo] = useState<'SECRETARIA' | 'FUNCIONARIO'>('SECRETARIA');
   const [nome, setNome] = useState('');
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
+  const [cargo, setCargo] = useState('');
   const [permissoesNovas, setPermissoesNovas] = useState<string[]>([]);
   const [criando, setCriando] = useState(false);
 
@@ -74,7 +77,7 @@ export default function SecretariasEscola() {
 
   useFocusEffect(useCallback(() => { carregarDados(); }, [carregarDados]));
 
-  const limparFormCriar = () => { setNome(''); setEmail(''); setSenha(''); setPermissoesNovas([]); };
+  const limparFormCriar = () => { setPapelNovo('SECRETARIA'); setNome(''); setEmail(''); setSenha(''); setCargo(''); setPermissoesNovas([]); };
 
   const alternarPermissaoNova = (chave: string) => {
     setPermissoesNovas((atual) => atual.includes(chave) ? atual.filter((c) => c !== chave) : [...atual, chave]);
@@ -95,7 +98,11 @@ export default function SecretariasEscola() {
       const res = await fetchComRetry(`${BASE_URL}/api/escola/professores/criar`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nome: nome.trim(), email: email.trim(), senha, papel: 'SECRETARIA', permissoesSecretaria: permissoesNovas }),
+        body: JSON.stringify({
+          nome: nome.trim(), email: email.trim(), senha, papel: papelNovo,
+          cargo: papelNovo === 'FUNCIONARIO' ? cargo.trim() || undefined : undefined,
+          permissoesSecretaria: permissoesNovas,
+        }),
       });
       const dados = await res.json();
       if (res.ok) {
@@ -103,7 +110,7 @@ export default function SecretariasEscola() {
         limparFormCriar();
         carregarDados();
       } else {
-        Alert.alert('Erro', dados.erro || 'Não foi possível criar a secretaria.');
+        Alert.alert('Erro', dados.erro || 'Não foi possível criar o funcionário.');
       }
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
@@ -165,21 +172,21 @@ export default function SecretariasEscola() {
   }
 
   return (
-    <ErpShell titulo="Secretaria">
+    <ErpShell titulo="Funcionários">
       <PageHeader
-        titulo="Secretaria"
-        subtitulo="Crie o login da secretaria e escolha exatamente quais funções ela pode abrir. Painel e Social ficam sempre liberados."
-        acao={<Botao texto="Nova secretaria" icone="add" onPress={() => { limparFormCriar(); setModalCriarAberto(true); }} />}
+        titulo="Funcionários"
+        subtitulo="Crie o login de qualquer funcionário ou associado — secretaria ou outro segmento — e escolha exatamente quais funções ele pode abrir. Painel e Social ficam sempre liberados."
+        acao={<Botao texto="Novo funcionário" icone="add" onPress={() => { limparFormCriar(); setModalCriarAberto(true); }} />}
       />
 
       <SectionCard>
         {secretarias.length === 0 ? (
-          <EstadoVazio icone="key-outline" texto="Nenhuma secretaria cadastrada ainda." />
+          <EstadoVazio icone="key-outline" texto="Nenhum funcionário cadastrado ainda." />
         ) : (
           secretarias.map((s) => (
             <View key={s.id} style={estilos.linha}>
               <View style={{ flex: 1, minWidth: 200 }}>
-                <Text style={estilos.linhaTitulo}>{s.nome}</Text>
+                <Text style={estilos.linhaTitulo}>{s.nome}{s.papel === 'FUNCIONARIO' && s.cargo ? ` · ${s.cargo}` : s.papel === 'SECRETARIA' ? ' · Secretaria' : ''}</Text>
                 <Text style={estilos.linhaSub}>{s.email}</Text>
                 <View style={estilos.linhaChips}>
                   {(s.permissoesSecretaria || []).length === 0 ? (
@@ -200,10 +207,19 @@ export default function SecretariasEscola() {
         )}
       </SectionCard>
 
-      <Modal visivel={modalCriarAberto} titulo="Nova secretaria" onFechar={() => setModalCriarAberto(false)} largura={520}>
+      <Modal visivel={modalCriarAberto} titulo="Novo funcionário" onFechar={() => setModalCriarAberto(false)} largura={520}>
+        <Text style={estilos.permissoesLabel}>Tipo</Text>
+        <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
+          <Botao texto="Secretaria" variante={papelNovo === 'SECRETARIA' ? 'primario' : 'secundario'} onPress={() => setPapelNovo('SECRETARIA')} />
+          <Botao texto="Outro segmento" variante={papelNovo === 'FUNCIONARIO' ? 'primario' : 'secundario'} onPress={() => setPapelNovo('FUNCIONARIO')} />
+        </View>
+
         <Campo label="Nome" value={nome} onChangeText={setNome} placeholder="Nome completo" />
-        <Campo label="E-mail" value={email} onChangeText={setEmail} placeholder="secretaria@suaescola.com" keyboardType="email-address" autoCapitalize="none" />
+        <Campo label="E-mail" value={email} onChangeText={setEmail} placeholder="email@suaescola.com" keyboardType="email-address" autoCapitalize="none" />
         <Campo label="Senha provisória" value={senha} onChangeText={setSenha} placeholder="Mínimo 6 caracteres" secureTextEntry />
+        {papelNovo === 'FUNCIONARIO' && (
+          <Campo label="Cargo / segmento" value={cargo} onChangeText={setCargo} placeholder="Ex.: Financeiro, Recepção, Limpeza" />
+        )}
 
         <Text style={estilos.permissoesLabel}>Funções liberadas</Text>
         <View style={estilos.chipsWrap}>
@@ -213,7 +229,7 @@ export default function SecretariasEscola() {
         </View>
 
         <View style={{ marginTop: 18 }}>
-          <Botao texto="Criar secretaria" onPress={criarSecretaria} carregando={criando} />
+          <Botao texto="Criar funcionário" onPress={criarSecretaria} carregando={criando} />
         </View>
       </Modal>
 

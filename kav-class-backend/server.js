@@ -767,6 +767,46 @@ async function verificarAulasAmanha() {
 cron.schedule('0 8 * * *', verificarAulasAmanha);
 
 // ============================================================================
+// CRON: CONFIRMAÇÃO DE PRESENÇA DO ALUNO 24H ANTES (INSTITUTION Sprint 13,
+// briefing 22/09/2026) — roda a cada hora cheia, pra pegar o horário exato
+// de cada aula (diferente do lembrete acima, que é 1x/dia fixo às 08h e não
+// pede resposta). Janela de 1h (23h–24h de antecedência) casa com a
+// cadência horária do cron: cada aula cai numa única execução.
+// ============================================================================
+
+async function solicitarConfirmacaoAlunos24h() {
+  try {
+    const janelaInicio = new Date(Date.now() + 23 * 60 * 60 * 1000);
+    const janelaFim = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    const aulas = await prisma.aula.findMany({
+      where: {
+        status: 'AGENDADA',
+        dataHora: { gte: janelaInicio, lt: janelaFim },
+        confirmacaoAlunoSolicitadaEm: null,
+      },
+      include: { aluno: { select: { nome: true, expoPushToken: true } } },
+    });
+
+    for (const aula of aulas) {
+      if (aula.aluno?.expoPushToken) {
+        const horario = aula.dataHora.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+        await enviarPushNotificacao(
+          aula.aluno.expoPushToken,
+          'Confirme sua presença',
+          `Sua aula é amanhã às ${horario}. Você vai?`,
+          { tipo: 'CONFIRMAR_PRESENCA', aulaId: aula.id }
+        );
+      }
+      await prisma.aula.update({ where: { id: aula.id }, data: { confirmacaoAlunoSolicitadaEm: new Date() } });
+    }
+  } catch (err) {
+    console.error('[Cron] Erro ao solicitar confirmação de presença:', err.message);
+  }
+}
+cron.schedule('0 * * * *', solicitarConfirmacaoAlunos24h);
+
+// ============================================================================
 // CRON: COBRANÇA AUTOMÁTICA ALUNO → ESCOLA (executa todo dia às 08h) — S3.1
 //
 // Critério de pronto do roadmap: "uma matrícula com cobrança automática
@@ -3723,24 +3763,62 @@ app.put('/api/reposicoes/:id/negar', exigirProfessor, async (req, res) => {
   }
 });
 
+// PUT /api/reposicoes/:id/finalizar — marca uma reposição como concluída.
+// Aceita os dois fluxos (INSTITUTION Sprint 15, briefing 22/09/2026): o
+// fluxo do aluno (origem ALUNO, já autorizado pelo professor — S2.1
+// original) e o fluxo do professor (origem PROFESSOR, aluno já confirmou a
+// data — status CONFIRMADA nunca tinha uma etapa de "concluir" antes desta
+// sprint, ficava pendurado ali pra sempre). FINALIZADA é o único status
+// terminal comum aos dois fluxos, por isso a tela de 3 colunas usa só ele
+// pra "Reposições concluídas", sem distinguir a origem.
 app.put('/api/reposicoes/:id/finalizar', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'reposicoes');
     if (!professor) return;
 
     const { count } = await prisma.reposicao.updateMany({
       where: {
         id: req.params.id,
-        origem: 'ALUNO',
-        status: 'AUTORIZADA',
         professor: { escolaId: professor.escolaId }, // a reposição precisa ser de um professor da mesma Escola
+        OR: [
+          { origem: 'ALUNO', status: 'AUTORIZADA' },
+          { origem: 'PROFESSOR', status: 'CONFIRMADA' },
+        ],
       },
       data: { status: 'FINALIZADA' },
     });
-    if (!count) return res.status(404).json({ erro: 'Nenhuma reposição autorizada com esse id nesta Escola.' });
+    if (!count) return res.status(404).json({ erro: 'Nenhuma reposição pronta pra finalizar com esse id nesta Escola.' });
     res.json({ mensagem: 'Reposição finalizada.' });
   } catch (err) {
     tratarErro(err, res, 'Erro ao finalizar reposição.');
+  }
+});
+
+// GET /api/escola/reposicoes-quadro — quadro de 3 colunas (INSTITUTION
+// Sprint 15): todas as reposições da Escola, categorizadas por onde estão
+// no fluxo. "Para repor" junta os dois fluxos ainda sem data travada;
+// "Agendadas" junta os dois fluxos já com data certa, faltando só a escola
+// concluir; "Concluídas" é sempre FINALIZADA. Distinto de
+// GET /api/escola/reposicoes (mantida como está, só alimenta o KPI antigo
+// do Painel — origem ALUNO + AUTORIZADA).
+app.get('/api/escola/reposicoes-quadro', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'reposicoes');
+    if (!professor) return;
+
+    const reposicoes = await prisma.reposicao.findMany({
+      where: { professor: { escolaId: professor.escolaId } },
+      include: { aluno: { select: { nome: true } }, professor: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const paraRepor = reposicoes.filter((r) => ['AGUARDANDO', 'SOLICITANDO_OUTRO', 'SOLICITADA'].includes(r.status));
+    const agendadas = reposicoes.filter((r) => ['CONFIRMADA', 'AUTORIZADA'].includes(r.status));
+    const concluidas = reposicoes.filter((r) => r.status === 'FINALIZADA');
+
+    res.json({ paraRepor, agendadas, concluidas });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar o quadro de reposições.');
   }
 });
 
@@ -3896,6 +3974,33 @@ app.post('/api/aulas/:id/checkin-aluno', exigirAluno, async (req, res) => {
   }
 });
 
+// PUT /api/aulas/:id/confirmar-presenca-previa — resposta do aluno ao pedido
+// de confirmação disparado ~24h antes da aula (INSTITUTION Sprint 13,
+// briefing 22/09/2026). Distinto de POST checkin-aluno acima: aquele é o
+// check-in biométrico NO momento da aula; este é a resposta antecipada de
+// "eu vou" ou "eu não vou", pedida com antecedência pra escola se organizar
+// (cobrir falta, avisar reposição etc.). Vale tanto pra aula oficial quanto
+// reposição — ambas são um registro de Aula, sem distinção de rota.
+app.put('/api/aulas/:id/confirmar-presenca-previa', exigirAluno, async (req, res) => {
+  try {
+    const { confirma } = req.body;
+    if (typeof confirma !== 'boolean') {
+      return res.status(400).json({ erro: 'confirma deve ser true (vou) ou false (não vou).' });
+    }
+
+    const aula = await prisma.aula.findUnique({ where: { id: req.params.id } });
+    if (!aula || aula.alunoId !== req.auth.id) return res.status(404).json({ erro: 'Aula não encontrada.' });
+
+    const atualizada = await prisma.aula.update({
+      where: { id: aula.id },
+      data: { confirmacaoAlunoEm: new Date(), confirmacaoAlunoResposta: confirma },
+    });
+    res.json({ mensagem: confirma ? 'Presença confirmada.' : 'Falta avisada — a escola foi sinalizada.', aula: atualizada });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao registrar confirmação de presença.');
+  }
+});
+
 // PUT /api/aulas/:id/override-manual — quando professor ou aluno não
 // conseguiram levar o celular, a escola marca presença manualmente — mas só
 // com a senha de quem está sendo marcado (professor OU aluno, nunca a senha
@@ -3958,6 +4063,44 @@ app.put('/api/aulas/:id/reposicao', async (req, res) => {
     res.json({ mensagem: 'Decisão de reposição atualizada.', aula: atualizada });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar decisão de reposição.');
+  }
+});
+
+// PUT /api/aulas/:id/substituto — repasse de aula (INSTITUTION Sprint 12,
+// briefing 22/09/2026): só a escola marca que OUTRO professor efetivamente
+// leciona esta aula específica (cobertura de falta, repasse combinado
+// etc.). professorId da Aula continua sendo o dono da grade/vínculo com o
+// aluno — não muda. calcularOuAtualizarFolha lê professorSubstitutoId pra
+// creditar o valor da aula a quem efetivamente lecionou.
+app.put('/api/aulas/:id/substituto', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const { professorSubstitutoId } = req.body;
+    if (professorSubstitutoId !== null && typeof professorSubstitutoId !== 'string') {
+      return res.status(400).json({ erro: 'professorSubstitutoId deve ser uma string (id do professor) ou null pra remover.' });
+    }
+
+    const aula = await prisma.aula.findUnique({ where: { id: req.params.id }, include: { professor: true } });
+    if (!aula || aula.professor.escolaId !== professorLogado.escolaId) {
+      return res.status(404).json({ erro: 'Aula não encontrada nesta Escola.' });
+    }
+
+    if (professorSubstitutoId) {
+      if (professorSubstitutoId === aula.professorId) {
+        return res.status(400).json({ erro: 'O professor substituto não pode ser o mesmo professor da grade.' });
+      }
+      const substituto = await prisma.professor.findUnique({ where: { id: professorSubstitutoId }, select: { escolaId: true } });
+      if (!substituto || substituto.escolaId !== professorLogado.escolaId) {
+        return res.status(404).json({ erro: 'Professor substituto não encontrado nesta Escola.' });
+      }
+    }
+
+    const atualizada = await prisma.aula.update({ where: { id: aula.id }, data: { professorSubstitutoId } });
+    res.json({ mensagem: professorSubstitutoId ? 'Substituição registrada.' : 'Substituição removida.', aula: atualizada });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao registrar substituição de professor.');
   }
 });
 
@@ -4098,6 +4241,38 @@ async function carregarEscolaDoProfessor(req, res, next) {
   next();
 }
 
+// exigirModuloEscola(chaveModulo) — mesmo papel de carregarEscolaDoProfessor
+// (seta req.auth.escolaId), mas também bloqueia quem não tem acesso àquele
+// módulo (INSTITUTION Sprint 16, briefing 22/09/2026: "estoque deve ser
+// acionado ao funcionário que a escola disponibilizar o acesso"). Antes
+// desta sprint, rotas de Salas/Produtos/Estoque usavam só
+// carregarEscolaDoProfessor — mesmo uma SECRETARIA/FUNCIONARIO SEM
+// permissão de 'recursos' conseguia chamar a API direto, ignorando o
+// filtro que já existe em todo o resto do painel (NAV_ESCOLA/
+// exigirPapelNaEscola). PROFESSOR continua com acesso direto — mesma
+// convenção já usada em todo o painel hoje (só SECRETARIA/FUNCIONARIO são
+// restritos por módulo; ver filtrarPorPermissao em _ui.tsx), não é uma
+// trava nova pra quem já podia usar isso.
+function exigirModuloEscola(chaveModulo) {
+  return async (req, res, next) => {
+    const professor = await prisma.professor.findUnique({
+      where: { id: req.auth.id },
+      select: { escolaId: true, papel: true, permissoesSecretaria: true },
+    });
+    if (!professor) { res.status(404).json({ erro: 'Professor não encontrado.' }); return; }
+    req.auth.escolaId = professor.escolaId;
+
+    const permitidoDireto = ['DONO', 'GESTOR', 'PROFESSOR'].includes(professor.papel);
+    const permitidoPorFuncao = ['SECRETARIA', 'FUNCIONARIO'].includes(professor.papel)
+      && (professor.permissoesSecretaria || []).includes(chaveModulo);
+    if (!permitidoDireto && !permitidoPorFuncao) {
+      res.status(403).json({ erro: 'Você não tem permissão para acessar isso.' });
+      return;
+    }
+    next();
+  };
+}
+
 app.get('/api/cursos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
   try {
     const cursos = await prisma.curso.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { nome: 'asc' } });
@@ -4142,7 +4317,7 @@ app.patch('/api/cursos/:id', exigirProfessor, carregarEscolaDoProfessor, async (
   }
 });
 
-app.get('/api/salas', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.get('/api/salas', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
     const salas = await prisma.sala.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { nome: 'asc' } });
     res.json(salas);
@@ -4152,7 +4327,7 @@ app.get('/api/salas', exigirProfessor, carregarEscolaDoProfessor, async (req, re
   }
 });
 
-app.post('/api/salas', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.post('/api/salas', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
     const { nome, descricao } = req.body;
     if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
@@ -4164,7 +4339,7 @@ app.post('/api/salas', exigirProfessor, carregarEscolaDoProfessor, async (req, r
   }
 });
 
-app.patch('/api/salas/:id', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.patch('/api/salas/:id', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
     const { nome, descricao, ativa } = req.body;
     const dados = {};
@@ -6697,6 +6872,13 @@ app.get('/api/escola/faturamento-atual', async (req, res) => {
 // aula efetivamente ocorreu, nunca duplicada: cada Aula tem uma única
 // dataHora (a da ocorrência real), então isso já é automático — não existe
 // um segundo registro "original" pra contar em dobro.
+//
+// Repasse de aula (INSTITUTION Sprint 12, briefing 22/09/2026): quando a
+// escola marca `Aula.professorSubstitutoId`, o valor daquela aula específica
+// passa a contar pro professor substituto, não pro dono original da grade —
+// por isso o filtro abaixo é um OR: "sou o dono E não houve substituição" OU
+// "fui eu quem substituiu". Só afeta o modo POR_AULA; POR_ALUNO_MES paga por
+// base de alunos ativos, não por aula individual, então repasse não se aplica.
 async function calcularOuAtualizarFolha(professorId, escolaId, mes, ano) {
   const inicio = new Date(ano, mes - 1, 1, 0, 0, 0, 0);
   const fim = new Date(ano, mes, 0, 23, 59, 59, 999);
@@ -6708,7 +6890,16 @@ async function calcularOuAtualizarFolha(professorId, escolaId, mes, ano) {
     const totalAlunos = await prisma.aluno.count({ where: { professorId, status: 'ATIVO' } });
     valorCalculado = totalAlunos * valorBase;
   } else {
-    const totalAulas = await prisma.aula.count({ where: { professorId, presenca: 'PRESENTE', dataHora: { gte: inicio, lte: fim } } });
+    const totalAulas = await prisma.aula.count({
+      where: {
+        presenca: 'PRESENTE',
+        dataHora: { gte: inicio, lte: fim },
+        OR: [
+          { professorId, professorSubstitutoId: null },
+          { professorSubstitutoId: professorId },
+        ],
+      },
+    });
     valorCalculado = totalAulas * valorBase;
   }
 
@@ -7255,10 +7446,17 @@ app.get('/api/publico/captacao/:token', limitarTaxaPublica(30, 10 * 60 * 1000), 
   try {
     const link = await prisma.linkCaptacao.findUnique({
       where: { token: req.params.token },
-      select: { tipo: true, ativo: true, escola: { select: { nome: true } } },
+      select: { tipo: true, ativo: true, escola: { select: { nome: true, whatsapp: true } } },
     });
     if (!link || !link.ativo) return res.status(404).json({ erro: 'Link inválido ou desativado.' });
-    res.json({ tipo: link.tipo, escolaNome: link.escola.nome });
+    // whatsapp (INSTITUTION Sprint 19, briefing 22/09/2026) — v1 recomendada
+    // do funil de captação → WhatsApp: sem API paga, o formulário continua
+    // hospedado pelo próprio KAV (não redireciona pra landing externa —
+    // decisão registrada no briefing), mas a página de sucesso oferece um
+    // link wa.me pré-preenchido pra quem respondeu confirmar o contato com
+    // a escola num toque. Sem número configurado, a página só some com o
+    // botão (ver GET /captacao/:token abaixo).
+    res.json({ tipo: link.tipo, escolaNome: link.escola.nome, escolaWhatsapp: link.escola.whatsapp || null });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro interno.' });
@@ -7370,14 +7568,21 @@ app.get('/captacao/:token', limitarTaxaPublica(60, 10 * 60 * 1000), (req, res) =
     </form>
     <div id="msg"></div>
   </div>
+  <div id="whatsappBox" style="display:none;margin-top:14px">
+    <a id="linkWhatsapp" target="_blank" rel="noopener" style="display:block;text-align:center;padding:14px;background:#25D366;color:#fff;border-radius:8px;font-weight:bold;text-decoration:none">Confirmar pelo WhatsApp</a>
+  </div>
   <script>
     const TOKEN = ${JSON.stringify(token)};
+    let escolaNome = '';
+    let escolaWhatsapp = null;
     fetch('/api/publico/captacao/' + TOKEN)
       .then(function(r){ if(!r.ok) throw new Error('Link inválido ou desativado.'); return r.json(); })
       .then(function(link){
         document.getElementById('carregando').style.display = 'none';
         document.getElementById('conteudo').style.display = 'block';
         document.getElementById('titulo').textContent = link.escolaNome;
+        escolaNome = link.escolaNome;
+        escolaWhatsapp = link.escolaWhatsapp;
         if (link.tipo === 'AGENDAMENTO_EXPERIMENTAL') {
           document.getElementById('subtitulo').textContent = 'Quer agendar uma aula experimental? Deixe seu contato.';
           document.getElementById('mensagem').style.display = 'block';
@@ -7393,12 +7598,13 @@ app.get('/captacao/:token', limitarTaxaPublica(60, 10 * 60 * 1000), (req, res) =
       ev.preventDefault();
       const btn = document.getElementById('btn');
       const msg = document.getElementById('msg');
+      const nome = document.getElementById('nome').value;
       btn.disabled = true; msg.textContent = ''; msg.className = '';
       fetch('/api/publico/captacao/' + TOKEN, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          nome: document.getElementById('nome').value,
+          nome: nome,
           telefone: document.getElementById('telefone').value,
           email: document.getElementById('email').value,
           mensagem: document.getElementById('mensagem').value,
@@ -7410,6 +7616,14 @@ app.get('/captacao/:token', limitarTaxaPublica(60, 10 * 60 * 1000), (req, res) =
           msg.textContent = res.dados.mensagem;
           msg.className = 'ok';
           document.getElementById('form').style.display = 'none';
+          // v1 do funil → WhatsApp (Sprint 19, briefing 22/09/2026): sem
+          // número configurado pela escola, o botão simplesmente não
+          // aparece — não bloqueia nem esconde a mensagem de sucesso.
+          if (escolaWhatsapp) {
+            const texto = 'Ola! Sou ' + nome + ' e acabei de preencher o formulario de contato de ' + escolaNome + '.';
+            document.getElementById('linkWhatsapp').href = 'https://wa.me/' + escolaWhatsapp.replace(/\\D/g, '') + '?text=' + encodeURIComponent(texto);
+            document.getElementById('whatsappBox').style.display = 'block';
+          }
         })
         .catch(function(){ msg.textContent = 'Sem conexão. Tente novamente.'; msg.className = 'erro'; btn.disabled = false; });
     });
@@ -8230,7 +8444,7 @@ app.put('/api/aluno/comunicados/:envioId/lido', exigirAluno, async (req, res) =>
 // abaixo) por já morar ali. Aqui: estoque de produtos e renovação em lote.
 // ============================================================================
 
-app.get('/api/produtos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.get('/api/produtos', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
     const produtos = await prisma.produto.findMany({ where: { escolaId: req.auth.escolaId }, orderBy: { nome: 'asc' } });
     res.json(produtos);
@@ -8240,13 +8454,22 @@ app.get('/api/produtos', exigirProfessor, carregarEscolaDoProfessor, async (req,
   }
 });
 
-app.post('/api/produtos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.post('/api/produtos', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
-    const { nome, descricao, quantidadeInicial } = req.body;
+    const { nome, descricao, quantidadeInicial, categoria, valorCusto, valorVenda, estoqueMinimo } = req.body;
     if (!nome?.trim()) return res.status(400).json({ erro: 'nome é obrigatório.' });
     const inicial = Number.isInteger(quantidadeInicial) && quantidadeInicial >= 0 ? quantidadeInicial : 0;
     const produto = await prisma.produto.create({
-      data: { nome: nome.trim(), descricao: descricao?.trim() || null, quantidadeEstoque: inicial, escolaId: req.auth.escolaId },
+      data: {
+        nome: nome.trim(),
+        descricao: descricao?.trim() || null,
+        quantidadeEstoque: inicial,
+        escolaId: req.auth.escolaId,
+        categoria: categoria?.trim() || null,
+        valorCusto: valorCusto != null ? Number(valorCusto) : null,
+        valorVenda: valorVenda != null ? Number(valorVenda) : null,
+        estoqueMinimo: estoqueMinimo != null ? Number(estoqueMinimo) : null,
+      },
     });
     res.status(201).json(produto);
   } catch (err) {
@@ -8255,11 +8478,15 @@ app.post('/api/produtos', exigirProfessor, carregarEscolaDoProfessor, async (req
   }
 });
 
-app.patch('/api/produtos/:id', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.patch('/api/produtos/:id', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
-    const { nome, descricao, ativo } = req.body;
+    const { nome, descricao, ativo, categoria, valorCusto, valorVenda, estoqueMinimo } = req.body;
     const dados = {};
     if (nome?.trim()) dados.nome = nome.trim();
+    if (categoria !== undefined) dados.categoria = categoria?.trim() || null;
+    if (valorCusto !== undefined) dados.valorCusto = valorCusto === null ? null : Number(valorCusto);
+    if (valorVenda !== undefined) dados.valorVenda = valorVenda === null ? null : Number(valorVenda);
+    if (estoqueMinimo !== undefined) dados.estoqueMinimo = estoqueMinimo === null ? null : Number(estoqueMinimo);
     if (descricao !== undefined) dados.descricao = descricao?.trim() || null;
     if (typeof ativo === 'boolean') dados.ativo = ativo;
     const { count } = await prisma.produto.updateMany({ where: { id: req.params.id, escolaId: req.auth.escolaId }, data: dados });
@@ -8273,7 +8500,7 @@ app.patch('/api/produtos/:id', exigirProfessor, carregarEscolaDoProfessor, async
 // POST /api/produtos/:id/movimentacoes — cada movimentação atualiza o
 // saldo (Produto.quantidadeEstoque) na hora, dentro de uma transação —
 // "simples" não quer dizer recalculado do zero a cada consulta.
-app.post('/api/produtos/:id/movimentacoes', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.post('/api/produtos/:id/movimentacoes', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
     const escolaId = req.auth.escolaId;
     const produto = await prisma.produto.findFirst({ where: { id: req.params.id, escolaId } });
@@ -8313,7 +8540,7 @@ app.post('/api/produtos/:id/movimentacoes', exigirProfessor, carregarEscolaDoPro
   }
 });
 
-app.get('/api/produtos/:id/movimentacoes', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.get('/api/produtos/:id/movimentacoes', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
     const produto = await prisma.produto.findFirst({ where: { id: req.params.id, escolaId: req.auth.escolaId } });
     if (!produto) return res.status(404).json({ erro: 'Produto não encontrado.' });
@@ -8332,7 +8559,7 @@ app.get('/api/produtos/:id/movimentacoes', exigirProfessor, carregarEscolaDoProf
 // GET /api/estoque/emprestimos-ativos — derivado, não um registro formal
 // de "empréstimo aberto": soma EMPRESTIMO menos DEVOLUCAO por produto+aluno,
 // só devolve quem ainda está com saldo positivo (ver comentário no schema).
-app.get('/api/estoque/emprestimos-ativos', exigirProfessor, carregarEscolaDoProfessor, async (req, res) => {
+app.get('/api/estoque/emprestimos-ativos', exigirProfessor, exigirModuloEscola('recursos'), async (req, res) => {
   try {
     const movimentacoes = await prisma.movimentacaoEstoque.findMany({
       where: { escolaId: req.auth.escolaId, tipo: { in: ['EMPRESTIMO', 'DEVOLUCAO'] }, alunoId: { not: null } },
@@ -9105,7 +9332,10 @@ async function exigirPapelNaEscola(req, res, papeisPermitidos, chaveModulo) {
   }
 
   const papelPermitidoDireto = papeisPermitidos.includes(professor.papel);
-  const papelPermitidoPorFuncao = chaveModulo && professor.papel === 'SECRETARIA'
+  // Generalizado pra FUNCIONARIO (INSTITUTION Sprint 16, briefing
+  // 22/09/2026) — permissoesSecretaria (nome do campo preservado) agora
+  // vale igual pras duas personas de staff não-professor.
+  const papelPermitidoPorFuncao = chaveModulo && ['SECRETARIA', 'FUNCIONARIO'].includes(professor.papel)
     && (professor.permissoesSecretaria || []).includes(chaveModulo);
   if (!papelPermitidoDireto && !papelPermitidoPorFuncao) {
     res.status(403).json({ erro: 'Você não tem permissão para acessar isso.' });
@@ -9123,10 +9353,11 @@ app.get('/api/escola/professores', async (req, res) => {
     const professores = await prisma.professor.findMany({
       // ativoNaEscola: true — professor desligado (soft delete) some da
       // lista da Equipe, mas continua intacto no banco (auditoria
-      // INSTITUTION, 11/09/2026). papel != SECRETARIA — secretaria tem
-      // aba própria (GET /api/escola/secretarias), fora da Equipe.
-      where: { escolaId: professor.escolaId, ativoNaEscola: true, papel: { not: 'SECRETARIA' } },
-      select: { id: true, nome: true, email: true, papel: true, fotoUrl: true, telefone: true, dataNascimento: true, createdAt: true },
+      // INSTITUTION, 11/09/2026). papel not in [SECRETARIA, FUNCIONARIO] —
+      // esse staff tem aba própria (GET /api/escola/secretarias, Sprint 16
+      // generalizada pra FUNCIONARIO), fora da Equipe.
+      where: { escolaId: professor.escolaId, ativoNaEscola: true, papel: { notIn: ['SECRETARIA', 'FUNCIONARIO'] } },
+      select: { id: true, nome: true, email: true, papel: true, fotoUrl: true, telefone: true, dataNascimento: true, contratoUrl: true, cpf: true, endereco: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
     res.json(professores);
@@ -9149,7 +9380,7 @@ app.get('/api/escola/alunos', async (req, res) => {
       select: {
         id: true, nome: true, email: true, status: true, curso: true, fotoUrl: true,
         telefone: true, dataNascimento: true, tempoContrato: true, dataInicioContrato: true,
-        contratoUrl: true, vinculoResponsavel: true,
+        contratoUrl: true, cpf: true, endereco: true, vinculoResponsavel: true,
         responsavel: { select: { id: true, nome: true, cpf: true, email: true, telefone: true } },
         professor: { select: { id: true, nome: true } },
         matriculas: {
@@ -9307,7 +9538,8 @@ app.post('/api/escola/professores/criar', async (req, res) => {
 
     const {
       nome, email, senha, papel, telefone, contatoEmergencia,
-      dataNascimento, dataPagamento, contratoUrl, cursos, fotoUrl, permissoesSecretaria,
+      dataNascimento, dataPagamento, contratoUrl, cursos, fotoUrl, permissoesSecretaria, cargo,
+      cpf, endereco,
     } = req.body;
     if (!nome?.trim() || !email?.trim() || !senha) {
       return res.status(400).json({ erro: 'nome, email e senha são obrigatórios.' });
@@ -9319,10 +9551,13 @@ app.post('/api/escola/professores/criar', async (req, res) => {
       return res.status(400).json({ erro: 'Já existe uma conta com esse e-mail.' });
     }
 
-    // nunca cria DONO por aqui
-    const papelNovo = papel === 'GESTOR' ? 'GESTOR' : papel === 'SECRETARIA' ? 'SECRETARIA' : 'PROFESSOR';
+    // nunca cria DONO por aqui. FUNCIONARIO (Sprint 16, briefing 22/09/2026)
+    // é o cadastro genérico de qualquer segmento/associado além de
+    // "secretária" — mesmo mecanismo de permissoesSecretaria, só muda o
+    // papel e ganha um `cargo` livre (rótulo, não controla acesso).
+    const papelNovo = papel === 'GESTOR' ? 'GESTOR' : papel === 'SECRETARIA' ? 'SECRETARIA' : papel === 'FUNCIONARIO' ? 'FUNCIONARIO' : 'PROFESSOR';
     let permissoesValidas = [];
-    if (papelNovo === 'SECRETARIA') {
+    if (papelNovo === 'SECRETARIA' || papelNovo === 'FUNCIONARIO') {
       const pedidas = Array.isArray(permissoesSecretaria) ? permissoesSecretaria : [];
       permissoesValidas = pedidas.filter((p) => CHAVES_PERMISSAO_SECRETARIA.includes(p));
     }
@@ -9347,15 +9582,20 @@ app.post('/api/escola/professores/criar', async (req, res) => {
         escolaId: professor.escolaId,
         papel: papelNovo,
         permissoesSecretaria: permissoesValidas,
+        cargo: papelNovo === 'FUNCIONARIO' ? (cargo?.trim() || null) : null,
+        cpf: cpf?.trim() || null,
+        endereco: endereco?.trim() || null,
       },
       select: {
         id: true, nome: true, email: true, papel: true, telefone: true,
         contatoEmergencia: true, dataNascimento: true, dataPagamento: true,
-        contratoUrl: true, cursos: true, fotoUrl: true, createdAt: true, permissoesSecretaria: true,
+        contratoUrl: true, cursos: true, fotoUrl: true, createdAt: true, permissoesSecretaria: true, cargo: true,
+        cpf: true, endereco: true,
       },
     });
 
-    res.status(201).json({ mensagem: papelNovo === 'SECRETARIA' ? 'Secretaria criada!' : 'Professor criado!', professor: novoProfessor });
+    const rotuloPapel = papelNovo === 'SECRETARIA' ? 'Secretaria criada!' : papelNovo === 'FUNCIONARIO' ? 'Funcionário criado!' : 'Professor criado!';
+    res.status(201).json({ mensagem: rotuloPapel, professor: novoProfessor });
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao criar professor.' });
@@ -9367,23 +9607,24 @@ app.post('/api/escola/professores/criar', async (req, res) => {
 // e Painel ficam sempre visíveis pra qualquer papel, por isso não entram
 // aqui (ver components/institution/SidebarNavGrupos.tsx).
 const CHAVES_PERMISSAO_SECRETARIA = [
-  'equipe', 'alunos', 'logistica', 'coordenacao', 'calendario', 'chats',
+  'equipe', 'alunos', 'logistica', 'reposicoes', 'coordenacao', 'calendario', 'chats',
   'captacao', 'comunicados',
   'recursos', 'financeiro', 'relatorios',
   'configuracoes',
 ];
 
-// GET /api/escola/secretarias — DONO/GESTOR lista as secretarias da própria
-// Escola, com as permissões atuais de cada uma (Sprint Secretaria,
-// 21/09/2026, aba própria em Gestão, separada da Equipe).
+// GET /api/escola/secretarias — DONO/GESTOR lista o staff não-professor da
+// própria Escola (Sprint Secretaria, 21/09/2026; generalizado pra
+// FUNCIONARIO no Sprint 16, briefing 22/09/2026 — "qualquer funcionário ou
+// associado", não só secretária), com as permissões atuais de cada um.
 app.get('/api/escola/secretarias', async (req, res) => {
   try {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
     if (!professor) return;
 
     const secretarias = await prisma.professor.findMany({
-      where: { escolaId: professor.escolaId, papel: 'SECRETARIA', ativoNaEscola: true },
-      select: { id: true, nome: true, email: true, fotoUrl: true, permissoesSecretaria: true, createdAt: true },
+      where: { escolaId: professor.escolaId, papel: { in: ['SECRETARIA', 'FUNCIONARIO'] }, ativoNaEscola: true },
+      select: { id: true, nome: true, email: true, fotoUrl: true, papel: true, cargo: true, permissoesSecretaria: true, createdAt: true },
       orderBy: { createdAt: 'asc' },
     });
     res.json({ secretarias, chavesDisponiveis: CHAVES_PERMISSAO_SECRETARIA });
@@ -9394,14 +9635,15 @@ app.get('/api/escola/secretarias', async (req, res) => {
 });
 
 // PUT /api/escola/secretarias/:id/permissoes — DONO/GESTOR ajusta o
-// limitador de acesso por função de uma secretaria específica.
+// limitador de acesso por função de uma pessoa do staff (secretária ou
+// funcionário genérico).
 app.put('/api/escola/secretarias/:id/permissoes', async (req, res) => {
   try {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
     if (!professor) return;
 
-    const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId, papel: 'SECRETARIA' } });
-    if (!alvo) return res.status(404).json({ erro: 'Secretaria não encontrada nesta Escola.' });
+    const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professor.escolaId, papel: { in: ['SECRETARIA', 'FUNCIONARIO'] } } });
+    if (!alvo) return res.status(404).json({ erro: 'Funcionário não encontrado nesta Escola.' });
 
     const pedidas = Array.isArray(req.body.permissoesSecretaria) ? req.body.permissoesSecretaria : [];
     const permissoesValidas = pedidas.filter((p) => CHAVES_PERMISSAO_SECRETARIA.includes(p));
@@ -9450,7 +9692,7 @@ app.put('/api/escola/professores/:id', async (req, res) => {
 
     const {
       nome, telefone, contatoEmergencia, dataNascimento,
-      dataPagamento, contratoUrl, cursos, fotoUrl, papel,
+      dataPagamento, contratoUrl, cursos, fotoUrl, papel, cpf, endereco,
     } = req.body;
 
     const data = {};
@@ -9465,6 +9707,8 @@ app.put('/api/escola/professores/:id', async (req, res) => {
     if (contratoUrl !== undefined) data.contratoUrl = contratoUrl || null;
     if (cursos !== undefined) data.cursos = Array.isArray(cursos) ? cursos : (cursos ? [cursos] : []);
     if (fotoUrl !== undefined) data.fotoUrl = fotoUrl || null;
+    if (cpf !== undefined) data.cpf = cpf?.trim() || null;
+    if (endereco !== undefined) data.endereco = endereco?.trim() || null;
 
     if (papel !== undefined) {
       if (!['PROFESSOR', 'GESTOR'].includes(papel)) {
@@ -9488,7 +9732,7 @@ app.put('/api/escola/professores/:id', async (req, res) => {
       select: {
         id: true, nome: true, email: true, papel: true, telefone: true,
         contatoEmergencia: true, dataNascimento: true, dataPagamento: true,
-        contratoUrl: true, cursos: true, fotoUrl: true,
+        contratoUrl: true, cursos: true, fotoUrl: true, cpf: true, endereco: true,
       },
     });
 
@@ -9554,6 +9798,46 @@ app.get('/api/escola/professores/:id/disponibilidade', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ erro: 'Erro ao carregar disponibilidade.' });
+  }
+});
+
+// GET /api/escola/professores/:id/ocupacao-semanal — overlay de "em aula"
+// pra grade visual (INSTITUTION Sprint 14, briefing 22/09/2026). Em vez de
+// varrer todas as ocorrências futuras (uma aula recorrente existe pré-
+// gerada por meses, ver gerarAulasRecorrentes), olha só os próximos 7 dias
+// — como a recorrência é semanal/quinzenal/mensal alinhada ao dia da
+// semana, essa janela já mostra 1 ocorrência representativa por dia/hora
+// ocupado no ciclo semanal atual.
+app.get('/api/escola/professores/:id/ocupacao-semanal', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'equipe');
+    if (!professorLogado) return;
+
+    const alvo = await prisma.professor.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!alvo) return res.status(404).json({ erro: 'Professor não encontrado nesta Escola.' });
+
+    const inicio = new Date();
+    const fim = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const aulas = await prisma.aula.findMany({
+      where: { professorId: alvo.id, status: { not: 'CANCELADA' }, dataHora: { gte: inicio, lte: fim } },
+      include: { aluno: { select: { nome: true } } },
+    });
+
+    // getDay()/getHours() dependem do fuso do processo Node — em produção
+    // (Render) isso pode não ser America/Sao_Paulo. Extrai o dia/hora locais
+    // via Intl, mesmo padrão de correção de fuso já usado em outras rotas
+    // (ex. verificarAulasAmanha, toLocaleTimeString com timeZone explícito).
+    const DIAS_INTL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    res.json(aulas.map((a) => {
+      const partes = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false, weekday: 'short',
+      }).formatToParts(a.dataHora);
+      const hora = Number(partes.find((p) => p.type === 'hour')?.value ?? '0');
+      const diaSemana = DIAS_INTL.indexOf(partes.find((p) => p.type === 'weekday')?.value || 'Sun');
+      return { diaSemana, hora, alunoNome: a.aluno.nome };
+    }));
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar ocupação semanal.');
   }
 });
 
@@ -9647,6 +9931,69 @@ async function resolverAcessoChatTurma(req, res, professorId) {
   res.status(403).json({ erro: 'Acesso negado.' });
   return null;
 }
+
+// ─── GRUPO INTERNO DOS PROFESSORES (INSTITUTION Sprint 17, briefing
+// 22/09/2026) ───────────────────────────────────────────────────────────
+// Distinto do chat da turma logo abaixo (professor↔alunos dele): aqui é um
+// grupo só entre a equipe (DONO/GESTOR/PROFESSOR) da mesma Escola. Sem
+// `chaveModulo` em exigirPapelNaEscola de propósito — SECRETARIA/
+// FUNCIONARIO nunca entram aqui, nem com permissão liberada (é "grupo dos
+// professores", não um módulo de gestão configurável).
+
+app.get('/api/escola/mensagens-equipe', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR', 'PROFESSOR']);
+    if (!professor) return;
+
+    const mensagens = await prisma.mensagemEquipe.findMany({
+      where: { escolaId: professor.escolaId },
+      include: { autor: { select: { id: true, nome: true } } },
+      orderBy: [{ fixado: 'desc' }, { createdAt: 'asc' }],
+    });
+    res.json(mensagens);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar o grupo da equipe.');
+  }
+});
+
+app.post('/api/escola/mensagens-equipe', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR', 'PROFESSOR']);
+    if (!professor) return;
+
+    const { texto } = req.body;
+    if (!texto?.trim()) return res.status(400).json({ erro: 'texto é obrigatório.' });
+
+    const mensagem = await prisma.mensagemEquipe.create({
+      data: { texto: texto.trim(), escolaId: professor.escolaId, autorId: professor.id },
+      include: { autor: { select: { id: true, nome: true } } },
+    });
+    res.status(201).json(mensagem);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao enviar mensagem.');
+  }
+});
+
+// PUT /api/escola/mensagens-equipe/:id/fixar — só DONO/GESTOR fixa/desfixa
+// (ex.: link fixo de aula ao vivo via Meet, pedido explícito do usuário).
+app.put('/api/escola/mensagens-equipe/:id/fixar', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professor) return;
+
+    const { fixado } = req.body;
+    if (typeof fixado !== 'boolean') return res.status(400).json({ erro: 'fixado deve ser true ou false.' });
+
+    const { count } = await prisma.mensagemEquipe.updateMany({
+      where: { id: req.params.id, escolaId: professor.escolaId },
+      data: { fixado },
+    });
+    if (!count) return res.status(404).json({ erro: 'Mensagem não encontrada nesta Escola.' });
+    res.json({ mensagem: fixado ? 'Mensagem fixada.' : 'Mensagem desafixada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao fixar mensagem.');
+  }
+});
 
 app.get('/api/professores/:id/chat-turma', async (req, res) => {
   try {
@@ -9763,6 +10110,7 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
     const {
       nome, email, senha, professorId, telefone, curso,
       dataNascimento, tempoContrato, dataInicioContrato, contratoUrl, responsavel,
+      cpf, endereco,
     } = req.body;
     if (!nome?.trim() || !email?.trim() || !senha || !professorId) {
       return res.status(400).json({ erro: 'nome, email, senha e professorId são obrigatórios.' });
@@ -9801,6 +10149,8 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
           tempoContrato: tempoContrato != null ? Number(tempoContrato) : null,
           dataInicioContrato: dataInicioContrato ? new Date(dataInicioContrato) : null,
           contratoUrl: contratoUrl || null,
+          cpf: cpf?.trim() || null,
+          endereco: endereco?.trim() || null,
           professorId: professorDaTurma.id,
           escolaId: professorLogado.escolaId,
           status: 'PENDENTE',
@@ -9848,6 +10198,7 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
     const {
       nome, email, novaSenha, telefone, curso, professorId,
       dataNascimento, tempoContrato, dataInicioContrato, contratoUrl, responsavel,
+      cpf, endereco,
     } = req.body;
 
     const data = {};
@@ -9876,6 +10227,8 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
     if (tempoContrato !== undefined) data.tempoContrato = tempoContrato === null ? null : Number(tempoContrato);
     if (dataInicioContrato !== undefined) data.dataInicioContrato = dataInicioContrato ? new Date(dataInicioContrato) : null;
     if (contratoUrl !== undefined) data.contratoUrl = contratoUrl || null;
+    if (cpf !== undefined) data.cpf = cpf?.trim() || null;
+    if (endereco !== undefined) data.endereco = endereco?.trim() || null;
     if (professorId !== undefined) {
       if (professorId) {
         const professorAlvo = await prisma.professor.findFirst({ where: { id: professorId, escolaId: professorLogado.escolaId } });
@@ -9917,6 +10270,7 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
         select: {
           id: true, nome: true, email: true, telefone: true, curso: true, status: true,
           dataNascimento: true, tempoContrato: true, dataInicioContrato: true, contratoUrl: true,
+          cpf: true, endereco: true,
           vinculoResponsavel: true, responsavel: true, professor: { select: { id: true, nome: true } },
         },
       });
@@ -9970,7 +10324,11 @@ app.get('/api/escola/grade-hoje', async (req, res) => {
           dataHora: { gte: inicioDia, lte: fimDia },
           professor: { escolaId: professor.escolaId },
         },
-        include: { aluno: { select: { id: true, nome: true } }, professor: { select: { id: true, nome: true } } },
+        include: {
+          aluno: { select: { id: true, nome: true } },
+          professor: { select: { id: true, nome: true } },
+          professorSubstituto: { select: { id: true, nome: true } },
+        },
         orderBy: { dataHora: 'asc' },
       }),
       // Experimentais aparecem na Grade de hoje (INSTITUTION Sprint 11,
@@ -10001,6 +10359,8 @@ app.get('/api/escola/grade-hoje', async (req, res) => {
         presencaProfessorEm: aula.presencaProfessorEm,
         presencaAlunoEm: aula.presencaAlunoEm,
         decisaoReposicao: aula.decisaoReposicao,
+        professorSubstituto: aula.professorSubstituto,
+        confirmacaoAlunoResposta: aula.confirmacaoAlunoResposta,
       });
     }
     for (const exp of experimentaisHoje) {
@@ -10015,6 +10375,8 @@ app.get('/api/escola/grade-hoje', async (req, res) => {
         presencaProfessorEm: exp.status === 'REALIZADA' ? exp.updatedAt : null,
         presencaAlunoEm: null,
         decisaoReposicao: null,
+        professorSubstituto: null,
+        confirmacaoAlunoResposta: null,
         experimental: true,
       });
     }

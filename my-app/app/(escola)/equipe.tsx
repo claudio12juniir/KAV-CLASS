@@ -1,7 +1,7 @@
 import { router, useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
-import React, { useCallback, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
@@ -9,74 +9,103 @@ import { useEscolaContexto } from './_contexto';
 import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, PageHeader, SectionCard, Tabela } from './_ui';
 
 const DIAS_SEMANA = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+// Grade visível 06h–23h (INSTITUTION Sprint 14, briefing 22/09/2026) — 17
+// blocos de 1h cada (06-07 … 22-23), cobrindo o pedido do usuário.
+const HORAS_GRADE = Array.from({ length: 17 }, (_, i) => i + 6);
 
 type Slot = { diaSemana: number; horaInicio: string; horaFim: string; tipo: 'DISPONIVEL' | 'PAUSA' };
+type Ocupacao = { diaSemana: number; hora: number; alunoNome: string };
 
-function Chip({ label, ativo, onPress }: { label: string; ativo: boolean; onPress: () => void }) {
-  return (
-    <Pressable style={[estilos.chip, ativo && estilos.chipAtivo]} onPress={onPress}>
-      <Text style={[estilos.chipTexto, ativo && estilos.chipTextoAtivo]}>{label}</Text>
-    </Pressable>
-  );
-}
+const horaStr = (h: number) => `${String(h).padStart(2, '0')}:00`;
+// Um slot é "de grade" quando alinha exatamente num bloco de 1h (HH:00–(HH+1):00)
+// dentro de 06–23h — é o que a grade clicável consegue representar. Slots
+// fora desse padrão (herdados da v1 de texto livre, ex. "08:30–09:15") NÃO
+// são descartados: ficam de fora do grid, mas voltam intactos no onMudar,
+// nunca perdidos por causa de a escola só ter usado a grade nova.
+const ehSlotDeGrade = (s: Slot) => {
+  const m = /^(\d{2}):00$/.exec(s.horaInicio);
+  if (!m) return false;
+  const h = Number(m[1]);
+  return h >= 6 && h <= 22 && s.horaFim === horaStr(h + 1);
+};
 
 // Grade semanal recorrente do professor — segunda etapa obrigatória do
-// cadastro (briefing 08/09/2026). v1 é lista de faixas por dia (em vez de
-// grid de 24 células clicáveis): mesmo modelo de dado (DisponibilidadeProfessor),
-// interação mais simples de construir com confiabilidade nesta sprint.
-function GradeDisponibilidade({ slots, onMudar }: { slots: Slot[]; onMudar: (s: Slot[]) => void }) {
-  const [diaEditando, setDiaEditando] = useState(1);
-  const [horaInicio, setHoraInicio] = useState('08:00');
-  const [horaFim, setHoraFim] = useState('09:00');
-  const [tipo, setTipo] = useState<'DISPONIVEL' | 'PAUSA'>('DISPONIVEL');
+// cadastro (briefing 08/09/2026). Sprint 14 (22/09/2026): virou grid
+// clicável 7 dias × 17h (06h–23h) em vez do formulário de texto livre da v1
+// — cada toque cicla vazio → Disponível → Pausa → vazio. `ocupacao`
+// (opcional) sobrepõe células com aula já marcada pra aquele dia/hora —
+// somente leitura ali, pra escola não apagar sem querer um horário em uso.
+function GradeDisponibilidade({ slots, onMudar, ocupacao = [] }: { slots: Slot[]; onMudar: (s: Slot[]) => void; ocupacao?: Ocupacao[] }) {
+  const slotsForaDoPadrao = useMemo(() => slots.filter((s) => !ehSlotDeGrade(s)), [slots]);
+  const slotsGrade = useMemo(() => slots.filter(ehSlotDeGrade), [slots]);
 
-  const adicionar = () => {
-    if (!horaInicio.trim() || !horaFim.trim()) { Alert.alert('Atenção', 'Informe início e fim do horário.'); return; }
-    onMudar([...slots, { diaSemana: diaEditando, horaInicio: horaInicio.trim(), horaFim: horaFim.trim(), tipo }]);
+  const ocupacaoDe = (dia: number, hora: number) => ocupacao.find((o) => o.diaSemana === dia && o.hora === hora);
+
+  const alternarCelula = (dia: number, hora: number) => {
+    if (ocupacaoDe(dia, hora)) return; // célula em aula: só leitura aqui, sem editar disponibilidade por cima
+    const horaInicio = horaStr(hora);
+    const existente = slotsGrade.find((s) => s.diaSemana === dia && s.horaInicio === horaInicio);
+    let novaGrade: Slot[];
+    if (!existente) {
+      novaGrade = [...slotsGrade, { diaSemana: dia, horaInicio, horaFim: horaStr(hora + 1), tipo: 'DISPONIVEL' }];
+    } else if (existente.tipo === 'DISPONIVEL') {
+      novaGrade = slotsGrade.map((s) => (s === existente ? { ...s, tipo: 'PAUSA' } : s));
+    } else {
+      novaGrade = slotsGrade.filter((s) => s !== existente);
+    }
+    onMudar([...slotsForaDoPadrao, ...novaGrade]);
   };
-  const remover = (idx: number) => onMudar(slots.filter((_, i) => i !== idx));
 
   return (
     <View>
-      <Text style={estilos.campoLabelSolto}>Dia da semana</Text>
-      <View style={{ flexDirection: 'row', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
-        {DIAS_SEMANA.map((d, i) => (
-          <Chip key={i} label={d} ativo={diaEditando === i} onPress={() => setDiaEditando(i)} />
-        ))}
+      <View style={{ flexDirection: 'row', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <View style={estilos.legendaItem}><View style={[estilos.legendaCor, { backgroundColor: ERP.sucessoSoft, borderColor: ERP.sucesso }]} /><Text style={estilos.legendaTexto}>Disponível</Text></View>
+        <View style={estilos.legendaItem}><View style={[estilos.legendaCor, { backgroundColor: ERP.avisoSoft, borderColor: ERP.aviso }]} /><Text style={estilos.legendaTexto}>Pausa</Text></View>
+        <View style={estilos.legendaItem}><View style={[estilos.legendaCor, { backgroundColor: ERP.acentoSoft, borderColor: ERP.acento }]} /><Text style={estilos.legendaTexto}>Em aula</Text></View>
+        <View style={estilos.legendaItem}><View style={[estilos.legendaCor, { backgroundColor: ERP.superficie, borderColor: ERP.bordaForte }]} /><Text style={estilos.legendaTexto}>Livre</Text></View>
       </View>
 
-      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-end' }}>
-        <View style={{ flex: 1 }}><Campo label="Início" value={horaInicio} onChangeText={setHoraInicio} placeholder="08:00" /></View>
-        <View style={{ flex: 1 }}><Campo label="Fim" value={horaFim} onChangeText={setHoraFim} placeholder="09:00" /></View>
-      </View>
-      <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
-        <Chip label="Disponível" ativo={tipo === 'DISPONIVEL'} onPress={() => setTipo('DISPONIVEL')} />
-        <Chip label="Pausa (café/almoço)" ativo={tipo === 'PAUSA'} onPress={() => setTipo('PAUSA')} />
-      </View>
-      <Botao texto="Adicionar horário" variante="secundario" icone="add" onPress={adicionar} />
-
-      <View style={{ marginTop: 18, gap: 8 }}>
-        {DIAS_SEMANA.map((d, dia) => {
-          const doDia = slots.filter((s) => s.diaSemana === dia);
-          if (doDia.length === 0) return null;
-          return (
-            <View key={dia}>
-              <Text style={estilos.diaTitulo}>{d}</Text>
-              {doDia.map((s, i) => {
-                const idxGlobal = slots.indexOf(s);
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <View>
+          <View style={{ flexDirection: 'row' }}>
+            <View style={estilos.celulaHoraLabel} />
+            {DIAS_SEMANA.map((d, dia) => (
+              <View key={dia} style={estilos.celulaDiaLabel}><Text style={estilos.diaLabelTexto}>{d}</Text></View>
+            ))}
+          </View>
+          {HORAS_GRADE.map((hora) => (
+            <View key={hora} style={{ flexDirection: 'row' }}>
+              <View style={estilos.celulaHoraLabel}><Text style={estilos.horaLabelTexto}>{horaStr(hora)}</Text></View>
+              {DIAS_SEMANA.map((_, dia) => {
+                const ocupada = ocupacaoDe(dia, hora);
+                const slot = slotsGrade.find((s) => s.diaSemana === dia && s.horaInicio === horaStr(hora));
+                const cor = ocupada ? { backgroundColor: ERP.acentoSoft, borderColor: ERP.acento }
+                  : slot?.tipo === 'DISPONIVEL' ? { backgroundColor: ERP.sucessoSoft, borderColor: ERP.sucesso }
+                  : slot?.tipo === 'PAUSA' ? { backgroundColor: ERP.avisoSoft, borderColor: ERP.aviso }
+                  : { backgroundColor: ERP.superficie, borderColor: ERP.bordaSuave };
                 return (
-                  <View key={i} style={estilos.slotLinha}>
-                    <Badge texto={s.tipo === 'DISPONIVEL' ? 'Disponível' : 'Pausa'} tom={s.tipo === 'DISPONIVEL' ? 'sucesso' : 'aviso'} />
-                    <Text style={estilos.slotHorario}>{s.horaInicio} – {s.horaFim}</Text>
-                    <Pressable onPress={() => remover(idxGlobal)}><Text style={estilos.slotRemover}>remover</Text></Pressable>
-                  </View>
+                  <Pressable key={dia} onPress={() => alternarCelula(dia, hora)} style={[estilos.celulaGrade, cor]}>
+                    {ocupada ? <Text style={estilos.celulaTextoOcupada} numberOfLines={2}>{ocupada.alunoNome}</Text> : null}
+                  </Pressable>
                 );
               })}
             </View>
-          );
-        })}
-        {slots.length === 0 && <Text style={{ color: ERP.textoMuted, fontSize: 12.5 }}>Nenhum horário definido ainda — sem isso, nenhum aluno pode ser marcado na grade deste professor.</Text>}
-      </View>
+          ))}
+        </View>
+      </ScrollView>
+
+      {slotsForaDoPadrao.length > 0 && (
+        <View style={{ marginTop: 16 }}>
+          <Text style={estilos.campoLabelSolto}>Horários fora do padrão de 1h (mantidos, não editáveis na grade acima)</Text>
+          {slotsForaDoPadrao.map((s, i) => (
+            <View key={i} style={estilos.slotLinha}>
+              <Badge texto={s.tipo === 'DISPONIVEL' ? 'Disponível' : 'Pausa'} tom={s.tipo === 'DISPONIVEL' ? 'sucesso' : 'aviso'} />
+              <Text style={estilos.slotHorario}>{DIAS_SEMANA[s.diaSemana]} · {s.horaInicio} – {s.horaFim}</Text>
+              <Pressable onPress={() => onMudar([...slotsForaDoPadrao.filter((_, j) => j !== i), ...slotsGrade])}><Text style={estilos.slotRemover}>remover</Text></Pressable>
+            </View>
+          ))}
+        </View>
+      )}
     </View>
   );
 }
@@ -98,6 +127,8 @@ export default function EquipeEscola() {
   const [dataNascimento, setDataNascimento] = useState('');
   const [dataPagamento, setDataPagamento] = useState('');
   const [contratoUrl, setContratoUrl] = useState('');
+  const [cpf, setCpf] = useState('');
+  const [endereco, setEndereco] = useState('');
   const [cursos, setCursos] = useState('');
   const [fotoUrl, setFotoUrl] = useState('');
   const [papelNovo, setPapelNovo] = useState<'PROFESSOR' | 'GESTOR'>('PROFESSOR');
@@ -111,6 +142,7 @@ export default function EquipeEscola() {
 
   const [modalGrade, setModalGrade] = useState<any | null>(null);
   const [slotsGrade, setSlotsGrade] = useState<Slot[]>([]);
+  const [ocupacaoGrade, setOcupacaoGrade] = useState<Ocupacao[]>([]);
   const [carregandoGrade, setCarregandoGrade] = useState(false);
   const [salvandoGrade, setSalvandoGrade] = useState(false);
 
@@ -140,7 +172,7 @@ export default function EquipeEscola() {
 
   const limparForm = () => {
     setNome(''); setEmail(''); setSenha(''); setTelefone(''); setContatoEmergencia('');
-    setDataNascimento(''); setDataPagamento(''); setContratoUrl(''); setCursos(''); setFotoUrl('');
+    setDataNascimento(''); setDataPagamento(''); setContratoUrl(''); setCpf(''); setEndereco(''); setCursos(''); setFotoUrl('');
     setPapelNovo('PROFESSOR'); setEtapa('dados'); setProfessorCriadoId(null); setSlots([]);
   };
   const abrirModal = () => { limparForm(); setModalAberto(true); };
@@ -163,6 +195,8 @@ export default function EquipeEscola() {
           dataNascimento: dataNascimento.trim() || undefined,
           dataPagamento: dataPagamento ? Number(dataPagamento) : undefined,
           contratoUrl: contratoUrl.trim() || undefined,
+          cpf: cpf.trim() || undefined,
+          endereco: endereco.trim() || undefined,
           cursos: cursos.trim() ? cursos.split(',').map((c) => c.trim()).filter(Boolean) : undefined,
           fotoUrl: fotoUrl.trim() || undefined,
         }),
@@ -227,8 +261,13 @@ export default function EquipeEscola() {
     setCarregandoGrade(true);
     try {
       const token = await SecureStore.getItemAsync('kav_token');
-      const res = await fetchComRetry(`${BASE_URL}/api/escola/professores/${professor.id}/disponibilidade`, { headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok) setSlotsGrade(await res.json());
+      const headers = { Authorization: `Bearer ${token}` };
+      const [resSlots, resOcupacao] = await Promise.all([
+        fetchComRetry(`${BASE_URL}/api/escola/professores/${professor.id}/disponibilidade`, { headers }),
+        fetchComRetry(`${BASE_URL}/api/escola/professores/${professor.id}/ocupacao-semanal`, { headers }),
+      ]);
+      if (resSlots.ok) setSlotsGrade(await resSlots.json());
+      if (resOcupacao.ok) setOcupacaoGrade(await resOcupacao.json());
     } catch {
       Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
     } finally {
@@ -367,7 +406,11 @@ export default function EquipeEscola() {
               )},
               { chave: 'email', titulo: 'E-mail', flex: 3 },
               { chave: 'papel', titulo: 'Papel', flex: 2, render: (p: any) => (
-                <Badge texto={p.papel === 'DONO' ? 'Dono' : p.papel === 'GESTOR' ? 'Gestor' : 'Professor'} tom={p.papel === 'DONO' ? 'info' : 'default'} />
+                <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+                  <Badge texto={p.papel === 'DONO' ? 'Dono' : p.papel === 'GESTOR' ? 'Gestor' : 'Professor'} tom={p.papel === 'DONO' ? 'info' : 'default'} />
+                  {/* Alerta vermelho (INSTITUTION Sprint 18, briefing 22/09/2026) — sem contrato anexado é risco jurídico/administrativo pra escola */}
+                  {!p.contratoUrl && <Badge texto="Sem contrato" tom="alerta" />}
+                </View>
               )},
               { chave: 'createdAt', titulo: 'Desde', flex: 2, render: (p: any) => (
                 <Text style={{ fontSize: 12.5, color: ERP.textoSecundario }}>{new Date(p.createdAt).toLocaleDateString('pt-BR')}</Text>
@@ -414,7 +457,7 @@ export default function EquipeEscola() {
           <View style={{ paddingVertical: 30, alignItems: 'center' }}><SyncLoader color={ERP.texto} /></View>
         ) : (
           <>
-            <GradeDisponibilidade slots={slotsGrade} onMudar={setSlotsGrade} />
+            <GradeDisponibilidade slots={slotsGrade} onMudar={setSlotsGrade} ocupacao={ocupacaoGrade} />
             <View style={{ height: 16 }} />
             <Botao texto="Salvar grade" onPress={salvarGradeExistente} carregando={salvandoGrade} />
           </>
@@ -468,6 +511,8 @@ export default function EquipeEscola() {
             <Campo label="Contato de emergência" value={contatoEmergencia} onChangeText={setContatoEmergencia} placeholder="Nome e telefone" />
             <Campo label="Data de nascimento" value={dataNascimento} onChangeText={setDataNascimento} placeholder="AAAA-MM-DD" />
             <Campo label="Dia do mês em que a escola paga" value={dataPagamento} onChangeText={setDataPagamento} placeholder="Ex.: 5" keyboardType="number-pad" />
+            <Campo label="CPF" value={cpf} onChangeText={setCpf} placeholder="000.000.000-00" />
+            <Campo label="Endereço" value={endereco} onChangeText={setEndereco} placeholder="Rua, número, bairro, cidade" />
             <Campo label="URL do contrato (anexo)" value={contratoUrl} onChangeText={setContratoUrl} placeholder="https://..." autoCapitalize="none" />
             <Campo label="Cursos que leciona" value={cursos} onChangeText={setCursos} placeholder="Separe por vírgula" />
             <Campo label="URL da foto" value={fotoUrl} onChangeText={setFotoUrl} placeholder="https://..." autoCapitalize="none" />
@@ -510,6 +555,15 @@ const estilos = StyleSheet.create({
   chipTexto: { fontSize: 12.5, fontWeight: '600', color: ERP.textoSecundario },
   chipTextoAtivo: { color: ERP.acentoForte, fontWeight: '700' },
   campoLabelSolto: { fontSize: 12.5, fontWeight: '700', color: ERP.textoSecundario, marginBottom: 8 },
+  legendaItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  legendaCor: { width: 12, height: 12, borderRadius: 3, borderWidth: 1 },
+  legendaTexto: { fontSize: 11.5, color: ERP.textoSecundario },
+  celulaHoraLabel: { width: 52, justifyContent: 'center', alignItems: 'flex-end', paddingRight: 6 },
+  horaLabelTexto: { fontSize: 10.5, color: ERP.textoMuted },
+  celulaDiaLabel: { width: 60, alignItems: 'center', paddingBottom: 6 },
+  diaLabelTexto: { fontSize: 11, fontWeight: '700', color: ERP.textoSecundario },
+  celulaGrade: { width: 58, height: 30, marginLeft: 2, marginBottom: 2, borderRadius: 4, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
+  celulaTextoOcupada: { fontSize: 8.5, color: ERP.acentoForte, fontWeight: '700', textAlign: 'center' },
   diaTitulo: { fontSize: 11, fontWeight: '700', color: ERP.textoMuted, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4, marginTop: 6 },
   slotLinha: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6 },
   slotHorario: { fontSize: 13, color: ERP.texto, flex: 1 },

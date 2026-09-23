@@ -125,7 +125,7 @@ export default function ComunicadosEscola() {
                 </TouchableOpacity>
               )},
               { chave: 'publico', titulo: 'Público', flex: 2, render: (c: any) => <Text style={estilos.linhaSub}>{rotuloPublico(c.publico)}</Text> },
-              { chave: 'status', titulo: 'Status', flex: 2, render: (c: any) => <Badge texto={c.status === 'ENVIADO' ? 'Enviado' : 'Rascunho'} tom={c.status === 'ENVIADO' ? 'sucesso' : 'default'} /> },
+              { chave: 'status', titulo: 'Status', flex: 2, render: (c: any) => <Badge texto={c.status === 'ENVIADO' ? 'Enviado' : 'Rascunho'} tom={c.status === 'ENVIADO' ? 'sucesso' : 'aviso'} /> },
               { chave: 'acoes', titulo: '', flex: 3, alinhar: 'right', render: (c: any) => (
                 <View style={{ flexDirection: 'row', gap: 16, justifyContent: 'flex-end' }}>
                   {c.status === 'RASCUNHO' ? (

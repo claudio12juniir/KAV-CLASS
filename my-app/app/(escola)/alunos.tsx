@@ -257,6 +257,8 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
   const [tempoContrato, setTempoContrato] = useState('');
   const [dataInicioContrato, setDataInicioContrato] = useState('');
   const [contratoUrl, setContratoUrl] = useState('');
+  const [cpf, setCpf] = useState('');
+  const [endereco, setEndereco] = useState('');
   const [respNome, setRespNome] = useState('');
   const [respCpf, setRespCpf] = useState('');
   const [respEmail, setRespEmail] = useState('');
@@ -286,6 +288,8 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
     setTempoContrato(aluno.tempoContrato != null ? String(aluno.tempoContrato) : '');
     setDataInicioContrato(aluno.dataInicioContrato ? String(aluno.dataInicioContrato).slice(0, 10) : '');
     setContratoUrl(aluno.contratoUrl || '');
+    setCpf(aluno.cpf || '');
+    setEndereco(aluno.endereco || '');
     setRespNome(aluno.responsavel?.nome || '');
     setRespCpf(aluno.responsavel?.cpf || '');
     setRespEmail(aluno.responsavel?.email || '');
@@ -313,6 +317,8 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
         tempoContrato: tempoContrato ? Number(tempoContrato) : null,
         dataInicioContrato: dataInicioContrato || null,
         contratoUrl: contratoUrl || null,
+        cpf: cpf || null,
+        endereco: endereco || null,
         responsavel,
       };
       if (ehNovo) { body.senha = senha; body.professorId = professorId; }
@@ -414,6 +420,10 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
           <Campo label="Data de nascimento" value={dataNascimento} onChangeText={setDataNascimento} placeholder="AAAA-MM-DD" />
           {idade != null && <Text style={estilos.idadeTexto}>{idade} anos {idade < 18 ? '· menor de idade' : ''}</Text>}
         </View>
+      </View>
+      <View style={{ flexDirection: 'row', gap: 10 }}>
+        <View style={{ flex: 1 }}><Campo label="CPF" value={cpf} onChangeText={setCpf} placeholder="000.000.000-00" /></View>
+        <View style={{ flex: 2 }}><Campo label="Endereço" value={endereco} onChangeText={setEndereco} placeholder="Rua, número, bairro, cidade" /></View>
       </View>
 
       <Text style={estilos.secao}>Contrato</Text>

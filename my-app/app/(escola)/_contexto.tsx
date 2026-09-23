@@ -2,7 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { BASE_URL, fetchComRetry } from '../api';
 
-type Papel = 'DONO' | 'GESTOR' | 'PROFESSOR' | 'SECRETARIA';
+type Papel = 'DONO' | 'GESTOR' | 'PROFESSOR' | 'SECRETARIA' | 'FUNCIONARIO';
 type Pacote = 'PACOTE_PROFESSOR' | 'PACOTE_ESCOLA';
 
 type EscolaContextoValor = {

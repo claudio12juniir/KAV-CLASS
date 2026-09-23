@@ -15,11 +15,16 @@ function Chip({ label, ativo, onPress }: { label: string; ativo: boolean; onPres
   );
 }
 
+// Nota baixa em vermelho (INSTITUTION Sprint 18, briefing 22/09/2026) —
+// "alertas sempre" pedido pelo usuário: média abaixo de 3 estrelas é sinal
+// de qualidade de ensino comprometida, exatamente o que esta aba existe
+// pra vigiar (ver comentário da tela abaixo).
 function Estrelas({ valor }: { valor: number | null }) {
   if (valor == null) return <Text style={estilos.semDados}>Sem avaliações ainda</Text>;
+  const baixa = valor < 3;
   return (
-    <Text style={estilos.estrelas}>
-      {'★'.repeat(Math.round(valor))}{'☆'.repeat(5 - Math.round(valor))} <Text style={estilos.estrelasNumero}>({valor.toFixed(1)})</Text>
+    <Text style={[estilos.estrelas, baixa && { color: ERP.perigo }]}>
+      {'★'.repeat(Math.round(valor))}{'☆'.repeat(5 - Math.round(valor))} <Text style={[estilos.estrelasNumero, baixa && { color: ERP.perigo, fontWeight: '700' }]}>({valor.toFixed(1)})</Text>
     </Text>
   );
 }

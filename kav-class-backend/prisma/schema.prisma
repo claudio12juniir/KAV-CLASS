@@ -164,6 +164,13 @@ enum PapelUsuario {
   GESTOR
   PROFESSOR
   SECRETARIA
+  // Funcionário genérico (INSTITUTION Sprint 16, briefing 22/09/2026) — pra
+  // além de "secretária", a escola pode cadastrar qualquer segmento/associado
+  // (financeiro, limpeza, recepção etc.) com Professor.cargo (texto livre)
+  // descrevendo a função e o mesmo mecanismo de permissoesSecretaria (nome do
+  // campo preservado por compatibilidade, mas passa a valer pra SECRETARIA
+  // e FUNCIONARIO igualmente — ver exigirPapelNaEscola em server.js).
+  FUNCIONARIO
 }
 
 // Pacote comercial assinado pela Escola — decide qual conjunto de telas/rotas
@@ -312,6 +319,7 @@ model Escola {
   comunicados          Comunicado[]
   produtos             Produto[]
   movimentacoesEstoque MovimentacaoEstoque[]
+  mensagensEquipe      MensagemEquipe[]
 
   // Feed (Rede Social Fase 4) — postsAutorados: posts feitos EM NOME da
   // Escola (DONO/GESTOR postando como instituição). posts: todo post
@@ -412,6 +420,15 @@ model Professor {
   dataPagamento     Int?
   contratoUrl       String?
 
+  // Revisão de cadastro (INSTITUTION Sprint 18, briefing 22/09/2026) — CPF
+  // e endereço do professor. `chavePix` (linha ~382 acima) já existia desde
+  // 22/04/2026 pro professor RECEBER de aluno via Pix — reaproveitado como
+  // o mesmo dado pra Escola pagar o repasse de aula (Sprint 12); hoje esse
+  // pagamento ainda é registrado manualmente (comprovante anexado em
+  // FolhaPagamentoProfessor), sem integração de disparo automático de Pix.
+  cpf      String?
+  endereco String?
+
   stripeCustomerId String?
   assinaturaStatus StatusAssinaturaProfessor @default(INATIVO)
   assinaturaFim    DateTime?
@@ -430,11 +447,18 @@ model Professor {
   escola   Escola       @relation(fields: [escolaId], references: [id])
   papel    PapelUsuario @default(DONO)
 
-  // Limitador de acesso por função (INSTITUTION, 21/09/2026) — só usado
-  // quando papel=SECRETARIA; lista de `chave` do NAV_ESCOLA (ex.:
-  // "financeiro", "alunos") que essa secretaria pode abrir. Vazio por
-  // padrão: acesso zero até o DONO/GESTOR liberar módulo a módulo.
+  // Limitador de acesso por função (INSTITUTION, 21/09/2026; generalizado
+  // pra FUNCIONARIO no Sprint 16, briefing 22/09/2026) — usado quando
+  // papel=SECRETARIA ou papel=FUNCIONARIO; lista de `chave` do NAV_ESCOLA
+  // (ex.: "financeiro", "alunos", "recursos") que essa pessoa pode abrir.
+  // Vazio por padrão: acesso zero até o DONO/GESTOR liberar módulo a módulo.
   permissoesSecretaria String[] @default([])
+
+  // Segmento/função livre do funcionário (INSTITUTION Sprint 16, briefing
+  // 22/09/2026) — ex.: "Financeiro", "Recepção", "Limpeza". Só usado quando
+  // papel=FUNCIONARIO; rótulo informativo, não controla permissão nenhuma
+  // (isso continua sendo permissoesSecretaria acima).
+  cargo String?
 
   // Soft delete de "remover professor da Equipe" (auditoria INSTITUTION,
   // 11/09/2026): professorId é obrigatório (sem `?`) em 11 tabelas (Aula,
@@ -447,11 +471,13 @@ model Professor {
 
   alunos              Aluno[]
   aulas               Aula[]
+  aulasSubstituidas   Aula[]                     @relation("AulaProfessorSubstituto")
   pagamentos          Pagamento[]
   materiais           Material[]
   reposicoes          Reposicao[]
   notificacoes        Notificacao[]
   mensagens           Mensagem[]
+  mensagensEquipe     MensagemEquipe[]
   turmas              Turma[]
   matriculas          Matricula[]
   avaliacoes          Avaliacao[]
@@ -549,6 +575,12 @@ model Aluno {
   // token, por Matricula). Nullable de propósito: aluno cadastrado antes
   // desta sprint, ou sem contrato em papel anexado, continua funcionando.
   contratoUrl String?
+
+  // Revisão de cadastro (INSTITUTION Sprint 18, briefing 22/09/2026) — CPF
+  // e endereço do próprio aluno (distinto do CPF do responsável financeiro,
+  // que já existe em ResponsavelFinanceiro pra quando o aluno é menor).
+  cpf      String?
+  endereco String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -691,6 +723,27 @@ model Aula {
   // CronogramaConteudo vigente do curso (universal ou pessoal).
   assuntoTratado String?
 
+  // ─── Repasse de aula (INSTITUTION Sprint 12, briefing 22/09/2026) ───────
+  // Quando OUTRO professor efetivamente leciona a aula de alguém (cobertura
+  // de falta, repasse combinado etc.), a escola marca aqui quem foi — só a
+  // escola edita isso, nunca o próprio professor. `professorId` continua
+  // sendo o dono da grade/vínculo com o aluno (não muda); o valor desta
+  // aula na folha de pagamento (calcularOuAtualizarFolha) passa a contar
+  // pra `professorSubstitutoId` em vez de `professorId` quando preenchido.
+  professorSubstitutoId String?
+  professorSubstituto   Professor? @relation("AulaProfessorSubstituto", fields: [professorSubstitutoId], references: [id], onDelete: SetNull)
+
+  // ─── Confirmação de presença do aluno 24h antes (INSTITUTION Sprint 13,
+  // briefing 22/09/2026) ──────────────────────────────────────────────────
+  // Distinto de presencaAlunoEm acima (que é o check-in biométrico NO
+  // momento da aula): isto é a resposta a um pedido de confirmação
+  // disparado ~24h ANTES, pra escola saber com antecedência se o aluno vem
+  // ou não. confirmacaoAlunoResposta null = ainda não respondeu (vira
+  // alerta no painel se a aula está perto); true/false = respondeu.
+  confirmacaoAlunoSolicitadaEm DateTime?
+  confirmacaoAlunoEm           DateTime?
+  confirmacaoAlunoResposta     Boolean?
+
   avaliacoes Avaliacao[]
 
   createdAt DateTime @default(now())
@@ -701,6 +754,8 @@ model Aula {
   @@index([professorId, presenca, dataHora])
   @@index([turmaId])
   @@index([salaId])
+  @@index([professorSubstitutoId, presenca, dataHora])
+  @@index([confirmacaoAlunoResposta, dataHora])
 }
 
 // ─── 4. FINANCEIRO & PAGAMENTOS ──────────────────────────────────
@@ -805,6 +860,32 @@ model Mensagem {
 
   @@index([alunoId, createdAt])
   @@index([professorId, remetente])
+}
+
+// ─── GRUPO INTERNO DOS PROFESSORES (INSTITUTION Sprint 17, briefing
+// 22/09/2026) ───────────────────────────────────────────────────────────
+// Distinto do "chat da turma" (Mensagem/MensagemTurma, professor↔alunos
+// dele): aqui é um grupo só entre a equipe (DONO/GESTOR/PROFESSOR) da
+// mesma Escola — pra avisos internos, tirar dúvida entre professores, e
+// mídia/mensagem fixada (ex.: link fixo de aula ao vivo via Meet).
+// Participante é implícito (qualquer Professor.escolaId igual, papel
+// DONO/GESTOR/PROFESSOR) — sem tabela de membros, mesmo padrão já usado no
+// chat da turma (participantes calculados em tempo de consulta).
+model MensagemEquipe {
+  id     String  @id @default(uuid())
+  texto  String
+  // Mensagem/link fixado no topo do grupo (INSTITUTION Sprint 17) — só
+  // DONO/GESTOR fixa/desfixa; qualquer um do grupo pode postar.
+  fixado Boolean @default(false)
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+  autorId  String
+  autor    Professor @relation(fields: [autorId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([escolaId, fixado, createdAt])
 }
 
 // Identifica quem é o participante de uma ConversaDireta/autor de uma
@@ -1904,6 +1985,15 @@ model Produto {
   descricao         String?
   quantidadeEstoque Int     @default(0)
   ativo             Boolean @default(true)
+
+  // Revisão de cadastro (INSTITUTION Sprint 18, briefing 22/09/2026) —
+  // categoria livre, valor de custo/venda e estoque mínimo configurável
+  // (antes só existia um limiar fixo de 5 unidades hardcoded no Painel,
+  // ver LIMIAR_ESTOQUE_BAIXO em my-app/app/(escola)/index.tsx).
+  categoria     String?
+  valorCusto    Float?
+  valorVenda    Float?
+  estoqueMinimo Int?
 
   escolaId String
   escola   Escola @relation(fields: [escolaId], references: [id])
