@@ -42,6 +42,29 @@ function horaCurta(iso: string) {
   return new Date(iso).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 }
 
+// Classificação em 3 cores (INSTITUTION Sprint 21, briefing 23/09/2026) —
+// autônoma: a escola marca falta/presença direto por aqui, sem precisar do
+// professor ter feito nada antes. Verde = aula concluída (presença
+// confirmada, de qualquer jeito — checkin, override ou QR code). Amarelo =
+// falta (aluno ou professor) que a escola decidiu que precisa repor — já
+// cai sozinho em Reposições → "Para repor". Vermelho = falta injustificada,
+// não precisa repor, só fica registrada no histórico do aluno. Cinza =
+// ainda pendente, ninguém marcou nada.
+type CorAula = 'verde' | 'amarelo' | 'vermelho' | 'cinza';
+function corDaAula(aula: AulaGrade): CorAula {
+  if (aula.presenca === 'PRESENTE') return 'verde';
+  if (aula.presenca === 'AUSENCIA_ALUNO' || aula.presenca === 'AUSENCIA_PROFESSOR') {
+    return aula.decisaoReposicao ? 'amarelo' : 'vermelho';
+  }
+  return 'cinza';
+}
+const ROTULO_COR: Record<CorAula, string> = {
+  verde: 'Aula concluída', amarelo: 'Falta — para repor', vermelho: 'Falta injustificada', cinza: 'Pendente',
+};
+const TOM_COR: Record<CorAula, 'sucesso' | 'aviso' | 'alerta' | 'default'> = {
+  verde: 'sucesso', amarelo: 'aviso', vermelho: 'alerta', cinza: 'default',
+};
+
 // Modal da grade em horas de um professor específico — a escola marca
 // "é reposição ou não" por aula (Sprint 2: decisaoReposicao, à parte do
 // fluxo de aprovação de Reposicao) e pode intervir manualmente na presença
@@ -56,6 +79,9 @@ function ModalGradeProfessor({ professor, todosProfessores, onFechar, aoAtualiza
   const [motivo, setMotivo] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [substituindoAulaId, setSubstituindoAulaId] = useState<string | null>(null);
+  const [marcandoFaltaId, setMarcandoFaltaId] = useState<string | null>(null);
+  const [faltaAlvo, setFaltaAlvo] = useState<'ALUNO' | 'PROFESSOR'>('ALUNO');
+  const [registrandoFalta, setRegistrandoFalta] = useState(false);
 
   const chamarApi = async (path: string, body: any) => {
     const token = await SecureStore.getItemAsync('kav_token');
@@ -66,10 +92,19 @@ function ModalGradeProfessor({ professor, todosProfessores, onFechar, aoAtualiza
     });
   };
 
-  const alternarReposicao = async (aula: AulaGrade) => {
-    const res = await chamarApi(`/api/aulas/${aula.id}/reposicao`, { decisaoReposicao: !aula.decisaoReposicao });
-    if (res.ok) aoAtualizar();
-    else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível atualizar.');
+  // Marcar falta (Sprint 21): a escola decide sozinha, sem senha — registrar
+  // uma AUSÊNCIA não tem o mesmo risco de fraude que reivindicar presença de
+  // alguém (isso continua exigindo senha via override manual, abaixo). Já
+  // sincroniza a tela de Reposições sozinho (server.js: registrar-falta).
+  const registrarFalta = async (aula: AulaGrade, precisaReposicao: boolean) => {
+    setRegistrandoFalta(true);
+    try {
+      const res = await chamarApi(`/api/aulas/${aula.id}/registrar-falta`, { alvo: faltaAlvo, precisaReposicao });
+      if (res.ok) { setMarcandoFaltaId(null); aoAtualizar(); }
+      else Alert.alert('Erro', (await res.json()).erro || 'Não foi possível registrar a falta.');
+    } finally {
+      setRegistrandoFalta(false);
+    }
   };
 
   // Repasse de aula (Sprint 12): marcar/remover quem efetivamente leciona
@@ -114,14 +149,29 @@ function ModalGradeProfessor({ professor, todosProfessores, onFechar, aoAtualiza
             <View style={{ flex: 1 }}>
               <Text style={estilos.linhaTitulo}>{horaCurta(aula.dataHora)} · {aula.aluno.nome}</Text>
               <View style={{ flexDirection: 'row', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+                {!aula.experimental && <Badge texto={ROTULO_COR[corDaAula(aula)]} tom={TOM_COR[corDaAula(aula)]} />}
                 <Badge texto={aula.presencaProfessorEm ? 'Professor ok' : 'Professor pendente'} tom={aula.presencaProfessorEm ? 'sucesso' : 'aviso'} />
                 <Badge texto={aula.presencaAlunoEm ? 'Aluno ok' : 'Aluno pendente'} tom={aula.presencaAlunoEm ? 'sucesso' : 'aviso'} />
-                {aula.decisaoReposicao ? <Badge texto="Reposição" tom="info" /> : null}
                 {aula.experimental ? <Badge texto="Experimental" tom="aviso" /> : null}
                 {aula.professorSubstituto ? <Badge texto={`Lecionada por ${aula.professorSubstituto.nome}`} tom="info" /> : null}
                 {aula.confirmacaoAlunoResposta === false ? <Badge texto="Aluno não confirmou" tom="alerta" /> : null}
                 {aula.confirmacaoAlunoResposta === true ? <Badge texto="Aluno confirmou" tom="sucesso" /> : null}
               </View>
+              {!aula.experimental && marcandoFaltaId === aula.id && (
+                <View style={estilos.overrideBox}>
+                  <Text style={{ color: ERP.textoSecundario, fontSize: 12, marginBottom: 8 }}>Falta de quem?</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+                    <Botao texto="Aluno" variante={faltaAlvo === 'ALUNO' ? 'primario' : 'secundario'} onPress={() => setFaltaAlvo('ALUNO')} />
+                    <Botao texto="Professor" variante={faltaAlvo === 'PROFESSOR' ? 'primario' : 'secundario'} onPress={() => setFaltaAlvo('PROFESSOR')} />
+                  </View>
+                  <Text style={{ color: ERP.textoSecundario, fontSize: 12, marginBottom: 8 }}>Precisa repor essa aula?</Text>
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    <Botao texto="Sim — vai pra Reposições" onPress={() => registrarFalta(aula, true)} carregando={registrandoFalta} />
+                    <Botao texto="Não — falta injustificada" variante="perigo" onPress={() => registrarFalta(aula, false)} carregando={registrandoFalta} />
+                    <Botao texto="Cancelar" variante="secundario" onPress={() => setMarcandoFaltaId(null)} />
+                  </View>
+                </View>
+              )}
               {!aula.experimental && substituindoAulaId === aula.id && (
                 <View style={estilos.overrideBox}>
                   <Text style={{ color: ERP.textoSecundario, fontSize: 12, marginBottom: 8 }}>
@@ -157,7 +207,9 @@ function ModalGradeProfessor({ professor, todosProfessores, onFechar, aoAtualiza
             </View>
             {!aula.experimental && (
               <View style={{ gap: 6, alignItems: 'flex-end' }}>
-                <Botao texto={aula.decisaoReposicao ? 'Desmarcar reposição' : 'Marcar reposição'} variante="secundario" onPress={() => alternarReposicao(aula)} />
+                {marcandoFaltaId !== aula.id && (
+                  <Botao texto="Marcar falta" variante="secundario" onPress={() => { setMarcandoFaltaId(aula.id); setFaltaAlvo('ALUNO'); }} />
+                )}
                 {(!aula.presencaProfessorEm || !aula.presencaAlunoEm) && overrideAulaId !== aula.id && (
                   <Botao texto="Marcar presença manual" variante="secundario" onPress={() => abrirOverride(aula)} />
                 )}
@@ -187,7 +239,13 @@ export default function PainelEscola() {
   const [vencendo, setVencendo] = useState<any[]>([]);
   const [aulasParaReposicao, setAulasParaReposicao] = useState<any[]>([]);
   const [gradeHoje, setGradeHoje] = useState<ProfessorGrade[]>([]);
-  const [professorSelecionado, setProfessorSelecionado] = useState<ProfessorGrade | null>(null);
+  // Guarda só o id, não o objeto (Sprint 21, briefing 23/09/2026) — com o
+  // polling automático de carregarDados, gradeHoje muda de referência a
+  // cada 20s; se guardássemos o objeto inteiro, a modal aberta ficaria
+  // mostrando dados congelados do momento em que foi aberta, mesmo com o
+  // professor marcando presença/falta pelo celular nesse meio-tempo.
+  const [professorSelecionadoId, setProfessorSelecionadoId] = useState<string | null>(null);
+  const professorSelecionado = gradeHoje.find((p) => p.professorId === professorSelecionadoId) || null;
   const [aniversariantes, setAniversariantes] = useState<any[]>([]);
   const [estoqueBaixo, setEstoqueBaixo] = useState<any[]>([]);
 
@@ -246,7 +304,19 @@ export default function PainelEscola() {
     }
   }, []);
 
-  useFocusEffect(useCallback(() => { carregarDados(); }, [carregarDados]));
+  // Polling leve (INSTITUTION Sprint 21, briefing 23/09/2026) — pedido
+  // explícito do usuário: quando o professor marca presença/falta pelo
+  // celular, a escola precisa ver isso refletido "sempre em tempo real" na
+  // Grade de hoje. O app não tem infra de WebSocket/push-refresh hoje (todo
+  // o resto do painel atualiza só ao focar a tela) — refazer isso com
+  // socket seria uma mudança de infraestrutura própria, fora do escopo
+  // desta sprint. V1 pragmática: refetch automático a cada 20s enquanto o
+  // Painel está aberto, sem precisar sair e voltar pra tela.
+  useFocusEffect(useCallback(() => {
+    carregarDados();
+    const intervalo = setInterval(carregarDados, 20000);
+    return () => clearInterval(intervalo);
+  }, [carregarDados]));
 
   const concluirTarefa = async (id: string) => {
     const token = await SecureStore.getItemAsync('kav_token');
@@ -346,12 +416,21 @@ export default function PainelEscola() {
         {gradeHoje.length === 0 ? (
           <EstadoVazio icone="calendar-outline" texto="Nenhuma aula agendada pra hoje." />
         ) : (
-          gradeHoje.map((p) => (
-            <Pressable key={p.professorId} style={({ hovered }: any) => [estilos.linhaProfessor, hovered && { backgroundColor: ERP.hover }]} onPress={() => setProfessorSelecionado(p)}>
-              <Text style={estilos.linhaTitulo}>{p.nome}</Text>
-              <Text style={estilos.linhaSub}>{p.aulas.length} {p.aulas.length === 1 ? 'aula hoje' : 'aulas hoje'}</Text>
-            </Pressable>
-          ))
+          gradeHoje.map((p) => {
+            const naoExperimentais = p.aulas.filter((a) => !a.experimental);
+            const pendentes = naoExperimentais.filter((a) => corDaAula(a) === 'cinza').length;
+            const paraRepor = naoExperimentais.filter((a) => corDaAula(a) === 'amarelo').length;
+            return (
+              <Pressable key={p.professorId} style={({ hovered }: any) => [estilos.linhaProfessor, hovered && { backgroundColor: ERP.hover }]} onPress={() => setProfessorSelecionadoId(p.professorId)}>
+                <Text style={estilos.linhaTitulo}>{p.nome}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' }}>
+                  <Text style={estilos.linhaSub}>{p.aulas.length} {p.aulas.length === 1 ? 'aula hoje' : 'aulas hoje'}</Text>
+                  {pendentes > 0 && <Badge texto={`${pendentes} pendente${pendentes > 1 ? 's' : ''}`} tom="default" />}
+                  {paraRepor > 0 && <Badge texto={`${paraRepor} pra repor`} tom="aviso" />}
+                </View>
+              </Pressable>
+            );
+          })
         )}
       </SectionCard>
 
@@ -467,8 +546,8 @@ export default function PainelEscola() {
       <ModalGradeProfessor
         professor={professorSelecionado}
         todosProfessores={todosProfessores}
-        onFechar={() => setProfessorSelecionado(null)}
-        aoAtualizar={() => { carregarDados(); setProfessorSelecionado(null); }}
+        onFechar={() => setProfessorSelecionadoId(null)}
+        aoAtualizar={carregarDados}
       />
 
       <Modal visivel={!!aulaParaCancelar} titulo="Cancelar aula e propor reposição" onFechar={() => setAulaParaCancelar(null)}>

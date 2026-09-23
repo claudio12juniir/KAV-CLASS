@@ -30,6 +30,7 @@ export default function MaisAluno() {
           { chave: 'materiais', icone: 'book-outline', rotulo: 'Material Didático', aoPressionar: () => router.push('/(aluno)/materiais') },
           { chave: 'pagamento', icone: 'wallet-outline', rotulo: 'Financeiro', aoPressionar: () => router.push('/(aluno)/pagamento') },
           { chave: 'reposicoes', icone: 'repeat-outline', rotulo: 'Reposições', aoPressionar: () => router.push('/(aluno)/reposicoes') },
+          { chave: 'contrato', icone: 'document-text-outline', rotulo: 'Contrato', aoPressionar: () => router.push('/(aluno)/contrato') },
           { chave: 'escanear-presenca', icone: 'qr-code-outline', rotulo: 'Escanear Presença', aoPressionar: () => router.push('/(aluno)/escanear-presenca') },
           { chave: 'checkin-presenca', icone: 'finger-print-outline', rotulo: 'Confirmar Presença', aoPressionar: () => router.push('/(aluno)/checkin-presenca') },
           { chave: 'perfil', icone: 'person-outline', rotulo: 'Meu Perfil', aoPressionar: () => router.push('/(aluno)/perfil') },

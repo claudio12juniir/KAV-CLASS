@@ -90,6 +90,7 @@ function AlunoTabs() {
       <Tabs.Screen name="materiais" options={{ href: null }} />
       <Tabs.Screen name="pagamento" options={{ href: null }} />
       <Tabs.Screen name="reposicoes" options={{ href: null }} />
+      <Tabs.Screen name="contrato" options={{ href: null }} />
       <Tabs.Screen name="escanear-presenca" options={{ href: null }} />
       <Tabs.Screen name="checkin-presenca" options={{ href: null }} />
       <Tabs.Screen name="perfil" options={{ href: null }} />

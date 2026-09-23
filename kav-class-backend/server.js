@@ -3186,6 +3186,22 @@ app.get('/api/aluno/dashboard', exigirAluno, async (req, res) => {
   }
 });
 
+// GET /api/aluno/contrato — o próprio aluno vê/baixa o contrato que a
+// escola anexou no cadastro dele (INSTITUTION Sprint 23, briefing
+// 23/09/2026). Mesmo campo (Aluno.contratoUrl) que a escola já edita no
+// modal dela — só uma leitura escopada, sem rota nova de escrita (quem
+// sobe o contrato continua sendo a escola). Funciona pra aluno de
+// qualquer pacote (SELF ou Escola), o campo não distingue os dois.
+app.get('/api/aluno/contrato', exigirAluno, async (req, res) => {
+  try {
+    const aluno = await prisma.aluno.findUnique({ where: { id: req.auth.id }, select: { contratoUrl: true } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado.' });
+    res.json({ contratoUrl: aluno.contratoUrl || null });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar contrato.');
+  }
+});
+
 app.get('/api/aluno/perfil', exigirAluno, async (req, res) => {
   try {
     const alunoId = req.auth.id;
@@ -3794,6 +3810,76 @@ app.put('/api/reposicoes/:id/finalizar', async (req, res) => {
   }
 });
 
+// PUT /api/reposicoes/:id/agendar — a escola marca data/horário (e
+// opcionalmente outro professor/sala) pra uma reposição que ainda está em
+// "Para repor" — funciona pros 3 fluxos (ESCOLA/PROFESSOR/ALUNO), unificando
+// o agendamento num só lugar (INSTITUTION Sprint 20, briefing 23/09/2026).
+// Cria a Aula de reposição DE VERDADE (tipo=REPOSICAO) — ela passa a
+// aparecer na Grade de hoje, no dashboard do aluno, no check-in do
+// professor e na folha de pagamento como qualquer outra aula. Quando essa
+// Aula receber presença PRESENTE, esta Reposicao vira FINALIZADA sozinha
+// (ver finalizarReposicaoSeAplicavel).
+app.put('/api/reposicoes/:id/agendar', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'reposicoes');
+    if (!professorLogado) return;
+
+    const { dataHora, professorId, salaId } = req.body;
+    if (!dataHora || isNaN(new Date(dataHora).getTime())) {
+      return res.status(400).json({ erro: 'dataHora é obrigatória e precisa ser uma data válida.' });
+    }
+
+    const reposicao = await prisma.reposicao.findFirst({
+      where: {
+        id: req.params.id,
+        professor: { escolaId: professorLogado.escolaId },
+        status: { in: ['AGUARDANDO', 'SOLICITANDO_OUTRO', 'SOLICITADA', 'PENDENTE_AGENDAMENTO'] },
+      },
+    });
+    if (!reposicao) return res.status(404).json({ erro: 'Nenhuma reposição pendente de agendamento com esse id nesta Escola.' });
+
+    let professorAlvoId = reposicao.professorId;
+    if (professorId) {
+      const professorAlvo = await prisma.professor.findFirst({ where: { id: professorId, escolaId: professorLogado.escolaId } });
+      if (!professorAlvo) return res.status(400).json({ erro: 'Professor não encontrado nesta Escola.' });
+      professorAlvoId = professorId;
+    }
+    if (salaId) {
+      const sala = await prisma.sala.findFirst({ where: { id: salaId, escolaId: professorLogado.escolaId } });
+      if (!sala) return res.status(400).json({ erro: 'Sala não encontrada nesta Escola.' });
+    }
+
+    const dataHoraAula = new Date(dataHora);
+    const [novaAula, reposicaoAtualizada] = await prisma.$transaction([
+      prisma.aula.create({
+        data: {
+          dataHora: dataHoraAula,
+          professorId: professorAlvoId,
+          alunoId: reposicao.alunoId,
+          tipo: 'REPOSICAO',
+          status: 'AGENDADA',
+          salaId: salaId || null,
+        },
+      }),
+      prisma.reposicao.update({
+        where: { id: reposicao.id },
+        data: {
+          dataProposta: dataHoraAula.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo' }),
+          status: 'AGENDADA',
+        },
+      }),
+    ]);
+    // aulaReposicaoId depende do id da Aula recém-criada — precisa de um
+    // segundo update fora da transação acima (não dá pra referenciar o id
+    // gerado dentro do mesmo array de operações do $transaction).
+    await prisma.reposicao.update({ where: { id: reposicao.id }, data: { aulaReposicaoId: novaAula.id } });
+
+    res.json({ mensagem: 'Reposição agendada!', aula: novaAula, reposicao: { ...reposicaoAtualizada, aulaReposicaoId: novaAula.id } });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao agendar reposição.');
+  }
+});
+
 // GET /api/escola/reposicoes-quadro — quadro de 3 colunas (INSTITUTION
 // Sprint 15): todas as reposições da Escola, categorizadas por onde estão
 // no fluxo. "Para repor" junta os dois fluxos ainda sem data travada;
@@ -3808,12 +3894,17 @@ app.get('/api/escola/reposicoes-quadro', async (req, res) => {
 
     const reposicoes = await prisma.reposicao.findMany({
       where: { professor: { escolaId: professor.escolaId } },
-      include: { aluno: { select: { nome: true } }, professor: { select: { nome: true } } },
+      include: {
+        aluno: { select: { nome: true } },
+        professor: { select: { nome: true } },
+        aulaOriginal: { select: { id: true, dataHora: true } },
+        aulaReposicao: { select: { id: true, dataHora: true, professor: { select: { nome: true } } } },
+      },
       orderBy: { createdAt: 'desc' },
     });
 
-    const paraRepor = reposicoes.filter((r) => ['AGUARDANDO', 'SOLICITANDO_OUTRO', 'SOLICITADA'].includes(r.status));
-    const agendadas = reposicoes.filter((r) => ['CONFIRMADA', 'AUTORIZADA'].includes(r.status));
+    const paraRepor = reposicoes.filter((r) => ['AGUARDANDO', 'SOLICITANDO_OUTRO', 'SOLICITADA', 'PENDENTE_AGENDAMENTO'].includes(r.status));
+    const agendadas = reposicoes.filter((r) => ['CONFIRMADA', 'AUTORIZADA', 'AGENDADA'].includes(r.status));
     const concluidas = reposicoes.filter((r) => r.status === 'FINALIZADA');
 
     res.json({ paraRepor, agendadas, concluidas });
@@ -3858,6 +3949,7 @@ app.post('/api/aulas/:id/registrar-presenca', exigirProfessor, async (req, res) 
         { tipo: 'AULA_REMARCADA', aulaId: aula.id }
       );
     }
+    if (presenca === 'PRESENTE') await finalizarReposicaoSeAplicavel(aula.id);
 
     res.json({ mensagem: 'Presença registrada!', aula });
   } catch (err) {
@@ -3911,6 +4003,7 @@ app.post('/api/presenca/qrcode', autenticar, async (req, res) => {
     }
 
     await prisma.aula.update({ where: { id: aula.id }, data: { presenca: 'PRESENTE', status: 'CONCLUIDA' } });
+    await finalizarReposicaoSeAplicavel(aula.id);
     res.json({ mensagem: `Presença confirmada em ${sala.nome}!`, jaRegistrada: false });
   } catch (err) {
     console.error(err);
@@ -3933,6 +4026,60 @@ function recalcularPresencaAula(aula) {
   return null;
 }
 
+// ─── Motor automático de reposição (INSTITUTION Sprint 20, briefing
+// 23/09/2026) — fecha o ciclo que antes eram 2 mundos desconectados: a
+// escola marcava `Aula.decisaoReposicao` na Grade de hoje e NADA aparecia
+// na tela de Reposições; alguém tinha que criar uma `Reposicao` manual à
+// parte. Agora os dois lados sincronizam sozinhos. ──────────────────────
+
+// Chamado sempre que `decisaoReposicao` de uma Aula é definido (true/false)
+// — cria, mantém ou remove a Reposicao automática (origem ESCOLA) ligada
+// àquela Aula específica via aulaOriginalId. Idempotente: chamar de novo
+// com o mesmo valor não duplica nem recria nada.
+async function sincronizarReposicaoAutomatica(aula, decisaoReposicao) {
+  const existente = await prisma.reposicao.findFirst({
+    where: { aulaOriginalId: aula.id, origem: 'ESCOLA' },
+  });
+
+  if (decisaoReposicao === true) {
+    if (existente) return existente; // já existe, nada a fazer
+    return prisma.reposicao.create({
+      data: {
+        professorId: aula.professorId,
+        alunoId: aula.alunoId,
+        aulaOriginalId: aula.id,
+        dataOriginal: aula.dataHora.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
+        motivo: 'Falta registrada na Grade de hoje — aguardando a escola agendar a reposição.',
+        origem: 'ESCOLA',
+        status: 'PENDENTE_AGENDAMENTO',
+      },
+    });
+  }
+
+  // decisaoReposicao === false (falta injustificada, não precisa repor) —
+  // se a escola mudou de ideia e já existia uma pendência automática ainda
+  // não agendada, desfaz. Uma reposição já AGENDADA/FINALIZADA (a escola já
+  // se comprometeu com uma data, possivelmente já virou aula de verdade)
+  // não é apagada por uma mudança de classificação retroativa — fica pra
+  // a escola cancelar manualmente se for o caso, evita perder histórico.
+  if (existente && existente.status === 'PENDENTE_AGENDAMENTO') {
+    await prisma.reposicao.delete({ where: { id: existente.id } });
+  }
+  return null;
+}
+
+// Chamado sempre que uma Aula recebe presença PRESENTE (checkin, override
+// manual, ou marcação direta da escola) — se essa Aula é a que cobre uma
+// Reposicao pendente (`aulaReposicaoId`), finaliza a Reposicao sozinha.
+// Nenhuma tela precisa lembrar de fazer isso na mão.
+async function finalizarReposicaoSeAplicavel(aulaId) {
+  const { count } = await prisma.reposicao.updateMany({
+    where: { aulaReposicaoId: aulaId, status: 'AGENDADA' },
+    data: { status: 'FINALIZADA' },
+  });
+  return count > 0;
+}
+
 // POST /api/aulas/:id/checkin-professor — o próprio professor confirma
 // presença da aula dele (autenticado com o token normal; a biometria já
 // aconteceu no app antes de chamar esta rota).
@@ -3951,6 +4098,7 @@ app.post('/api/aulas/:id/checkin-professor', exigirProfessor, async (req, res) =
     Object.assign(data, recalcularPresencaAula({ ...aula, ...data }));
 
     const atualizada = await prisma.aula.update({ where: { id: aula.id }, data });
+    if (atualizada.presenca === 'PRESENTE') await finalizarReposicaoSeAplicavel(atualizada.id);
     res.json({ mensagem: 'Presença confirmada!', aula: atualizada });
   } catch (err) {
     tratarErro(err, res, 'Erro ao confirmar presença.');
@@ -3968,6 +4116,7 @@ app.post('/api/aulas/:id/checkin-aluno', exigirAluno, async (req, res) => {
     Object.assign(data, recalcularPresencaAula({ ...aula, ...data }));
 
     const atualizada = await prisma.aula.update({ where: { id: aula.id }, data });
+    if (atualizada.presenca === 'PRESENTE') await finalizarReposicaoSeAplicavel(atualizada.id);
     res.json({ mensagem: 'Presença confirmada!', aula: atualizada });
   } catch (err) {
     tratarErro(err, res, 'Erro ao confirmar presença.');
@@ -4035,6 +4184,7 @@ app.put('/api/aulas/:id/override-manual', async (req, res) => {
     Object.assign(data, recalcularPresencaAula({ ...aula, ...data }));
 
     const atualizada = await prisma.aula.update({ where: { id: aula.id }, data });
+    if (atualizada.presenca === 'PRESENTE') await finalizarReposicaoSeAplicavel(atualizada.id);
     res.json({ mensagem: 'Presença marcada manualmente.', aula: atualizada });
   } catch (err) {
     tratarErro(err, res, 'Erro ao marcar presença manualmente.');
@@ -4044,6 +4194,9 @@ app.put('/api/aulas/:id/override-manual', async (req, res) => {
 // PUT /api/aulas/:id/reposicao — só a escola decide se uma aula "é
 // reposição ou não" (campo à parte, independente do fluxo de solicitação/
 // aprovação de Reposicao já existente — ver decisão registrada no runbook).
+// Sprint 20 (briefing 23/09/2026): agora sincroniza automaticamente com a
+// tela de Reposições (ver sincronizarReposicaoAutomatica) — não é mais só
+// uma marcação solta na Grade de hoje.
 app.put('/api/aulas/:id/reposicao', async (req, res) => {
   try {
     const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
@@ -4060,9 +4213,48 @@ app.put('/api/aulas/:id/reposicao', async (req, res) => {
     }
 
     const atualizada = await prisma.aula.update({ where: { id: aula.id }, data: { decisaoReposicao } });
+    await sincronizarReposicaoAutomatica(atualizada, decisaoReposicao);
     res.json({ mensagem: 'Decisão de reposição atualizada.', aula: atualizada });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar decisão de reposição.');
+  }
+});
+
+// PUT /api/aulas/:id/registrar-falta — a escola marca falta (do aluno ou do
+// professor) direto na Grade de hoje, de forma autônoma, sem precisar que
+// professor/aluno tenham feito check-in antes e SEM senha (diferente de
+// override-manual: aqui é registrar uma AUSÊNCIA, não reivindicar uma
+// presença de alguém — risco de fraude bem menor, não precisa da mesma
+// trava). INSTITUTION Sprint 20/21, briefing 23/09/2026 — é o botão que
+// pinta a aula de amarelo (precisaReposicao=true) ou vermelho (false) na
+// Grade de hoje, e já sincroniza a tela de Reposições sozinho.
+app.put('/api/aulas/:id/registrar-falta', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR']);
+    if (!professorLogado) return;
+
+    const { alvo, precisaReposicao } = req.body;
+    if (!['ALUNO', 'PROFESSOR'].includes(alvo) || typeof precisaReposicao !== 'boolean') {
+      return res.status(400).json({ erro: 'alvo (ALUNO ou PROFESSOR) e precisaReposicao (true/false) são obrigatórios.' });
+    }
+
+    const aula = await prisma.aula.findUnique({ where: { id: req.params.id }, include: { professor: true } });
+    if (!aula || aula.professor.escolaId !== professorLogado.escolaId) {
+      return res.status(404).json({ erro: 'Aula não encontrada nesta Escola.' });
+    }
+
+    const atualizada = await prisma.aula.update({
+      where: { id: aula.id },
+      data: {
+        presenca: alvo === 'ALUNO' ? 'AUSENCIA_ALUNO' : 'AUSENCIA_PROFESSOR',
+        status: 'CANCELADA',
+        decisaoReposicao: precisaReposicao,
+      },
+    });
+    await sincronizarReposicaoAutomatica(atualizada, precisaReposicao);
+    res.json({ mensagem: 'Falta registrada.', aula: atualizada });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao registrar falta.');
   }
 });
 
@@ -9808,6 +10000,23 @@ app.get('/api/escola/professores/:id/disponibilidade', async (req, res) => {
 // — como a recorrência é semanal/quinzenal/mensal alinhada ao dia da
 // semana, essa janela já mostra 1 ocorrência representativa por dia/hora
 // ocupado no ciclo semanal atual.
+// getDay()/getHours() dependem do fuso do processo Node — em produção
+// (Render) isso pode não ser America/Sao_Paulo. Extrai dia-da-semana (0=Dom)
+// e hora locais via Intl, mesmo padrão de correção de fuso já usado em
+// outras rotas (ex. verificarAulasAmanha, toLocaleTimeString com timeZone
+// explícito). Compartilhado por qualquer rota que amostre ocupação semanal
+// a partir de instâncias de Aula (professor, sala — INSTITUTION Sprint 26,
+// briefing 23/09/2026).
+const DIAS_INTL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function diaHoraLocal(data) {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false, weekday: 'short',
+  }).formatToParts(data);
+  const hora = Number(partes.find((p) => p.type === 'hour')?.value ?? '0');
+  const diaSemana = DIAS_INTL.indexOf(partes.find((p) => p.type === 'weekday')?.value || 'Sun');
+  return { diaSemana, hora };
+}
+
 app.get('/api/escola/professores/:id/ocupacao-semanal', async (req, res) => {
   try {
     const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'equipe');
@@ -9823,19 +10032,7 @@ app.get('/api/escola/professores/:id/ocupacao-semanal', async (req, res) => {
       include: { aluno: { select: { nome: true } } },
     });
 
-    // getDay()/getHours() dependem do fuso do processo Node — em produção
-    // (Render) isso pode não ser America/Sao_Paulo. Extrai o dia/hora locais
-    // via Intl, mesmo padrão de correção de fuso já usado em outras rotas
-    // (ex. verificarAulasAmanha, toLocaleTimeString com timeZone explícito).
-    const DIAS_INTL = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    res.json(aulas.map((a) => {
-      const partes = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false, weekday: 'short',
-      }).formatToParts(a.dataHora);
-      const hora = Number(partes.find((p) => p.type === 'hour')?.value ?? '0');
-      const diaSemana = DIAS_INTL.indexOf(partes.find((p) => p.type === 'weekday')?.value || 'Sun');
-      return { diaSemana, hora, alunoNome: a.aluno.nome };
-    }));
+    res.json(aulas.map((a) => ({ ...diaHoraLocal(a.dataHora), alunoNome: a.aluno.nome })));
   } catch (err) {
     tratarErro(err, res, 'Erro ao carregar ocupação semanal.');
   }
@@ -10110,7 +10307,7 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
     const {
       nome, email, senha, professorId, telefone, curso,
       dataNascimento, tempoContrato, dataInicioContrato, contratoUrl, responsavel,
-      cpf, endereco,
+      cpf, endereco, fotoUrl,
     } = req.body;
     if (!nome?.trim() || !email?.trim() || !senha || !professorId) {
       return res.status(400).json({ erro: 'nome, email, senha e professorId são obrigatórios.' });
@@ -10151,6 +10348,7 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
           contratoUrl: contratoUrl || null,
           cpf: cpf?.trim() || null,
           endereco: endereco?.trim() || null,
+          fotoUrl: fotoUrl || null,
           professorId: professorDaTurma.id,
           escolaId: professorLogado.escolaId,
           status: 'PENDENTE',
@@ -10181,6 +10379,186 @@ app.post('/api/escola/alunos/criar', async (req, res) => {
   }
 });
 
+// ─── "Puxar" conta existente pra virar aluno (INSTITUTION Sprint 25,
+// briefing 23/09/2026) — em vez de recadastrar do zero alguém que já usa o
+// KAV Class (como professor ou aluno de outra escola), a escola convida
+// pelo e-mail; a pessoa confirma antes de qualquer coisa virar Aluno de
+// verdade (Aluno só é criado no aceite, nunca antes). Reaproveita o mesmo
+// flag de rollout do multi-vínculo (MULTI_VINCULO_HABILITADO) já usado em
+// /api/alunos/cadastro — é o mesmo tipo de operação (uma Conta ganhando
+// mais um vínculo de Aluno em outra Escola), só que iniciada pela escola em
+// vez de pela própria pessoa.
+
+// POST /api/escola/alunos/convidar-conta — DONO/GESTOR busca a Conta pelo
+// e-mail e cria o convite. Não cria Aluno nenhum ainda.
+app.post('/api/escola/alunos/convidar-conta', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
+    if (!professorLogado) return;
+
+    if (!MULTI_VINCULO_HABILITADO) {
+      return res.status(400).json({ erro: 'Recurso ainda não habilitado nesta instância.' });
+    }
+
+    const { email, professorId, curso } = req.body;
+    if (!email?.trim() || !professorId) {
+      return res.status(400).json({ erro: 'email e professorId são obrigatórios.' });
+    }
+
+    const professorDaTurma = await prisma.professor.findFirst({ where: { id: professorId, escolaId: professorLogado.escolaId } });
+    if (!professorDaTurma) return res.status(404).json({ erro: 'Professor não encontrado nesta Escola.' });
+
+    const emailNorm = email.toLowerCase().trim();
+    const conta = await prisma.conta.findUnique({ where: { email: emailNorm } });
+    if (!conta) {
+      return res.status(404).json({ erro: 'Nenhum usuário do KAV Class encontrado com esse e-mail. Cadastre normalmente em vez de convidar.' });
+    }
+
+    if (await prisma.aluno.findFirst({ where: { email: emailNorm, escolaId: professorLogado.escolaId } })) {
+      return res.status(400).json({ erro: 'Esse e-mail já é aluno desta Escola.' });
+    }
+    if (await prisma.conviteAlunoConta.findFirst({ where: { contaId: conta.id, escolaId: professorLogado.escolaId, status: 'PENDENTE' } })) {
+      return res.status(400).json({ erro: 'Já existe um convite pendente pra essa pessoa nesta Escola.' });
+    }
+
+    const convite = await prisma.conviteAlunoConta.create({
+      data: {
+        token: gerarTokenPublico(),
+        contaId: conta.id,
+        escolaId: professorLogado.escolaId,
+        professorId: professorDaTurma.id,
+        curso: curso?.trim() || null,
+      },
+    });
+
+    // Notifica em qualquer vínculo existente da Conta (professor ou aluno de
+    // outra escola) que já tenha token de push salvo — é o "notifique via
+    // app" pedido pelo usuário. Sem vínculo com push, o convite continua
+    // válido (ela pode abrir o link mesmo assim), só não chega notificação.
+    const [professoresDaConta, alunosDaConta] = await Promise.all([
+      prisma.professor.findMany({ where: { contaId: conta.id, expoPushToken: { not: null } }, select: { expoPushToken: true } }),
+      prisma.aluno.findMany({ where: { contaId: conta.id, expoPushToken: { not: null } }, select: { expoPushToken: true } }),
+    ]);
+    const escolaNome = (await prisma.escola.findUnique({ where: { id: professorLogado.escolaId }, select: { nome: true } }))?.nome || 'Uma escola';
+    for (const p of [...professoresDaConta, ...alunosDaConta]) {
+      enviarPushNotificacao(
+        p.expoPushToken,
+        'Convite pra ser aluno',
+        `${escolaNome} quer te adicionar como aluno. Abra o app pra confirmar.`,
+        { tipo: 'CONVITE_ALUNO_CONTA', token: convite.token }
+      ).catch((err) => console.error('[Push] Falha ao notificar convite de aluno:', err.message));
+    }
+
+    res.status(201).json({ mensagem: 'Convite enviado! Aguardando confirmação da pessoa.', convite });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao convidar conta existente.');
+  }
+});
+
+// GET /api/escola/convites-aluno — DONO/GESTOR acompanha os convites já
+// enviados (pendente/aceito/recusado) pela própria Escola.
+app.get('/api/escola/convites-aluno', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
+    if (!professorLogado) return;
+
+    const convites = await prisma.conviteAlunoConta.findMany({
+      where: { escolaId: professorLogado.escolaId },
+      include: { conta: { select: { nome: true, email: true } }, professor: { select: { nome: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(convites);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao listar convites.');
+  }
+});
+
+// ─── Rotas públicas do convite — o token é a credencial, mesmo padrão já
+// usado em LinkCaptacao (S4.2). Não exige estar logado nesta Escola: quem
+// recebe o convite pode nunca ter tido vínculo nenhum com ela antes.
+
+// GET /api/publico/convite-aluno/:token — dados mínimos pra mostrar a tela
+// de confirmação antes de aceitar/recusar.
+app.get('/api/publico/convite-aluno/:token', limitarTaxaPublica(30, 10 * 60 * 1000), async (req, res) => {
+  try {
+    const convite = await prisma.conviteAlunoConta.findUnique({
+      where: { token: req.params.token },
+      select: {
+        status: true,
+        curso: true,
+        conta: { select: { nome: true } },
+        escola: { select: { nome: true } },
+        professor: { select: { nome: true } },
+      },
+    });
+    if (!convite) return res.status(404).json({ erro: 'Convite inválido.' });
+    res.json(convite);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ erro: 'Erro interno.' });
+  }
+});
+
+// POST /api/publico/convite-aluno/:token/aceitar — { aceitar: boolean }. Se
+// aceitar=true, cria o Aluno de verdade e já devolve um token de login
+// (JWT) direto pra esse vínculo novo — não depende de USAR_CONTA_NO_LOGIN
+// nem de já ter uma sessão prévia nesta Escola.
+app.post('/api/publico/convite-aluno/:token/aceitar', limitarTaxaPublica(10, 10 * 60 * 1000), async (req, res) => {
+  try {
+    const { aceitar } = req.body;
+    if (typeof aceitar !== 'boolean') return res.status(400).json({ erro: 'aceitar deve ser true ou false.' });
+
+    const convite = await prisma.conviteAlunoConta.findUnique({
+      where: { token: req.params.token },
+      include: { conta: true, escola: { select: { nome: true } } },
+    });
+    if (!convite || convite.status !== 'PENDENTE') {
+      return res.status(404).json({ erro: 'Convite inválido ou já respondido.' });
+    }
+
+    if (!aceitar) {
+      await prisma.conviteAlunoConta.update({ where: { id: convite.id }, data: { status: 'RECUSADO', respondidoEm: new Date() } });
+      return res.json({ mensagem: 'Convite recusado.' });
+    }
+
+    // Checagem de corrida: mesmo e-mail pode ter sido cadastrado nesta
+    // Escola por outro caminho entre o convite e o aceite.
+    if (await prisma.aluno.findFirst({ where: { email: convite.conta.email, escolaId: convite.escolaId } })) {
+      return res.status(400).json({ erro: 'Esse e-mail já é aluno desta Escola.' });
+    }
+
+    const novoAluno = await prisma.$transaction(async (tx) => {
+      const aluno = await tx.aluno.create({
+        data: {
+          nome: convite.conta.nome || 'Aluno',
+          email: convite.conta.email,
+          senha: convite.conta.senha,
+          contaId: convite.contaId,
+          professorId: convite.professorId,
+          escolaId: convite.escolaId,
+          curso: convite.curso,
+          fotoUrl: convite.conta.fotoUrl,
+          status: 'PENDENTE',
+        },
+      });
+      await tx.conviteAlunoConta.update({
+        where: { id: convite.id },
+        data: { status: 'ACEITO', respondidoEm: new Date(), alunoId: aluno.id },
+      });
+      return aluno;
+    });
+
+    const token = jwt.sign({ id: novoAluno.id, papel: 'aluno', contaId: convite.contaId }, SEGREDO_JWT, { expiresIn: '7d' });
+    res.json({
+      mensagem: `Pronto! Você agora é aluno de ${convite.escola.nome}.`,
+      token,
+      aluno: { id: novoAluno.id, nome: novoAluno.nome },
+    });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao responder convite.');
+  }
+});
+
 // PUT /api/escola/alunos/:id — ficha 100% editável (INSTITUTION Sprint 5,
 // briefing 08/09/2026). Cobre os dados "de sempre" do aluno; os vínculos de
 // curso/professor adicionais (multi-curso/multi-professor) são geridos à
@@ -10198,7 +10576,7 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
     const {
       nome, email, novaSenha, telefone, curso, professorId,
       dataNascimento, tempoContrato, dataInicioContrato, contratoUrl, responsavel,
-      cpf, endereco,
+      cpf, endereco, fotoUrl,
     } = req.body;
 
     const data = {};
@@ -10229,6 +10607,7 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
     if (contratoUrl !== undefined) data.contratoUrl = contratoUrl || null;
     if (cpf !== undefined) data.cpf = cpf?.trim() || null;
     if (endereco !== undefined) data.endereco = endereco?.trim() || null;
+    if (fotoUrl !== undefined) data.fotoUrl = fotoUrl || null;
     if (professorId !== undefined) {
       if (professorId) {
         const professorAlvo = await prisma.professor.findFirst({ where: { id: professorId, escolaId: professorLogado.escolaId } });
@@ -10270,7 +10649,7 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
         select: {
           id: true, nome: true, email: true, telefone: true, curso: true, status: true,
           dataNascimento: true, tempoContrato: true, dataInicioContrato: true, contratoUrl: true,
-          cpf: true, endereco: true,
+          cpf: true, endereco: true, fotoUrl: true,
           vinculoResponsavel: true, responsavel: true, professor: { select: { id: true, nome: true } },
         },
       });
@@ -10280,6 +10659,209 @@ app.put('/api/escola/alunos/:id', async (req, res) => {
     res.json({ mensagem: 'Aluno atualizado!', aluno: atualizado });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar aluno.');
+  }
+});
+
+// ─── Modal do aluno: histórico completo (INSTITUTION Sprint 22, briefing
+// 23/09/2026) — "não seria interessante apenas a configuração, mas todo o
+// histórico do aluno também". 3 rotas novas, todas escopadas por Escola,
+// pra alimentar as abas Histórico/Conteúdos/Pagamentos do modal
+// (Relatórios reaproveita GET /api/escola/relatorios-aluno?alunoId=, que já
+// existia e já aceitava esse filtro).
+
+// GET /api/escola/alunos/:id/historico-aulas — todas as aulas do aluno,
+// mais recente primeiro. Aula tipo=REPOSICAO vem com `repondoAula` (a aula
+// original perdida, via Reposicao.aulaReposicaoId) pra a tela mostrar "de
+// que dia essa reposição está pagando" (pedido explícito do usuário).
+app.get('/api/escola/alunos/:id/historico-aulas', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
+    if (!professorLogado) return;
+
+    const aluno = await prisma.aluno.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado nesta Escola.' });
+
+    const aulas = await prisma.aula.findMany({
+      where: { alunoId: aluno.id },
+      include: {
+        professor: { select: { nome: true } },
+        professorSubstituto: { select: { nome: true } },
+        reposicaoQueRepresenta: { select: { aulaOriginal: { select: { dataHora: true } } } },
+      },
+      orderBy: { dataHora: 'desc' },
+    });
+
+    res.json(aulas.map((a) => ({
+      id: a.id,
+      dataHora: a.dataHora,
+      tipo: a.tipo,
+      status: a.status,
+      presenca: a.presenca,
+      decisaoReposicao: a.decisaoReposicao,
+      assuntoTratado: a.assuntoTratado,
+      professorNome: a.professorSubstituto?.nome || a.professor.nome,
+      repondoAulaDe: a.reposicaoQueRepresenta?.aulaOriginal?.dataHora || null,
+    })));
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar histórico de aulas.');
+  }
+});
+
+// GET /api/escola/alunos/:id/materiais — todo material que esse aluno
+// específico já recebeu. Antes só existia GET /api/aluno/materiais (o
+// próprio aluno vendo os dele) — faltava a visão da escola por aluno.
+app.get('/api/escola/alunos/:id/materiais', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
+    if (!professorLogado) return;
+
+    const aluno = await prisma.aluno.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado nesta Escola.' });
+
+    const materiais = await prisma.material.findMany({
+      where: { alunoId: aluno.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(materiais);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar materiais.');
+  }
+});
+
+// GET /api/escola/alunos/:id/pagamentos — histórico de faturas do aluno,
+// mais recente primeiro. Complementa GET /api/escola/pagamentos-status
+// (que já existia, mas agrega TODOS os alunos de uma vez pra tela
+// Financeiro) com a visão de um aluno específico dentro do modal dele.
+app.get('/api/escola/alunos/:id/pagamentos', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
+    if (!professorLogado) return;
+
+    const aluno = await prisma.aluno.findFirst({ where: { id: req.params.id, escolaId: professorLogado.escolaId } });
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado nesta Escola.' });
+
+    const pagamentos = await prisma.pagamento.findMany({
+      where: { alunoId: aluno.id },
+      orderBy: { vencimento: 'desc' },
+    });
+    res.json(pagamentos);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar pagamentos.');
+  }
+});
+
+// GET /api/escola/alunos/:id/relatorio-pdf?periodo=mensal|bimestral|semestral|anual&mes=&ano=
+// (INSTITUTION Sprint 24, briefing 23/09/2026) — relatório do aluno pronto
+// pra enviar aos pais ou ao próprio aluno. Reaproveita o mesmo padrão do
+// relatório financeiro (Sprint 8): logo da escola no topo, **nunca** cita
+// "KAV Class" (mesmo motivo jurídico já registrado — problema da escola não
+// deve envolver a plataforma).
+const DURACAO_MESES_PERIODO = { mensal: 1, bimestral: 2, semestral: 6, anual: 12 };
+
+app.get('/api/escola/alunos/:id/relatorio-pdf', async (req, res) => {
+  try {
+    const professorLogado = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'alunos');
+    if (!professorLogado) return;
+
+    const periodo = ['mensal', 'bimestral', 'semestral', 'anual'].includes(req.query.periodo) ? req.query.periodo : 'mensal';
+    const duracaoMeses = DURACAO_MESES_PERIODO[periodo];
+    const agora = new Date();
+    const mes = req.query.mes ? parseInt(String(req.query.mes), 10) : agora.getMonth() + 1;
+    const ano = req.query.ano ? parseInt(String(req.query.ano), 10) : agora.getFullYear();
+    if (!Number.isInteger(mes) || mes < 1 || mes > 12 || !Number.isInteger(ano)) {
+      return res.status(400).json({ erro: 'mes (1-12) e ano devem ser números válidos.' });
+    }
+
+    const inicio = new Date(ano, mes - 1, 1, 0, 0, 0, 0);
+    const fim = new Date(ano, mes - 1 + duracaoMeses, 0, 23, 59, 59, 999);
+
+    const [aluno, escola] = await Promise.all([
+      prisma.aluno.findFirst({
+        where: { id: req.params.id, escolaId: professorLogado.escolaId },
+        select: { nome: true, status: true, professor: { select: { nome: true } } },
+      }),
+      prisma.escola.findUnique({ where: { id: professorLogado.escolaId }, select: { nome: true, logoUrl: true } }),
+    ]);
+    if (!aluno) return res.status(404).json({ erro: 'Aluno não encontrado nesta Escola.' });
+
+    const [aulas, pagamentos, relatorios] = await Promise.all([
+      prisma.aula.findMany({ where: { alunoId: req.params.id, dataHora: { gte: inicio, lte: fim } }, orderBy: { dataHora: 'asc' } }),
+      prisma.pagamento.findMany({ where: { alunoId: req.params.id, vencimento: { gte: inicio, lte: fim } }, orderBy: { vencimento: 'asc' } }),
+      prisma.relatorioAluno.findMany({ where: { alunoId: req.params.id, createdAt: { gte: inicio, lte: fim } }, orderBy: { createdAt: 'asc' } }),
+    ]);
+
+    const presencas = aulas.filter((a) => a.presenca === 'PRESENTE').length;
+    const faltasParaRepor = aulas.filter((a) => (a.presenca === 'AUSENCIA_ALUNO' || a.presenca === 'AUSENCIA_PROFESSOR') && a.decisaoReposicao).length;
+    const faltasInjustificadas = aulas.filter((a) => (a.presenca === 'AUSENCIA_ALUNO' || a.presenca === 'AUSENCIA_PROFESSOR') && a.decisaoReposicao === false).length;
+    const reposicoesFeitas = aulas.filter((a) => a.tipo === 'REPOSICAO' && a.presenca === 'PRESENTE').length;
+
+    const ROTULO_PERIODO = { mensal: 'Mensal', bimestral: 'Bimestral', semestral: 'Semestral', anual: 'Anual' };
+    const periodoTexto = `${inicio.toLocaleDateString('pt-BR')} a ${fim.toLocaleDateString('pt-BR')}`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="relatorio-${aluno.nome.replace(/\s+/g, '-').toLowerCase()}-${periodo}-${mes}-${ano}.pdf"`);
+
+    const doc = new PDFDocument({ margin: 50 });
+    doc.pipe(res);
+
+    if (escola?.logoUrl) {
+      try {
+        const respLogo = await fetch(escola.logoUrl);
+        if (respLogo.ok) {
+          const bufferLogo = Buffer.from(await respLogo.arrayBuffer());
+          doc.image(bufferLogo, 50, 45, { fit: [70, 70] });
+          doc.x = 130; doc.y = 50;
+        }
+      } catch (err) {
+        console.error('[Relatório do aluno PDF] Falha ao baixar logo (segue sem logo):', err.message);
+      }
+    }
+
+    doc.fontSize(18).fillColor('#101828').text(escola?.nome || 'Relatório do Aluno');
+    doc.fontSize(11).fillColor('#555').text(`Relatório ${ROTULO_PERIODO[periodo]} — ${periodoTexto}`);
+    doc.x = 50;
+    doc.moveDown(1.5);
+
+    doc.fillColor('#101828').fontSize(14).text(aluno.nome, { underline: true });
+    doc.fontSize(11).fillColor('#555').text(`Professor: ${aluno.professor?.nome || '—'} · Status: ${aluno.status}`);
+    doc.moveDown(1.2);
+
+    doc.fillColor('#101828').fontSize(13).text('Frequência no período', { underline: true });
+    doc.moveDown(0.4);
+    doc.fontSize(11).fillColor('#0a7a3d').text(`Presenças: ${presencas}`);
+    doc.fillColor('#B8860B').text(`Faltas com reposição: ${faltasParaRepor}`);
+    doc.fillColor('#B00020').text(`Faltas injustificadas: ${faltasInjustificadas}`);
+    doc.fillColor('#0275D8').text(`Reposições realizadas: ${reposicoesFeitas}`);
+    doc.moveDown(1.2);
+
+    doc.fillColor('#101828').fontSize(13).text('Pagamentos no período', { underline: true });
+    doc.moveDown(0.4);
+    doc.fontSize(10);
+    if (pagamentos.length === 0) {
+      doc.fillColor('#555').text('Nenhuma fatura no período.');
+    } else {
+      for (const p of pagamentos) {
+        const cor = p.status === 'PAGO' ? '#0a7a3d' : p.status === 'ATRASADO' ? '#B00020' : '#B8860B';
+        doc.fillColor(cor).text(`${new Date(p.vencimento).toLocaleDateString('pt-BR')} — R$ ${Number(p.valor).toFixed(2).replace('.', ',')} — ${p.status}`);
+      }
+    }
+    doc.moveDown(1.2);
+
+    doc.fillColor('#101828').fontSize(13).text('Relatórios da coordenação/professor', { underline: true });
+    doc.moveDown(0.4);
+    doc.fontSize(10).fillColor('#555');
+    if (relatorios.length === 0) {
+      doc.text('Nenhum relatório registrado no período.');
+    } else {
+      for (const r of relatorios) {
+        doc.text(`${new Date(r.createdAt).toLocaleDateString('pt-BR')} (${r.autorTipo === 'COORDENACAO' ? 'Coordenação' : 'Professor'}): ${r.descricao || '—'}`);
+      }
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error(err);
+    if (!res.headersSent) res.status(500).json({ erro: 'Erro ao gerar relatório do aluno em PDF.' });
   }
 });
 
@@ -10493,6 +11075,51 @@ app.get('/api/escola/logistica/grade', async (req, res) => {
     res.json({ salas, aulas });
   } catch (err) {
     tratarErro(err, res, 'Erro ao carregar a grade de logística.');
+  }
+});
+
+// GET /api/escola/logistica/grade-semanal — planilha de horários por sala
+// (INSTITUTION Sprint 26, briefing 23/09/2026), no formato pedido pelo
+// usuário (referência: planilha manual que a escola já usava — uma grade
+// Seg-Sáb × hora por sala, não um dia específico). Mesma técnica de
+// amostragem já usada em ocupacao-semanal: como a recorrência é semanal/
+// quinzenal/mensal alinhada ao dia da semana, olhar só os próximos 7 dias
+// já mostra 1 ocorrência representativa por dia/hora ocupado no ciclo
+// vigente, sem precisar varrer todas as aulas futuras já geradas.
+app.get('/api/escola/logistica/grade-semanal', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'logistica');
+    if (!professor) return;
+
+    const inicio = new Date();
+    const fim = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    const [salas, aulas] = await Promise.all([
+      prisma.sala.findMany({ where: { escolaId: professor.escolaId, ativa: true }, orderBy: { nome: 'asc' } }),
+      prisma.aula.findMany({
+        where: { salaId: { not: null }, status: { not: 'CANCELADA' }, dataHora: { gte: inicio, lte: fim }, professor: { escolaId: professor.escolaId } },
+        include: { aluno: { select: { nome: true } }, professor: { select: { nome: true } }, turma: { select: { id: true, nome: true } } },
+      }),
+    ]);
+
+    // Mesmo formato de objeto Aula da rota diária (/grade) de propósito —
+    // o frontend reaproveita literalmente o mesmo fluxo de "trocar sala"
+    // (abrirTrocaSala/salvarTroca) nos dois formatos de grade, sem duplicar
+    // lógica só porque a fonte da amostra é diferente.
+    const ocupacao = aulas.map((a) => ({
+      ...diaHoraLocal(a.dataHora),
+      id: a.id,
+      dataHora: a.dataHora,
+      salaId: a.salaId,
+      sala: { id: a.salaId },
+      turma: a.turma,
+      aluno: { nome: a.aluno.nome },
+      professor: { nome: a.professor.nome },
+    }));
+
+    res.json({ salas, ocupacao });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar a grade semanal das salas.');
   }
 });
 

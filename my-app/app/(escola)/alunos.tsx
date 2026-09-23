@@ -1,11 +1,13 @@
 import { useFocusEffect } from 'expo-router';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { ERP } from '../../constants/erpTheme';
 import { BASE_URL, fetchComRetry } from '../api';
-import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, PageHeader, SectionCard, Tabela } from './_ui';
+import { Badge, Botao, Campo, ErpShell, EstadoVazio, Modal, PageHeader, SectionCard, SubAbasSimples, Tabela } from './_ui';
 
 const STATUS_CONTRATO: Record<string, { texto: string; tom: 'default' | 'sucesso' | 'alerta' | 'aviso' | 'info' }> = {
   ENVIADO: { texto: 'Contrato enviado', tom: 'info' },
@@ -46,6 +48,187 @@ function calcularIdade(dataNascimento: string | null): number | null {
   return idade;
 }
 
+// ─── Histórico completo do aluno (INSTITUTION Sprint 22, briefing
+// 23/09/2026) — "não seria interessante apenas a configuração, mas todo o
+// histórico do aluno também". Cada aba busca os próprios dados sob demanda
+// (só quando aberta), pra não pesar o modal de edição de cadastro comum.
+
+function corDaAulaHistorico(a: any): 'verde' | 'amarelo' | 'vermelho' | 'cinza' {
+  if (a.presenca === 'PRESENTE') return 'verde';
+  if (a.presenca === 'AUSENCIA_ALUNO' || a.presenca === 'AUSENCIA_PROFESSOR') return a.decisaoReposicao ? 'amarelo' : 'vermelho';
+  return 'cinza';
+}
+const ROTULO_COR_HIST: Record<string, string> = { verde: 'Presente', amarelo: 'Falta — pra repor', vermelho: 'Falta injustificada', cinza: 'Pendente' };
+const TOM_COR_HIST: Record<string, 'sucesso' | 'aviso' | 'alerta' | 'default'> = { verde: 'sucesso', amarelo: 'aviso', vermelho: 'alerta', cinza: 'default' };
+
+function useAbaAluno<T>(alunoId: string, path: string, ativa: boolean) {
+  const [dados, setDados] = useState<T[]>([]);
+  const [carregando, setCarregando] = useState(true);
+  React.useEffect(() => {
+    if (!ativa) return;
+    let cancelado = false;
+    (async () => {
+      setCarregando(true);
+      try {
+        const token = await SecureStore.getItemAsync('kav_token');
+        const res = await fetchComRetry(`${BASE_URL}${path}`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!cancelado && res.ok) setDados(await res.json());
+      } catch {
+        // silencioso — cada aba mostra "nenhum dado" se falhar, sem travar o modal inteiro
+      } finally {
+        if (!cancelado) setCarregando(false);
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [alunoId, path, ativa]);
+  return { dados, carregando };
+}
+
+function AbaHistorico({ alunoId, ativa }: { alunoId: string; ativa: boolean }) {
+  const { dados, carregando } = useAbaAluno<any>(alunoId, `/api/escola/alunos/${alunoId}/historico-aulas`, ativa);
+  if (carregando) return <View style={{ paddingVertical: 30, alignItems: 'center' }}><SyncLoader color={ERP.texto} /></View>;
+  if (dados.length === 0) return <EstadoVazio icone="calendar-outline" texto="Nenhuma aula registrada ainda." />;
+  return (
+    <View>
+      {dados.map((a) => {
+        const cor = corDaAulaHistorico(a);
+        return (
+          <View key={a.id} style={estilos.vinculoCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={estilos.vinculoTitulo}>
+                {new Date(a.dataHora).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })} · {a.professorNome}
+                {a.tipo === 'REPOSICAO' ? ' (reposição)' : ''}
+              </Text>
+              {a.repondoAulaDe && (
+                <Text style={estilos.vinculoSub}>Repondo a aula de {new Date(a.repondoAulaDe).toLocaleDateString('pt-BR')}</Text>
+              )}
+              {a.assuntoTratado && <Text style={estilos.vinculoSub}>{a.assuntoTratado}</Text>}
+              <View style={{ marginTop: 6 }}><Badge texto={ROTULO_COR_HIST[cor]} tom={TOM_COR_HIST[cor]} /></View>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function AbaConteudos({ alunoId, ativa }: { alunoId: string; ativa: boolean }) {
+  const { dados, carregando } = useAbaAluno<any>(alunoId, `/api/escola/alunos/${alunoId}/materiais`, ativa);
+  if (carregando) return <View style={{ paddingVertical: 30, alignItems: 'center' }}><SyncLoader color={ERP.texto} /></View>;
+  if (dados.length === 0) return <EstadoVazio icone="folder-open-outline" texto="Nenhum material enviado pra este aluno ainda." />;
+  return (
+    <View>
+      {dados.map((m) => (
+        <View key={m.id} style={estilos.vinculoCard}>
+          <View style={{ flex: 1 }}>
+            <Text style={estilos.vinculoTitulo}>{m.titulo}</Text>
+            <Text style={estilos.vinculoSub}>{m.tipo} · {new Date(m.createdAt).toLocaleDateString('pt-BR')}</Text>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const PERIODOS_RELATORIO: { chave: 'mensal' | 'bimestral' | 'semestral' | 'anual'; rotulo: string }[] = [
+  { chave: 'mensal', rotulo: 'Mensal' },
+  { chave: 'bimestral', rotulo: 'Bimestral' },
+  { chave: 'semestral', rotulo: 'Semestral' },
+  { chave: 'anual', rotulo: 'Anual' },
+];
+
+function AbaRelatorios({ alunoId, ativa }: { alunoId: string; ativa: boolean }) {
+  const { dados, carregando } = useAbaAluno<any>(alunoId, `/api/escola/relatorios-aluno?alunoId=${alunoId}`, ativa);
+  const [exportando, setExportando] = useState<string | null>(null);
+
+  // Exportar relatório em PDF por período (INSTITUTION Sprint 24, briefing
+  // 23/09/2026) — mesmo padrão já usado pro relatório financeiro (DRE) em
+  // financeiro.tsx: baixa o PDF autenticado, salva em cache e abre o menu
+  // de compartilhar (enviar aos pais/aluno por WhatsApp, e-mail etc.).
+  const exportarPdf = async (periodo: 'mensal' | 'bimestral' | 'semestral' | 'anual') => {
+    setExportando(periodo);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/alunos/${alunoId}/relatorio-pdf?periodo=${periodo}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) { Alert.alert('Erro', 'Não foi possível gerar o relatório.'); return; }
+      const blob = await res.blob();
+      const base64: string = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.readAsDataURL(blob);
+      });
+      const fileUri = `${FileSystem.cacheDirectory}relatorio-aluno-${periodo}.pdf`;
+      await FileSystem.writeAsStringAsync(fileUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(fileUri);
+      else Alert.alert('Relatório gerado', `Salvo em: ${fileUri}`);
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setExportando(null);
+    }
+  };
+
+  return (
+    <View>
+      <Text style={estilos.secao}>Exportar relatório em PDF</Text>
+      <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
+        {PERIODOS_RELATORIO.map((p) => (
+          <Botao key={p.chave} texto={p.rotulo} variante="secundario" onPress={() => exportarPdf(p.chave)} carregando={exportando === p.chave} />
+        ))}
+      </View>
+
+      <Text style={estilos.secao}>Relatórios registrados</Text>
+      {carregando ? (
+        <View style={{ paddingVertical: 30, alignItems: 'center' }}><SyncLoader color={ERP.texto} /></View>
+      ) : dados.length === 0 ? (
+        <EstadoVazio icone="document-text-outline" texto="Nenhum relatório registrado ainda." />
+      ) : (
+        dados.map((r) => (
+          <View key={r.id} style={estilos.vinculoCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={estilos.vinculoTitulo}>{r.autorTipo === 'COORDENACAO' ? 'Coordenação' : 'Professor'} · {new Date(r.createdAt).toLocaleDateString('pt-BR')}</Text>
+              {r.descricao && <Text style={estilos.vinculoSub}>{r.descricao}</Text>}
+            </View>
+          </View>
+        ))
+      )}
+    </View>
+  );
+}
+
+const STATUS_PAGAMENTO_LABEL: Record<string, { texto: string; tom: 'default' | 'sucesso' | 'alerta' | 'aviso' | 'info' }> = {
+  PAGO: { texto: 'Pago', tom: 'sucesso' },
+  ATRASADO: { texto: 'Atrasado', tom: 'alerta' },
+  PENDENTE: { texto: 'Pendente', tom: 'aviso' },
+  EM_ANALISE: { texto: 'Em análise', tom: 'info' },
+  CANCELADO: { texto: 'Cancelado', tom: 'default' },
+};
+
+function AbaPagamentos({ alunoId, ativa }: { alunoId: string; ativa: boolean }) {
+  const { dados, carregando } = useAbaAluno<any>(alunoId, `/api/escola/alunos/${alunoId}/pagamentos`, ativa);
+  if (carregando) return <View style={{ paddingVertical: 30, alignItems: 'center' }}><SyncLoader color={ERP.texto} /></View>;
+  if (dados.length === 0) return <EstadoVazio icone="cash-outline" texto="Nenhuma fatura registrada ainda." />;
+  return (
+    <View>
+      {dados.map((p) => {
+        const cfg = STATUS_PAGAMENTO_LABEL[p.status] || STATUS_PAGAMENTO_LABEL.PENDENTE;
+        return (
+          <View key={p.id} style={estilos.vinculoCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={estilos.vinculoTitulo}>R$ {Number(p.valor).toFixed(2).replace('.', ',')} · vence {new Date(p.vencimento).toLocaleDateString('pt-BR')}</Text>
+              {p.dataPagamento && <Text style={estilos.vinculoSub}>Pago em {new Date(p.dataPagamento).toLocaleDateString('pt-BR')}</Text>}
+              <View style={{ marginTop: 6 }}><Badge texto={cfg.texto} tom={cfg.tom} /></View>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 export default function AlunosEscola() {
   const [carregando, setCarregando] = useState(true);
   const [alunos, setAlunos] = useState<any[]>([]);
@@ -64,6 +247,15 @@ export default function AlunosEscola() {
   // Ficha 100% editável — mesmo modal serve pra "+ novo aluno" e pra editar.
   const [ficha, setFicha] = useState<any | null>(null); // null = fechado; {} = novo; objeto = editando
   const [salvandoFicha, setSalvandoFicha] = useState(false);
+
+  // Vincular conta existente (INSTITUTION Sprint 25, briefing 23/09/2026) —
+  // "puxar" alguém que já tem login no KAV Class, em vez de recadastrar do
+  // zero. Não cria Aluno na hora: só envia o convite, a pessoa confirma.
+  const [modalConvidarAberto, setModalConvidarAberto] = useState(false);
+  const [emailConvidar, setEmailConvidar] = useState('');
+  const [professorConvidarId, setProfessorConvidarId] = useState<string | null>(null);
+  const [cursoConvidar, setCursoConvidar] = useState('');
+  const [convidando, setConvidando] = useState(false);
 
   const [modalAtribuirAberto, setModalAtribuirAberto] = useState(false);
   const [alunoParaAtribuir, setAlunoParaAtribuir] = useState<any | null>(null);
@@ -107,6 +299,36 @@ export default function AlunosEscola() {
     });
   }, [alunos, filtroNome, filtroTempo, filtroInicioDe, filtroInicioAte, filtroFimDe, filtroFimAte]);
 
+  const abrirModalConvidar = () => {
+    setEmailConvidar('');
+    setProfessorConvidarId(professores[0]?.id || null);
+    setCursoConvidar('');
+    setModalConvidarAberto(true);
+  };
+
+  const confirmarConvite = async () => {
+    if (!emailConvidar.trim() || !professorConvidarId) {
+      Alert.alert('Atenção', 'Informe o e-mail e escolha o professor.');
+      return;
+    }
+    setConvidando(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/escola/alunos/convidar-conta`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: emailConvidar.trim(), professorId: professorConvidarId, curso: cursoConvidar.trim() || undefined }),
+      });
+      const dados = await res.json();
+      if (res.ok) { setModalConvidarAberto(false); Alert.alert('Convite enviado!', dados.mensagem); }
+      else Alert.alert('Não foi possível convidar', dados.erro || 'Tente novamente.');
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setConvidando(false);
+    }
+  };
+
   const abrirModalAtribuir = (aluno: any) => {
     setAlunoParaAtribuir(aluno);
     setProfessorEscolhido(professores[0]?.id || null);
@@ -136,7 +358,15 @@ export default function AlunosEscola() {
   const alunosSemProfessor = alunos.filter((a) => !a.professor);
 
   return (
-    <ErpShell titulo="Alunos" acao={<Botao texto="Novo aluno" icone="add" onPress={() => setFicha({})} disabled={professores.length === 0} />}>
+    <ErpShell
+      titulo="Alunos"
+      acao={
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Botao texto="Vincular conta existente" variante="secundario" icone="link-outline" onPress={abrirModalConvidar} disabled={professores.length === 0} />
+          <Botao texto="Novo aluno" icone="add" onPress={() => setFicha({})} disabled={professores.length === 0} />
+        </View>
+      }
+    >
       <PageHeader
         titulo="Alunos da escola"
         subtitulo={`${alunos.length} ${alunos.length === 1 ? 'aluno matriculado' : 'alunos matriculados'}, de todos os professores`}
@@ -187,9 +417,13 @@ export default function AlunosEscola() {
             colunas={[
               { chave: 'nome', titulo: 'Nome', flex: 3, render: (a: any) => (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: ERP.acento, alignItems: 'center', justifyContent: 'center' }}>
-                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{a.nome?.[0]?.toUpperCase() || '?'}</Text>
-                  </View>
+                  {a.fotoUrl ? (
+                    <Image source={{ uri: a.fotoUrl }} style={{ width: 30, height: 30, borderRadius: 15 }} />
+                  ) : (
+                    <View style={{ width: 30, height: 30, borderRadius: 15, backgroundColor: ERP.acento, alignItems: 'center', justifyContent: 'center' }}>
+                      <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>{a.nome?.[0]?.toUpperCase() || '?'}</Text>
+                    </View>
+                  )}
                   <Text style={{ fontSize: 13.5, fontWeight: '600', color: ERP.texto }}>{a.nome}</Text>
                 </View>
               )},
@@ -209,6 +443,23 @@ export default function AlunosEscola() {
           />
         )}
       </SectionCard>
+
+      <Modal visivel={modalConvidarAberto} titulo="Vincular conta existente" onFechar={() => setModalConvidarAberto(false)}>
+        <Text style={{ color: ERP.textoSecundario, fontSize: 12.5, marginBottom: 14, lineHeight: 18 }}>
+          Pra alguém que já usa o KAV Class (como professor ou aluno de outra escola). A pessoa recebe um convite e precisa confirmar antes de virar aluno de verdade — nada é criado até ela aceitar.
+        </Text>
+        <Campo label="E-mail da conta" value={emailConvidar} onChangeText={setEmailConvidar} placeholder="email@exemplo.com" autoCapitalize="none" keyboardType="email-address" />
+        <Text style={estilos.label}>Professor responsável</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            {professores.map((p) => (
+              <Chip key={p.id} label={p.nome} ativo={professorConvidarId === p.id} onPress={() => setProfessorConvidarId(p.id)} />
+            ))}
+          </View>
+        </ScrollView>
+        <Campo label="Curso (opcional)" value={cursoConvidar} onChangeText={setCursoConvidar} placeholder="Ex.: Violão" />
+        <Botao texto="Enviar convite" onPress={confirmarConvite} carregando={convidando} disabled={professores.length === 0} />
+      </Modal>
 
       <Modal visivel={modalAtribuirAberto} titulo={`Atribuir professor a ${alunoParaAtribuir?.nome || ''}`} onFechar={() => setModalAtribuirAberto(false)}>
         <Text style={estilos.label}>Professor responsável</Text>
@@ -259,6 +510,8 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
   const [contratoUrl, setContratoUrl] = useState('');
   const [cpf, setCpf] = useState('');
   const [endereco, setEndereco] = useState('');
+  const [fotoUrl, setFotoUrl] = useState('');
+  const [aba, setAba] = useState<'dados' | 'historico' | 'conteudos' | 'relatorios' | 'pagamentos' | 'contrato'>('dados');
   const [respNome, setRespNome] = useState('');
   const [respCpf, setRespCpf] = useState('');
   const [respEmail, setRespEmail] = useState('');
@@ -290,6 +543,8 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
     setContratoUrl(aluno.contratoUrl || '');
     setCpf(aluno.cpf || '');
     setEndereco(aluno.endereco || '');
+    setFotoUrl(aluno.fotoUrl || '');
+    setAba('dados');
     setRespNome(aluno.responsavel?.nome || '');
     setRespCpf(aluno.responsavel?.cpf || '');
     setRespEmail(aluno.responsavel?.email || '');
@@ -319,6 +574,7 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
         contratoUrl: contratoUrl || null,
         cpf: cpf || null,
         endereco: endereco || null,
+        fotoUrl: fotoUrl || null,
         responsavel,
       };
       if (ehNovo) { body.senha = senha; body.professorId = professorId; }
@@ -410,7 +666,27 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
 
   return (
     <Modal visivel={visivel} titulo={ehNovo ? 'Novo aluno' : `Editar ${aluno?.nome || ''}`} onFechar={onFechar} largura={620}>
+      {!ehNovo && (
+        <View style={{ marginBottom: 16 }}>
+          <SubAbasSimples
+            opcoes={[
+              { chave: 'dados', rotulo: 'Dados' },
+              { chave: 'historico', rotulo: 'Histórico' },
+              { chave: 'conteudos', rotulo: 'Conteúdos' },
+              { chave: 'relatorios', rotulo: 'Relatórios' },
+              { chave: 'pagamentos', rotulo: 'Pagamentos' },
+              { chave: 'contrato', rotulo: 'Contrato' },
+            ]}
+            ativa={aba}
+            onMudar={setAba}
+          />
+        </View>
+      )}
+
+      {aba === 'dados' && (
+      <>
       <Text style={estilos.secao}>Dados pessoais</Text>
+      <Campo label="Foto de perfil (URL)" value={fotoUrl} onChangeText={setFotoUrl} placeholder="https://..." autoCapitalize="none" />
       <Campo label="Nome completo" value={nome} onChangeText={setNome} placeholder="Nome do aluno" />
       <Campo label="E-mail" value={email} onChangeText={setEmail} placeholder="email@exemplo.com" autoCapitalize="none" keyboardType="email-address" />
       <Campo label={ehNovo ? 'Senha de acesso' : 'Nova senha (opcional)'} value={senha} onChangeText={setSenha} placeholder="Mínimo 6 caracteres" secureTextEntry />
@@ -526,6 +802,20 @@ function FichaAluno({ aluno, professores, turmas, planos, onFechar, aoSalvar, sa
             <Botao texto="+ Adicionar curso/professor" variante="secundario" onPress={() => setNovoVinculoAberto(true)} />
           )}
         </>
+      )}
+      </>
+      )}
+
+      {!ehNovo && aba === 'historico' && <AbaHistorico alunoId={aluno.id} ativa={aba === 'historico'} />}
+      {!ehNovo && aba === 'conteudos' && <AbaConteudos alunoId={aluno.id} ativa={aba === 'conteudos'} />}
+      {!ehNovo && aba === 'relatorios' && <AbaRelatorios alunoId={aluno.id} ativa={aba === 'relatorios'} />}
+      {!ehNovo && aba === 'pagamentos' && <AbaPagamentos alunoId={aluno.id} ativa={aba === 'pagamentos'} />}
+      {!ehNovo && aba === 'contrato' && (
+        contratoUrl ? (
+          <Botao texto="Abrir contrato" onPress={() => Linking.openURL(contratoUrl)} />
+        ) : (
+          <EstadoVazio icone="document-text-outline" texto="Nenhum contrato anexado ainda — anexe a URL na aba Dados." />
+        )
       )}
     </Modal>
   );

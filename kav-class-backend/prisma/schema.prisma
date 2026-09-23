@@ -113,13 +113,25 @@ enum StatusReposicao {
   AUTORIZADA
   NEGADA
   FINALIZADA
+  // A partir daqui: fluxo automático nascido direto de uma Aula marcada
+  // como falta na Grade de hoje (INSTITUTION Sprint 20, briefing
+  // 23/09/2026, origem ESCOLA) — sem negociação professor↔aluno.
+  // PENDENTE_AGENDAMENTO: falta marcada, precisa repor, ainda sem data.
+  // AGENDADA: escola já marcou data/horário/professor (aulaReposicaoId
+  // preenchido, aponta pra uma Aula tipo=REPOSICAO de verdade). Vira
+  // FINALIZADA sozinha quando essa Aula recebe presença PRESENTE.
+  PENDENTE_AGENDAMENTO
+  AGENDADA
 }
 
 // Quem começou o pedido de reposição — decide qual fluxo de status essa
-// linha segue (ver StatusReposicao).
+// linha segue (ver StatusReposicao). ESCOLA (Sprint 20, briefing
+// 23/09/2026): a própria escola marca a falta e decide que precisa repor,
+// direto na Grade de hoje, sem negociação de datas entre professor/aluno.
 enum OrigemReposicao {
   PROFESSOR
   ALUNO
+  ESCOLA
 }
 
 // CONTRATANTE: o próprio aluno é o responsável financeiro (maior de idade,
@@ -320,6 +332,7 @@ model Escola {
   produtos             Produto[]
   movimentacoesEstoque MovimentacaoEstoque[]
   mensagensEquipe      MensagemEquipe[]
+  convitesAlunoConta   ConviteAlunoConta[]
 
   // Feed (Rede Social Fase 4) — postsAutorados: posts feitos EM NOME da
   // Escola (DONO/GESTOR postando como instituição). posts: todo post
@@ -358,8 +371,51 @@ model Conta {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  alunos      Aluno[]
-  professores Professor[]
+  alunos             Aluno[]
+  professores        Professor[]
+  convitesAlunoConta ConviteAlunoConta[]
+}
+
+// ─── "Puxar" login existente pra virar aluno (INSTITUTION Sprint 25,
+// briefing 23/09/2026) — KAV Class é SaaS + rede social: é comum alguém já
+// ter Conta (como professor ou aluno de outra escola) antes de uma escola
+// querer matriculá-lo. Em vez de recriar o cadastro do zero, a escola
+// "puxa" a Conta pelo e-mail; a PESSOA precisa confirmar antes de virar
+// Aluno de verdade — o Aluno só é criado no aceite (PENDENTE até lá não
+// tem representação em tabela nenhuma, evita estado inconsistente se ela
+// nunca responder). `token` é a credencial pública (mesmo padrão de
+// gerarTokenPublico() já usado em LinkCaptacao) — quem recebe o push/link
+// aceita ou recusa sem precisar logar antes nessa Escola específica.
+enum StatusConviteAlunoConta {
+  PENDENTE
+  ACEITO
+  RECUSADO
+}
+
+model ConviteAlunoConta {
+  id     String                  @id @default(uuid())
+  token  String                  @unique
+  status StatusConviteAlunoConta @default(PENDENTE)
+  curso  String?
+
+  contaId String
+  conta   Conta  @relation(fields: [contaId], references: [id])
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  professorId String
+  professor   Professor @relation(fields: [professorId], references: [id])
+
+  // Preenchido só no aceite — o Aluno de verdade criado a partir deste convite.
+  alunoId String? @unique
+  aluno   Aluno?  @relation(fields: [alunoId], references: [id])
+
+  createdAt    DateTime  @default(now())
+  respondidoEm DateTime?
+
+  @@index([contaId, status])
+  @@index([escolaId])
 }
 
 // ─── 1. PROFESSOR ───────────────────────────────────────────────
@@ -478,6 +534,7 @@ model Professor {
   notificacoes        Notificacao[]
   mensagens           Mensagem[]
   mensagensEquipe     MensagemEquipe[]
+  convitesAlunoConta  ConviteAlunoConta[]
   turmas              Turma[]
   matriculas          Matricula[]
   avaliacoes          Avaliacao[]
@@ -622,6 +679,7 @@ model Aluno {
   movimentacoesEstoque MovimentacaoEstoque[]
   relatorios           RelatorioAluno[]
   envioComunicados     EnvioComunicado[]
+  conviteOrigem        ConviteAlunoConta?
 
   // Feed (Rede Social Fase 4) — aluno só curte/comenta, não posta.
   curtidas    PostCurtida[]
@@ -743,6 +801,11 @@ model Aula {
   confirmacaoAlunoSolicitadaEm DateTime?
   confirmacaoAlunoEm           DateTime?
   confirmacaoAlunoResposta     Boolean?
+
+  // Motor automático de reposição (INSTITUTION Sprint 20, briefing
+  // 23/09/2026) — ver comentário completo em Reposicao acima.
+  reposicoesOriginadas   Reposicao[] @relation("AulaOriginalDaReposicao")
+  reposicaoQueRepresenta Reposicao?  @relation("AulaQueRepoeReposicao")
 
   avaliacoes Avaliacao[]
 
@@ -879,7 +942,7 @@ model MensagemEquipe {
   fixado Boolean @default(false)
 
   escolaId String
-  escola   Escola @relation(fields: [escolaId], references: [id])
+  escola   Escola    @relation(fields: [escolaId], references: [id])
   autorId  String
   autor    Professor @relation(fields: [autorId], references: [id])
 
@@ -1004,7 +1067,12 @@ model Reposicao {
   professorId  String
   alunoId      String
   dataOriginal String?
-  dataProposta String
+  // Nullable a partir do Sprint 20 (briefing 23/09/2026): uma reposição
+  // nascida automaticamente de uma falta (origem ESCOLA) começa sem data —
+  // é exatamente o que fica pendente na coluna "Para repor". Os fluxos
+  // antigos (PROFESSOR/ALUNO) continuam preenchendo isso na criação, como
+  // sempre fizeram.
+  dataProposta String?
   motivo       String
   status       StatusReposicao @default(AGUARDANDO)
   // Default PROFESSOR preserva o significado de toda linha já existente —
@@ -1015,8 +1083,22 @@ model Reposicao {
   professor Professor @relation(fields: [professorId], references: [id])
   aluno     Aluno     @relation(fields: [alunoId], references: [id])
 
+  // ─── Motor automático (INSTITUTION Sprint 20, briefing 23/09/2026) ──────
+  // aulaOriginalId: a Aula que foi perdida (a falta que gerou esta
+  // reposição) — é o que permite mostrar "repondo a aula de 05/10" no
+  // histórico do aluno. aulaReposicaoId: a Aula de verdade (tipo=REPOSICAO)
+  // criada quando a escola agenda data/horário/professor pela tela de
+  // Reposições — únicos entre si (@@unique) porque uma Aula só pode cobrir
+  // uma reposição. Quando essa Aula recebe presença PRESENTE, esta linha
+  // vira FINALIZADA sozinha (ver sincronizarFinalizacaoReposicao).
+  aulaOriginalId  String?
+  aulaOriginal    Aula?   @relation("AulaOriginalDaReposicao", fields: [aulaOriginalId], references: [id], onDelete: SetNull)
+  aulaReposicaoId String? @unique
+  aulaReposicao   Aula?   @relation("AulaQueRepoeReposicao", fields: [aulaReposicaoId], references: [id], onDelete: SetNull)
+
   @@index([professorId])
   @@index([alunoId])
+  @@index([aulaOriginalId])
 }
 
 // ─── 10. CONVITE DE PROFESSOR PRA ESCOLA ─────────────────────────

@@ -19,6 +19,14 @@ import { NAV_ALUNO_ESCOLA } from './_nav';
 interface ProximaAula {
   id: string; dataHora: string; tipo: string; professor: { nome: string };
   presencaProfessorEm: string | null; presencaAlunoEm: string | null;
+  // Confirmação de presença 24h antes (INSTITUTION Sprint 13, briefing
+  // 22/09/2026) — corrigido no Sprint 23 (briefing 23/09/2026): tinha sido
+  // implementado só em (aluno)/index.tsx (app do SELF); aluno de Escola de
+  // verdade (PACOTE_ESCOLA) é redirecionado pra cá antes de renderizar
+  // aquela tela (ver RedirecionadorEscolaAluno em (aluno)/_layout.tsx), então
+  // nunca via o card. Precisava estar nos dois lugares.
+  confirmacaoAlunoSolicitadaEm?: string | null;
+  confirmacaoAlunoResposta?: boolean | null;
 }
 interface DashboardData {
   pendente?: boolean;
@@ -62,6 +70,7 @@ export default function PainelAlunoEscola() {
   const [carregando, setCarregando] = useState(true);
   const [dados, setDados] = useState<DashboardData>({});
   const [confirmando, setConfirmando] = useState(false);
+  const [enviandoConfirmacaoPrevia, setEnviandoConfirmacaoPrevia] = useState(false);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -111,6 +120,31 @@ export default function PainelAlunoEscola() {
       Alert.alert('Sem conexão', 'Não conseguimos alcançar o servidor.');
     } finally {
       setConfirmando(false);
+    }
+  };
+
+  // Confirmação de presença 24h antes (Sprint 13/23) — resposta simples de
+  // "vou"/"não vou" ao pedido disparado pelo cron, distinta do check-in
+  // biométrico do momento da aula (confirmarPresenca, acima).
+  const responderConfirmacaoPrevia = async (confirma: boolean) => {
+    if (!dados.proximaAula) return;
+    setEnviandoConfirmacaoPrevia(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${BASE_URL}/api/aulas/${dados.proximaAula.id}/confirmar-presenca-previa`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirma }),
+      });
+      if (res.ok) {
+        setDados((d) => ({ ...d, proximaAula: d.proximaAula ? { ...d.proximaAula, confirmacaoAlunoResposta: confirma } : d.proximaAula }));
+      } else {
+        Alert.alert('Erro', 'Não foi possível registrar sua resposta.');
+      }
+    } catch {
+      Alert.alert('Sem conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setEnviandoConfirmacaoPrevia(false);
     }
   };
 
@@ -174,6 +208,23 @@ export default function PainelAlunoEscola() {
                   <Text style={estilos.tipoAula}>{proximaAula.tipo === 'REGULAR' ? 'Aula regular' : 'Reposição'}</Text>
                 </View>
               </View>
+            )}
+
+            {proximaAula && proximaAula.confirmacaoAlunoSolicitadaEm && proximaAula.confirmacaoAlunoResposta == null && (
+              <View style={{ marginTop: 14, padding: 14, backgroundColor: ERP.avisoSoft, borderRadius: ERP.raio.md, borderWidth: 1, borderColor: '#F5D9A8' }}>
+                <Text style={{ color: ERP.texto, fontSize: 13.5, fontWeight: '700', marginBottom: 10, textAlign: 'center' }}>
+                  Você confirma presença na sua aula?
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <Botao texto="Vou sim" onPress={() => responderConfirmacaoPrevia(true)} carregando={enviandoConfirmacaoPrevia} />
+                  <Botao texto="Não vou" variante="perigo" onPress={() => responderConfirmacaoPrevia(false)} carregando={enviandoConfirmacaoPrevia} />
+                </View>
+              </View>
+            )}
+            {proximaAula && proximaAula.confirmacaoAlunoResposta != null && (
+              <Text style={{ color: proximaAula.confirmacaoAlunoResposta ? ERP.sucesso : ERP.perigo, fontSize: 12.5, fontWeight: '700', marginTop: 10 }}>
+                {proximaAula.confirmacaoAlunoResposta ? '✓ Você confirmou presença' : '✕ Você avisou que não vai'}
+              </Text>
             )}
 
             {proximaAula && (

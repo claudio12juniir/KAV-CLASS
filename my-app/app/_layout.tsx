@@ -15,6 +15,7 @@ export default function RootLayout() {
         <Stack.Screen name="esqueceu-senha" />
         <Stack.Screen name="redefinir-senha" />
         <Stack.Screen name="perfil-publico" />
+        <Stack.Screen name="convite-aluno/[token]" />
       </Stack>
     </ContaProvider>
   );
