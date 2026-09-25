@@ -1,11 +1,12 @@
 // Painel do professor INSTITUTION — grade do dia + modal ao tocar numa aula
-// com 3 blocos (cronograma vigente, presença biométrica, material didático).
-// Endpoints já existentes, reaproveitados sem alteração: GET /api/dashboard
-// (mesmo usado pelo SELF), GET /api/escola/cronograma-conteudo (liberado a
-// qualquer professor da Escola), POST /api/aulas/:id/checkin-professor,
-// POST /api/aulas/:id/material.
+// com 2 blocos (cronograma vigente, material didático). Presença biométrica
+// saiu daqui em 27/09/2026: passou a viver só em
+// (professor-escola)/confirmar-presenca.tsx (mesmo fluxo do professor SELF),
+// pra ter um único lugar de marcar presença, não dois. Endpoints já
+// existentes, reaproveitados sem alteração: GET /api/dashboard (mesmo usado
+// pelo SELF), GET /api/escola/cronograma-conteudo (liberado a qualquer
+// professor da Escola), POST /api/aulas/:id/material.
 import { Ionicons } from '@expo/vector-icons';
-import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -44,7 +45,6 @@ export default function PainelProfessorEscola() {
 
   const [aulaAberta, setAulaAberta] = useState<Aula | null>(null);
   const [assunto, setAssunto] = useState('');
-  const [confirmando, setConfirmando] = useState(false);
 
   const [tituloMaterial, setTituloMaterial] = useState('');
   const [tipoMaterial, setTipoMaterial] = useState<'TEXTO' | 'LINK'>('TEXTO');
@@ -78,48 +78,9 @@ export default function PainelProfessorEscola() {
 
   const abrirAula = (aula: Aula) => {
     setAulaAberta(aula);
-    setAssunto(aula.assuntoTratado || '');
     setTituloMaterial('');
     setTipoMaterial('TEXTO');
     setConteudoMaterial('');
-  };
-
-  const confirmarPresenca = async () => {
-    if (!aulaAberta) return;
-    try {
-      const temHardware = await LocalAuthentication.hasHardwareAsync();
-      const inscrito = await LocalAuthentication.isEnrolledAsync();
-      if (temHardware && inscrito) {
-        const resultado = await LocalAuthentication.authenticateAsync({
-          promptMessage: 'Confirmar presença',
-          fallbackLabel: 'Usar senha do dispositivo',
-          cancelLabel: 'Cancelar',
-        });
-        if (!resultado.success) return;
-      }
-
-      setConfirmando(true);
-      const token = await SecureStore.getItemAsync('kav_token');
-      const res = await fetchComRetry(`${BASE_URL}/api/aulas/${aulaAberta.id}/checkin-professor`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assuntoTratado: assunto }),
-      });
-      const dados = await res.json();
-      if (res.ok) {
-        // dados.aula vem de um prisma.aula.update() sem include — não traz
-        // o relacionamento `aluno`, então preserva o que já tínhamos em tela.
-        setAulaAberta((prev) => (prev ? { ...prev, ...dados.aula, aluno: prev.aluno } : prev));
-        setAulasHoje((prev) => prev.map((a) => (a.id === dados.aula.id ? { ...a, ...dados.aula, aluno: a.aluno } : a)));
-        Alert.alert('Presença confirmada!', dados.mensagem);
-      } else {
-        Alert.alert('Erro', dados.erro || 'Não foi possível confirmar.');
-      }
-    } catch {
-      Alert.alert('Sem conexão', 'Não conseguimos alcançar o servidor.');
-    } finally {
-      setConfirmando(false);
-    }
   };
 
   const enviarMaterial = async () => {
@@ -210,26 +171,6 @@ export default function PainelProfessorEscola() {
                   <Text style={estilos.itemCronogramaTitulo}>{c.titulo || 'Sem título'}</Text>
                 </View>
               ))
-            )}
-
-            <Text style={[estilos.blocoTitulo, { marginTop: 20 }]}>Presença</Text>
-            {aulaAberta.presencaProfessorEm ? (
-              <Badge texto="Você já confirmou presença" tom="sucesso" />
-            ) : (
-              <>
-                <Campo
-                  label="Assunto tratado (opcional)"
-                  placeholder="O que foi dado na aula"
-                  value={assunto}
-                  onChangeText={setAssunto}
-                />
-                <Botao
-                  texto="Confirmar presença"
-                  icone="finger-print-outline"
-                  onPress={confirmarPresenca}
-                  carregando={confirmando}
-                />
-              </>
             )}
 
             <Text style={[estilos.blocoTitulo, { marginTop: 20 }]}>Material didático</Text>

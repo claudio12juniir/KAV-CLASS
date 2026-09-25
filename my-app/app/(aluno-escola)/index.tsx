@@ -3,9 +3,14 @@
 // professor específico. Mesmo GET /api/aluno/dashboard (já pronto, sem
 // branch de pacote). Funções de cálculo copiadas (não importadas) do SELF
 // — mesma decisão de isolamento usada nas fases anteriores.
+//
+// Check-in biométrico saiu daqui em 27/09/2026: passou a viver só na aba
+// "Confirmar Presença" ((aluno-escola)/confirmar-presenca.tsx), com a
+// exigência de estar em horário de aula — único lugar de marcar presença
+// agora. A confirmação prévia de 24h antes (abaixo) é outra coisa: um "vou/
+// não vou" pedido com antecedência, não o check-in do momento da aula.
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -69,7 +74,6 @@ export default function PainelAlunoEscola() {
 
   const [carregando, setCarregando] = useState(true);
   const [dados, setDados] = useState<DashboardData>({});
-  const [confirmando, setConfirmando] = useState(false);
   const [enviandoConfirmacaoPrevia, setEnviandoConfirmacaoPrevia] = useState(false);
 
   const carregar = useCallback(async () => {
@@ -88,40 +92,6 @@ export default function PainelAlunoEscola() {
   }, []);
 
   useEffect(() => { carregar(); }, [carregar]);
-
-  const confirmarPresenca = async () => {
-    if (!dados.proximaAula) return;
-    try {
-      const temHardware = await LocalAuthentication.hasHardwareAsync();
-      const inscrito = await LocalAuthentication.isEnrolledAsync();
-      if (temHardware && inscrito) {
-        const resultado = await LocalAuthentication.authenticateAsync({
-          promptMessage: 'Confirmar presença',
-          fallbackLabel: 'Usar senha do dispositivo',
-          cancelLabel: 'Cancelar',
-        });
-        if (!resultado.success) return;
-      }
-
-      setConfirmando(true);
-      const token = await SecureStore.getItemAsync('kav_token');
-      const res = await fetchComRetry(`${BASE_URL}/api/aulas/${dados.proximaAula.id}/checkin-aluno`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const resposta = await res.json();
-      if (res.ok) {
-        Alert.alert('Presença confirmada!', resposta.mensagem);
-        carregar();
-      } else {
-        Alert.alert('Erro', resposta.erro || 'Não foi possível confirmar.');
-      }
-    } catch {
-      Alert.alert('Sem conexão', 'Não conseguimos alcançar o servidor.');
-    } finally {
-      setConfirmando(false);
-    }
-  };
 
   // Confirmação de presença 24h antes (Sprint 13/23) — resposta simples de
   // "vou"/"não vou" ao pedido disparado pelo cron, distinta do check-in
@@ -227,24 +197,13 @@ export default function PainelAlunoEscola() {
               </Text>
             )}
 
-            {proximaAula && (
-              <View style={{ marginTop: 14 }}>
-                {proximaAula.presencaAlunoEm ? (
-                  <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
-                    <Badge texto="Você já confirmou presença" tom="sucesso" />
-                    <Badge
-                      texto={proximaAula.presencaProfessorEm ? 'Professor confirmou' : 'Aguardando professor'}
-                      tom={proximaAula.presencaProfessorEm ? 'sucesso' : 'aviso'}
-                    />
-                  </View>
-                ) : (
-                  <Botao
-                    texto="Confirmar presença"
-                    icone="finger-print-outline"
-                    onPress={confirmarPresenca}
-                    carregando={confirmando}
-                  />
-                )}
+            {proximaAula && proximaAula.presencaAlunoEm && (
+              <View style={{ marginTop: 14, flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
+                <Badge texto="Você já confirmou presença" tom="sucesso" />
+                <Badge
+                  texto={proximaAula.presencaProfessorEm ? 'Professor confirmou' : 'Aguardando professor'}
+                  tom={proximaAula.presencaProfessorEm ? 'sucesso' : 'aviso'}
+                />
               </View>
             )}
           </SectionCard>

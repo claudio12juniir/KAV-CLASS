@@ -14,6 +14,7 @@ export const NAV_PROFESSOR_ESCOLA: GrupoNav[] = [
     { chave: 'perfil-social', rota: '/(professor-escola)/perfil', rotulo: 'Perfil', icone: 'person-circle-outline' },
   ]},
   { titulo: '', itens: [
+    { chave: 'confirmar-presenca', rota: '/(professor-escola)/confirmar-presenca', rotulo: 'Confirmar Presença', icone: 'finger-print-outline' },
     { chave: 'calendario', rota: '/(professor-escola)/calendario', rotulo: 'Calendário', icone: 'calendar-outline' },
     { chave: 'financeiro', rota: '/(professor-escola)/financeiro', rotulo: 'Financeiro', icone: 'cash-outline' },
     { chave: 'fiscal', rota: '/(professor-escola)/fiscal', rotulo: 'Fiscal', icone: 'document-text-outline' },
