@@ -3,7 +3,6 @@ import { useFocusEffect } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import * as Sharing from 'expo-sharing';
-import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useState } from 'react';
 import { Alert, Linking, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
@@ -22,8 +21,6 @@ export default function FinanceiroEscola() {
   const [sub, setSub] = useState<Sub>('cobranca');
   const [carregando, setCarregando] = useState(true);
 
-  const [stripeConnect, setStripeConnect] = useState<{ conectado: boolean; onboardingCompleto: boolean } | null>(null);
-  const [conectandoStripe, setConectandoStripe] = useState(false);
   const [resumoCobranca, setResumoCobranca] = useState<any>(null);
 
   // Asaas (Pix/Boleto) — segundo gateway de cobrança, cada Escola traz a
@@ -81,8 +78,7 @@ export default function FinanceiroEscola() {
       const token = await SecureStore.getItemAsync('kav_token');
       const headers = { Authorization: `Bearer ${token}` };
       const agora = new Date();
-      const [resStripe, resAsaas, resResumo, resVencendo, resLanc, resContas, resFecha, resDre, resFaturamento, resFolha, resDespesasFixas, resPagamentosStatus] = await Promise.all([
-        fetchComRetry(`${BASE_URL}/api/escola/stripe-connect/status`, { headers }),
+      const [resAsaas, resResumo, resVencendo, resLanc, resContas, resFecha, resDre, resFaturamento, resFolha, resDespesasFixas, resPagamentosStatus] = await Promise.all([
         fetchComRetry(`${BASE_URL}/api/escola/asaas/status`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/cobranca-automatica/resumo`, { headers }),
         fetchComRetry(`${BASE_URL}/api/renovacoes/vencendo?dias=30`, { headers }),
@@ -95,7 +91,6 @@ export default function FinanceiroEscola() {
         fetchComRetry(`${BASE_URL}/api/escola/despesas-fixas`, { headers }),
         fetchComRetry(`${BASE_URL}/api/escola/pagamentos-status`, { headers }),
       ]);
-      if (resStripe.ok) setStripeConnect(await resStripe.json());
       if (resAsaas.ok) setAsaasStatus(await resAsaas.json());
       if (resResumo.ok) setResumoCobranca(await resResumo.json());
       if (resVencendo.ok) setAlunosVencendo(await resVencendo.json());
@@ -115,28 +110,6 @@ export default function FinanceiroEscola() {
   }, [dataCaixa]);
 
   useFocusEffect(useCallback(() => { carregarDados(); }, [carregarDados]));
-
-  const conectarStripe = async () => {
-    setConectandoStripe(true);
-    try {
-      const token = await SecureStore.getItemAsync('kav_token');
-      const res = await fetchComRetry(`${BASE_URL}/api/escola/stripe-connect/iniciar`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
-      const dados = await res.json();
-      if (!res.ok || !dados.url) { Alert.alert('Erro', dados.erro || 'Não foi possível iniciar a conexão com o Stripe.'); return; }
-      await WebBrowser.openAuthSessionAsync(dados.url, 'kavclass://stripe-connect-retorno');
-      const resStatus = await fetchComRetry(`${BASE_URL}/api/escola/stripe-connect/status`, { headers: { Authorization: `Bearer ${token}` } });
-      if (resStatus.ok) {
-        const status = await resStatus.json();
-        setStripeConnect(status);
-        Alert.alert(status.onboardingCompleto ? 'Conta conectada!' : 'Cadastro incompleto',
-          status.onboardingCompleto ? 'A cobrança automática já pode ser ativada nas matrículas.' : 'Volte quando puder pra terminar de preencher os dados no Stripe.');
-      }
-    } catch {
-      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
-    } finally {
-      setConectandoStripe(false);
-    }
-  };
 
   const conectarAsaas = async () => {
     if (!apiKeyAsaas.trim()) { Alert.alert('Atenção', 'Cole a API Key da sua conta Asaas.'); return; }
@@ -408,7 +381,7 @@ export default function FinanceiroEscola() {
 
   return (
     <ErpShell titulo="Financeiro">
-      <PageHeader titulo="Financeiro" subtitulo="Cobrança automática via Stripe Connect e renovação de matrículas" />
+      <PageHeader titulo="Financeiro" subtitulo="Cobrança automática via Asaas (Pix/Boleto) e renovação de matrículas" />
 
       <View style={estilos.kpiGrade}>
         <Kpi label="Faturamento atual (mês)" valor={`R$ ${faturamentoAtual.toFixed(2).replace('.', ',')}`} tom="sucesso" icone="trending-up-outline" />
@@ -428,26 +401,7 @@ export default function FinanceiroEscola() {
 
       {sub === 'cobranca' && (
         <>
-          {!stripeConnect?.conectado && (
-            <SectionCard>
-              <Text style={{ color: ERP.texto, fontSize: 14, marginBottom: 16, lineHeight: 20 }}>
-                Nenhuma conta Stripe conectada ainda. Conecte pra liberar a ativação de cobrança automática nas matrículas.
-              </Text>
-              <Botao texto="Conectar conta Stripe" onPress={conectarStripe} carregando={conectandoStripe} />
-            </SectionCard>
-          )}
-
-          {stripeConnect?.conectado && !stripeConnect.onboardingCompleto && (
-            <SectionCard>
-              <Badge texto="Cadastro incompleto" tom="aviso" />
-              <Text style={{ color: ERP.texto, fontSize: 14, marginTop: 12, marginBottom: 16, lineHeight: 20 }}>
-                A conta Stripe existe, mas ainda falta terminar o preenchimento de dados pra receber pagamentos.
-              </Text>
-              <Botao texto="Continuar cadastro" onPress={conectarStripe} carregando={conectandoStripe} />
-            </SectionCard>
-          )}
-
-          {stripeConnect?.conectado && stripeConnect.onboardingCompleto && (
+          {(resumoCobranca?.totalAtivas ?? 0) > 0 && (
             <View style={{ gap: 16 }}>
               <View style={estilos.kpiGrade}>
                 <Kpi label="Matrículas com cobrança ativa" valor={resumoCobranca?.totalAtivas ?? 0} />
@@ -488,7 +442,7 @@ export default function FinanceiroEscola() {
             {!asaasStatus?.conectado && (
               <>
                 <Text style={{ color: ERP.texto, fontSize: 14, marginBottom: 12, lineHeight: 20 }}>
-                  Complementa o Stripe acima com Pix e Boleto. Cole a API Key da sua própria conta Asaas (crie uma de graça em asaas.com, se ainda não tiver) — a taxa do Asaas é cobrada direto da sua conta, nunca da KAV Class.
+                  Cole a API Key da sua própria conta Asaas (crie uma de graça em asaas.com, se ainda não tiver) pra liberar a cobrança automática de mensalidade via Pix e Boleto — a taxa do Asaas é cobrada direto da sua conta, nunca da KAV Class.
                 </Text>
 
                 <View style={{ marginBottom: 16, padding: 14, borderRadius: 10, backgroundColor: '#f4f4f5', gap: 10 }}>

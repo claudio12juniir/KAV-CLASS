@@ -6249,83 +6249,24 @@ app.get('/api/matriculas/:id/cobranca-automatica', autenticar, async (req, res) 
 // (professor ou o próprio aluno) começa (ou recomeça) o cadastro de cartão.
 // Devolve uma Checkout Session hospedada em mode:'setup' — nenhum dado de
 // cartão passa pelo nosso backend nem pelo app.
+// 27/09/2026: cobrança automática de mensalidade (aluno→escola) passou a
+// ser SÓ via Asaas (ver /cobranca-automatica/asaas/iniciar abaixo) — Stripe
+// fica reservado à assinatura recorrente da própria KAV Class
+// (/api/professor/assinatura/*) e ao Stripe Connect do paywall de conteúdo
+// exclusivo (Reels), que não passam por esta rota. Bloqueada aqui (e não só
+// removida do app) pra cobrir chamadas diretas de builds antigos/API.
+// 27/09/2026: cobrança automática de mensalidade (aluno→escola) passou a
+// ser SÓ via Asaas (ver /cobranca-automatica/asaas/iniciar abaixo) — Stripe
+// fica reservado à assinatura recorrente da própria KAV Class
+// (/api/professor/assinatura/*) e ao Stripe Connect do paywall de conteúdo
+// exclusivo (Reels), que não passam por esta rota. Bloqueada aqui (e não só
+// removida do app) pra cobrir chamadas diretas de builds antigos/API — o
+// fluxo antigo de checkout/setup de cartão (e a rota de verificação de
+// sessão que o acompanhava) foi removido. Cobranças Stripe já ativas antes
+// desta mudança continuam sendo cobradas normalmente pelo cron + webhook
+// (mais abaixo) — só a ativação de NOVAS é que fica bloqueada.
 app.post('/api/matriculas/:id/cobranca-automatica/iniciar', autenticar, async (req, res) => {
-  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
-  try {
-    const matricula = await carregarMatriculaDoDono(req, res);
-    if (!matricula) return;
-
-    const escola = await prisma.escola.findUnique({
-      where: { id: matricula.escolaId },
-      select: { stripeConnectAccountId: true, stripeConnectOnboardingCompleto: true },
-    });
-    if (!escola?.stripeConnectAccountId || !escola.stripeConnectOnboardingCompleto) {
-      return res.status(400).json({ erro: 'A Escola ainda não concluiu a configuração de recebimento no Stripe.' });
-    }
-
-    let customerId = matricula.stripeCustomerId;
-    if (!customerId) {
-      const aluno = await prisma.aluno.findUnique({ where: { id: matricula.alunoId }, select: { nome: true, email: true } });
-      const customer = await stripe.customers.create({
-        name: aluno.nome,
-        email: aluno.email,
-        metadata: { matriculaId: matricula.id, escolaId: matricula.escolaId },
-      });
-      customerId = customer.id;
-      await prisma.matricula.update({ where: { id: matricula.id }, data: { stripeCustomerId: customerId } });
-    }
-
-    const session = await stripe.checkout.sessions.create({
-      mode: 'setup',
-      customer: customerId,
-      payment_method_types: ['card'],
-      success_url: 'https://kav-class-1.onrender.com/checkout/cobranca-sucesso?session_id={CHECKOUT_SESSION_ID}',
-      cancel_url: 'https://kav-class-1.onrender.com/checkout/cobranca-cancelada',
-      metadata: { matriculaId: matricula.id },
-    });
-
-    res.json({ url: session.url, sessionId: session.id });
-  } catch (err) {
-    const msg = err?.raw?.message || err?.message || 'Erro ao iniciar cadastro de cartão.';
-    console.error('[CobrancaAutomatica] Erro ao iniciar:', msg);
-    res.status(500).json({ erro: msg });
-  }
-});
-
-// GET /api/matriculas/:id/cobranca-automatica/verificar/:sessionId —
-// chamado pelo app ao voltar do Checkout hospedado (deep link), espelha o
-// mesmo padrão de GET /checkout/verify/:sessionId da assinatura do professor.
-app.get('/api/matriculas/:id/cobranca-automatica/verificar/:sessionId', autenticar, async (req, res) => {
-  if (!stripe) return res.status(503).json({ erro: 'Serviço de pagamento não configurado.' });
-  try {
-    const matricula = await carregarMatriculaDoDono(req, res);
-    if (!matricula) return;
-
-    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId, { expand: ['setup_intent'] });
-    if (session.metadata?.matriculaId !== matricula.id) {
-      return res.status(400).json({ erro: 'Sessão não corresponde a essa matrícula.' });
-    }
-    const setupIntent = session.setup_intent;
-    if (!setupIntent || setupIntent.status !== 'succeeded') {
-      return res.json({ ativo: false });
-    }
-
-    const paymentMethodId = String(setupIntent.payment_method);
-    await stripe.customers.update(session.customer, { invoice_settings: { default_payment_method: paymentMethodId } });
-
-    const atualizada = await prisma.matricula.update({
-      where: { id: matricula.id },
-      data: {
-        cobrancaAutomaticaAtiva: true,
-        stripePaymentMethodId: paymentMethodId,
-        cobrancaUltimoErro: null,
-      },
-    });
-    res.json({ ativo: true, matricula: atualizada });
-  } catch (err) {
-    console.error('[CobrancaAutomatica] Erro ao verificar sessão:', err.message);
-    res.status(500).json({ erro: 'Erro ao verificar cadastro do cartão.' });
-  }
+  res.status(400).json({ erro: 'Cobrança automática de mensalidade agora é só via Asaas (Pix/Boleto).' });
 });
 
 // POST /api/matriculas/:id/cobranca-automatica/desativar — não apaga o

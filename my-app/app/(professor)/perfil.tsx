@@ -3,6 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import * as ImagePicker from 'expo-image-picker';
+import * as WebBrowser from 'expo-web-browser';
 import { StatusBar } from 'expo-status-bar';
 import { router } from 'expo-router';
 import React, { useCallback, useState } from 'react';
@@ -85,6 +86,7 @@ export default function PerfilProfessorScreen() {
   const [fotoUrl, setFotoUrl] = useState<string | null>(null);
   const [precoPremium, setPrecoPremium] = useState('');
   const [salvandoPremium, setSalvandoPremium] = useState(false);
+  const [conectandoStripe, setConectandoStripe] = useState(false);
   const [bio, setBio] = useState('');
   const [cidade, setCidade] = useState('');
   const [estado, setEstado] = useState('');
@@ -134,6 +136,27 @@ export default function PerfilProfessorScreen() {
       setCarregando(false);
     }
   }, []);
+
+  // Conteúdo exclusivo (paywall do Reels) usa a MESMA conta Stripe Connect
+  // que antes só era onboardável em (escola)/financeiro.tsx — desde
+  // 27/09/2026, Financeiro é só Asaas (cobrança de mensalidade da escola),
+  // então o onboarding dessa conta, quando é só pra vender conteúdo
+  // exclusivo, mora aqui.
+  const conectarStripe = async () => {
+    setConectandoStripe(true);
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      const res = await fetchComRetry(`${API_URL}/api/escola/stripe-connect/iniciar`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      const dados = await res.json();
+      if (!res.ok || !dados.url) { Alert.alert('Erro', dados.erro || 'Não foi possível iniciar a conexão com o Stripe.'); return; }
+      await WebBrowser.openAuthSessionAsync(dados.url, 'kavclass://stripe-connect-retorno');
+      await carregarPerfil();
+    } catch {
+      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
+    } finally {
+      setConectandoStripe(false);
+    }
+  };
 
   const salvarPremium = async () => {
     const preco = precoPremium.trim() ? Number(precoPremium.replace(',', '.')) : null;
@@ -594,9 +617,19 @@ export default function PerfilProfessorScreen() {
         {/* Conteúdo Premium (Rede Social Fase 5) */}
         <Text style={styles.secaoLabel}>CONTEÚDO PREMIUM</Text>
         {!perfil?.escola?.stripeConnectOnboardingCompleto ? (
-          <Text style={{ color: CORES.secundaria, fontSize: 13, marginBottom: 20 }}>
-            Conecte sua conta Stripe no Financeiro pra poder oferecer conteúdo exclusivo por assinatura no feed.
-          </Text>
+          <>
+            <Text style={{ color: CORES.secundaria, fontSize: 13, marginBottom: 14 }}>
+              Conecte uma conta Stripe pra poder oferecer conteúdo exclusivo por assinatura no feed.
+            </Text>
+            <TouchableOpacity
+              style={[styles.btnSalvar, { marginTop: 0, marginBottom: 20 }, conectandoStripe && { opacity: 0.6 }]}
+              onPress={conectarStripe}
+              disabled={conectandoStripe}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.btnSalvarTexto}>{conectandoStripe ? 'CONECTANDO...' : 'CONECTAR STRIPE'}</Text>
+            </TouchableOpacity>
+          </>
         ) : (
           <>
             <Text style={styles.fieldLabel}>Preço da assinatura mensal (R$)</Text>

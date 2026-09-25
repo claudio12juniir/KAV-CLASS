@@ -67,7 +67,6 @@ export default function FinanceiroAlunoEscola() {
   const [matriculas, setMatriculas] = useState<any[]>([]);
   const [matriculaSelecionadaId, setMatriculaSelecionadaId] = useState<string | null>(null);
   const [cobranca, setCobranca] = useState<{ ativa: boolean; gateway?: 'STRIPE' | 'ASAAS' | null; temCartao: boolean; ultimoErro: string | null; ultimaTentativa: string | null } | null>(null);
-  const [ativandoCobranca, setAtivandoCobranca] = useState(false);
   const [ativandoCobrancaAsaas, setAtivandoCobrancaAsaas] = useState(false);
 
   const [parcelaSelecionada, setParcelaSelecionada] = useState<Parcela | null>(null);
@@ -180,45 +179,6 @@ export default function FinanceiroAlunoEscola() {
     setMatriculaSelecionadaId(matriculaId);
     setCarregando(true);
     carregarFaturasEcobranca(matriculaId).finally(() => setCarregando(false));
-  };
-
-  const ativarCobranca = async () => {
-    if (!matriculaSelecionadaId) return;
-    setAtivandoCobranca(true);
-    try {
-      const token = await SecureStore.getItemAsync('kav_token');
-      const headers = { Authorization: `Bearer ${token}` };
-      const res = await fetchComRetry(`${API_URL}/api/matriculas/${matriculaSelecionadaId}/cobranca-automatica/iniciar`, {
-        method: 'POST',
-        headers,
-      });
-      const dados = await res.json();
-      if (!res.ok || !dados.url) {
-        Alert.alert('Não foi possível ativar', dados.erro || 'Tente novamente.');
-        return;
-      }
-
-      await WebBrowser.openAuthSessionAsync(dados.url, 'kavclass://cobranca-automatica-sucesso');
-
-      const resVerify = await fetchComRetry(
-        `${API_URL}/api/matriculas/${matriculaSelecionadaId}/cobranca-automatica/verificar/${dados.sessionId}`,
-        { headers }
-      );
-      if (resVerify.ok) {
-        const verif = await resVerify.json();
-        Alert.alert(
-          verif.ativo ? 'Cobrança automática ativada!' : 'Cadastro não concluído',
-          verif.ativo
-            ? 'Sua mensalidade será cobrada automaticamente no cartão cadastrado.'
-            : 'Se você preencheu os dados do cartão, aguarde alguns segundos e tente de novo.'
-        );
-      }
-      await carregarFaturasEcobranca(matriculaSelecionadaId);
-    } catch {
-      Alert.alert('Sem Conexão', 'Não conseguimos alcançar o servidor.');
-    } finally {
-      setAtivandoCobranca(false);
-    }
   };
 
   const ativarCobrancaAsaas = (billingType: 'PIX' | 'BOLETO' | 'UNDEFINED') => async () => {
@@ -458,17 +418,10 @@ export default function FinanceiroAlunoEscola() {
           ) : (
             <>
               <Text style={estilos.descCobranca}>
-                Cadastre um cartão uma vez e nunca mais precise enviar comprovante todo mês — ou ative via Pix/Boleto, gerado automaticamente todo mês.
+                Ative via Pix ou Boleto e a escola gera uma nova fatura automaticamente todo mês, sem precisar enviar comprovante.
               </Text>
               <TouchableOpacity
-                style={[estilos.botaoAtivarCobranca, ativandoCobranca && { opacity: 0.6 }]}
-                onPress={ativarCobranca}
-                disabled={ativandoCobranca}
-              >
-                {ativandoCobranca ? <SyncLoader color="#fff" /> : <Text style={estilos.textoBotaoAtivarCobranca}>Ativar cobrança automática (cartão)</Text>}
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[estilos.botaoAtivarCobranca, { backgroundColor: ERP.texto, marginTop: 8 }, ativandoCobrancaAsaas && { opacity: 0.6 }]}
+                style={[estilos.botaoAtivarCobranca, ativandoCobrancaAsaas && { opacity: 0.6 }]}
                 onPress={escolherCobrancaAsaas}
                 disabled={ativandoCobrancaAsaas}
               >
