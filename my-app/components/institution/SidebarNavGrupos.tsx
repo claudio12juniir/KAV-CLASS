@@ -1,11 +1,12 @@
 // Lista de navegação do rail lateral (desktop) e do modal "Mais" (mobile) do
 // INSTITUTION. Extraído de app/(escola)/_ui.tsx e MobileErpShell.tsx — os
 // dois desenhavam a mesma árvore de grupoNav/itemNav com estilos idênticos,
-// e ambos agora precisam do mesmo comportamento de accordion (categorias
-// como Social/Gestão/Crescimento/Operação clicáveis, expandindo a lista de
-// sub-itens). Grupo com `colapsavel: false` (ou sem itens suficientes pra
-// valer virar accordion, como "Principal" só com o Painel) renderiza liso,
-// sem cabeçalho clicável — igual ao comportamento antigo.
+// e ambos agora precisam do mesmo comportamento de accordion (toda categoria
+// com título — Social/Gestão/Crescimento/Operação/Fiscal/Instituição — é
+// clicável e expande/recolhe a lista de sub-itens, mesmo com um item só; ver
+// correção de 26/09/2026, categoria Fiscal tinha ficado sem essa opção por
+// ter só 1 sub-item). Só "Principal" (`colapsavel: false`, sem título)
+// renderiza liso, sem cabeçalho clicável.
 import { Ionicons } from '@expo/vector-icons';
 import { router, usePathname } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -56,7 +57,7 @@ export default function SidebarNavGrupos({
     <>
       {navGrupos.map((grupo, idx) => {
         const chaveGrupo = `${grupo.titulo || '_'}-${idx}`;
-        const colapsavel = grupo.colapsavel !== false && !!grupo.titulo && grupo.itens.length > 1;
+        const colapsavel = grupo.colapsavel !== false && !!grupo.titulo;
 
         if (!colapsavel) {
           return (

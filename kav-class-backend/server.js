@@ -6543,7 +6543,7 @@ app.post('/api/escola/asaas/desconectar', async (req, res) => {
 app.post('/api/escola/fiscal/notaas/cadastrar-empresa', async (req, res) => {
   if (!ASAAS_ENCRYPTION_KEY) return res.status(503).json({ erro: 'Serviço fiscal não configurado nesta instância.' });
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'fiscal');
     if (!professor) return;
 
     const {
@@ -6602,7 +6602,7 @@ app.post('/api/escola/fiscal/notaas/cadastrar-empresa', async (req, res) => {
 
 app.post('/api/escola/fiscal/notaas/desconectar', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'fiscal');
     if (!professor) return;
     await prisma.escola.update({
       where: { id: professor.escolaId },
@@ -6616,7 +6616,7 @@ app.post('/api/escola/fiscal/notaas/desconectar', async (req, res) => {
 
 app.get('/api/escola/fiscal/configuracao', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'fiscal');
     if (!professor) return;
     const escola = await prisma.escola.findUnique({
       where: { id: professor.escolaId },
@@ -6635,7 +6635,7 @@ app.get('/api/escola/fiscal/configuracao', async (req, res) => {
 
 app.put('/api/escola/fiscal/configuracao', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'fiscal');
     if (!professor) return;
     const { notaasCodigoServicoPadrao, notaasAliquotaIssPadrao, exigeNotaProfessor } = req.body;
     const data = {};
@@ -6653,7 +6653,7 @@ app.put('/api/escola/fiscal/configuracao', async (req, res) => {
 // nota emitida (aba "Pendentes" da categoria Fiscal).
 app.get('/api/escola/fiscal/pendentes', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'fiscal');
     if (!professor) return;
     const pendentes = await prisma.pagamento.findMany({
       where: { professor: { escolaId: professor.escolaId }, status: 'PAGO', notaFiscal: null },
@@ -6669,7 +6669,7 @@ app.get('/api/escola/fiscal/pendentes', async (req, res) => {
 
 app.get('/api/escola/fiscal/notas', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'fiscal');
     if (!professor) return;
     const notas = await prisma.notaFiscal.findMany({
       where: { escolaId: professor.escolaId },
@@ -6693,7 +6693,7 @@ app.get('/api/escola/fiscal/notas', async (req, res) => {
 // escola, nunca automática por padrão.
 app.post('/api/escola/pagamentos/:id/emitir-nota', async (req, res) => {
   try {
-    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'fiscal');
     if (!professor) return;
 
     const escola = await prisma.escola.findUnique({
@@ -10427,6 +10427,7 @@ const CHAVES_PERMISSAO_SECRETARIA = [
   'equipe', 'alunos', 'logistica', 'reposicoes', 'coordenacao', 'calendario', 'chats',
   'captacao', 'comunicados',
   'recursos', 'financeiro', 'relatorios',
+  'fiscal',
   'configuracoes',
 ];
 

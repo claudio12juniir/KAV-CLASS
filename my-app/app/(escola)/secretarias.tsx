@@ -28,6 +28,7 @@ const ROTULOS_PERMISSAO: Record<string, string> = {
   recursos: 'Recursos',
   financeiro: 'Financeiro',
   relatorios: 'Relatórios',
+  fiscal: 'Notas Fiscais',
   configuracoes: 'Configurações',
 };
 
