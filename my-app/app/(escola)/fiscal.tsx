@@ -230,7 +230,13 @@ export default function FiscalEscola() {
 
       {sub === 'configuracoes' && (
         <>
-          {config?.notaasConectado ? (
+          {config?.fiscalDisponivel === false ? (
+            <SectionCard titulo="Em breve">
+              <Text style={{ fontSize: 13.5, color: ERP.texto, lineHeight: 20 }}>
+                A emissão de nota fiscal (NFS-e) está em preparação e entrará em vigor em breve. Assim que estiver disponível, você vai poder cadastrar os dados fiscais da escola direto por aqui.
+              </Text>
+            </SectionCard>
+          ) : config?.notaasConectado ? (
             <SectionCard titulo="Cadastro fiscal" subtitulo="Ativo">
               <Text style={{ fontSize: 13.5, color: ERP.texto, fontWeight: '600' }}>{config.razaoSocial}</Text>
               <Text style={{ fontSize: 12, color: ERP.textoSecundario, marginBottom: 8 }}>CNPJ {config.cnpj}</Text>
@@ -264,25 +270,31 @@ export default function FiscalEscola() {
             </SectionCard>
           )}
 
-          <SectionCard titulo="Padrões de emissão" subtitulo="Usados quando a escola não informar um código específico ao emitir">
-            <Campo label="Código de serviço municipal padrão" value={codigoServico} onChangeText={setCodigoServico} placeholder="Ex.: 010700" />
-            <Campo label="Alíquota ISS padrão (%)" value={aliquotaIss} onChangeText={setAliquotaIss} placeholder="Ex.: 2" keyboardType="decimal-pad" />
-          </SectionCard>
+          {config?.fiscalDisponivel !== false && (
+            <>
+              <SectionCard titulo="Padrões de emissão" subtitulo="Usados quando a escola não informar um código específico ao emitir">
+                <Campo label="Código de serviço municipal padrão" value={codigoServico} onChangeText={setCodigoServico} placeholder="Ex.: 010700" />
+                <Campo label="Alíquota ISS padrão (%)" value={aliquotaIss} onChangeText={setAliquotaIss} placeholder="Ex.: 2" keyboardType="decimal-pad" />
+              </SectionCard>
 
-          <SectionCard titulo="Nota fiscal do professor" subtitulo="Quando ativo, o professor precisa emitir nota fiscal (própria, MEI/PJ) pra Escola pra o pagamento ser liberado — a emissão acontece sozinha quando a folha do mês é fechada.">
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text style={{ fontSize: 13.5, color: ERP.texto, fontWeight: '600' }}>Exigir nota fiscal do professor</Text>
-              <Switch value={exigeNotaProfessor} onValueChange={setExigeNotaProfessor} trackColor={{ true: ERP.acento }} />
-            </View>
-          </SectionCard>
+              <SectionCard titulo="Nota fiscal do professor" subtitulo="Quando ativo, o professor precisa emitir nota fiscal (própria, MEI/PJ) pra Escola pra o pagamento ser liberado — a emissão acontece sozinha quando a folha do mês é fechada.">
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 13.5, color: ERP.texto, fontWeight: '600' }}>Exigir nota fiscal do professor</Text>
+                  <Switch value={exigeNotaProfessor} onValueChange={setExigeNotaProfessor} trackColor={{ true: ERP.acento }} />
+                </View>
+              </SectionCard>
 
-          <Botao texto="Salvar configuração" onPress={salvarConfiguracao} carregando={salvandoConfig} />
+              <Botao texto="Salvar configuração" onPress={salvarConfiguracao} carregando={salvandoConfig} />
+            </>
+          )}
         </>
       )}
 
       {sub === 'pendentes' && (
         <SectionCard subtitulo="Pagamentos de alunos já recebidos, ainda sem nota fiscal emitida">
-          {!config?.notaasConectado ? (
+          {config?.fiscalDisponivel === false ? (
+            <EstadoVazio icone="time-outline" texto="Esse setor entra em vigor em breve." />
+          ) : !config?.notaasConectado ? (
             <EstadoVazio icone="alert-circle-outline" texto="Cadastre a empresa fiscal em Configurações antes de emitir notas." />
           ) : pendentes.length === 0 ? (
             <EstadoVazio icone="checkmark-circle-outline" texto="Nenhum pagamento pendente de nota." />

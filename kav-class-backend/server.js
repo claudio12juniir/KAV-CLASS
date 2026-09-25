@@ -173,6 +173,11 @@ async function registrarWebhookNotaas(apiKeyCriptografada, token) {
 // acesso, notaasOrgFetch abaixo vai falhar com 401/403 e a rota devolve erro
 // claro pro usuário resolver com a Notaas.
 const NOTAAS_ORG_TOKEN = process.env.NOTAAS_ORG_TOKEN || null;
+// Plano Enterprise da Notaas (org multi-empresa) tem custo que não está
+// orçado ainda (26/09/2026) — enquanto NOTAAS_ORG_TOKEN não existir, o
+// front mostra "em breve" em vez do formulário de cadastro fiscal, pra não
+// deixar a escola preencher dados e tomar um erro.
+const NOTAAS_FISCAL_DISPONIVEL = !!NOTAAS_ORG_TOKEN;
 
 async function notaasOrgFetch(path, options = {}) {
   if (!NOTAAS_ORG_TOKEN) {
@@ -6622,7 +6627,7 @@ app.get('/api/escola/fiscal/configuracao', async (req, res) => {
         exigeNotaProfessor: true,
       },
     });
-    res.json({ ...escola, notaasConectado: !!escola.notaasApiKeyUltimos4 });
+    res.json({ ...escola, notaasConectado: !!escola.notaasApiKeyUltimos4, fiscalDisponivel: NOTAAS_FISCAL_DISPONIVEL });
   } catch (err) {
     tratarErro(err, res, 'Erro ao carregar configuração fiscal.');
   }
@@ -6770,6 +6775,7 @@ app.get('/api/professor/fiscal', exigirProfessor, async (req, res) => {
     res.json({
       ...professor,
       notaasConectado: !!professor.notaasApiKeyUltimos4,
+      fiscalDisponivel: NOTAAS_FISCAL_DISPONIVEL,
       exigidoPelaEscola: professor.escola.exigeNotaProfessor,
       escolaNome: professor.escola.nome,
       notas,

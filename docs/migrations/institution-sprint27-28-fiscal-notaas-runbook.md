@@ -205,6 +205,30 @@ formato do lado escola).
    (nem local, nem produção) — sem ele, toda rota `cadastrar-empresa`
    responde 503.
 
+## Pausa por orçamento (26/09/2026)
+
+O upgrade de plano necessário pra liberar o recurso de Organização (multi-
+empresa) na Notaas custa US$ 700, fora do orçamento do usuário no momento.
+Decisão: manter todo o backend pronto (schema, migrations, rotas,
+orquestração `criarEmpresaFiscalNotaas`) e travar só a superfície visível
+pro usuário final via uma flag simples:
+
+- `NOTAAS_FISCAL_DISPONIVEL = !!NOTAAS_ORG_TOKEN` (server.js, perto da
+  declaração de `NOTAAS_ORG_TOKEN`).
+- `GET /api/escola/fiscal/configuracao` e `GET /api/professor/fiscal` agora
+  retornam `fiscalDisponivel: NOTAAS_FISCAL_DISPONIVEL`.
+- As telas (`(escola)/fiscal.tsx` e `(professor-escola)/fiscal.tsx`)
+  escondem o formulário de cadastro fiscal, os padrões de emissão e o
+  toggle "Exigir nota fiscal do professor" quando `fiscalDisponivel` é
+  `false`, mostrando em vez disso um aviso "Em breve — a emissão de nota
+  fiscal (NFS-e) está em preparação e entrará em vigor em breve." A aba
+  "Notas emitidas" continua visível (fica vazia, sem confundir ninguém). A
+  aba "Pendentes" mostra o mesmo aviso "Em breve" em vez de pedir cadastro.
+
+Assim que o `NOTAAS_ORG_TOKEN` for configurado num ambiente (basta setar a
+env var — nenhuma mudança de código é necessária), o setor liga sozinho
+pra quem acessar a partir dali.
+
 ## Verificação
 
 - `node -c server.js` — OK (revalidado após a revisão de 26/09).

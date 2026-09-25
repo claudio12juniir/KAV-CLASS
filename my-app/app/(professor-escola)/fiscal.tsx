@@ -32,6 +32,7 @@ type Dados = {
   regimeTributario: string | null;
   codigoMunicipio: string | null;
   notaasConectado: boolean;
+  fiscalDisponivel: boolean;
   notaasCertificadoNomeArquivo: string | null;
   notaasCertificadoValidoAte: string | null;
   notaasCodigoServicoPadrao: string | null;
@@ -189,6 +190,15 @@ export default function FiscalProfessorEscola() {
     >
       <PageHeader titulo="Fiscal" subtitulo="Seu cadastro fiscal — a emissão pra escola acontece sozinha ao fechar sua folha." />
 
+      {dados?.fiscalDisponivel === false ? (
+        <SectionCard titulo="Em breve">
+          <Text style={{ fontSize: 13.5, color: ERP.texto, lineHeight: 20 }}>
+            A emissão de nota fiscal (NFS-e) está em preparação e entrará em vigor em breve
+            {dados?.exigidoPelaEscola ? `. Assim que estiver disponível, ${escolaNome} vai te avisar pra cadastrar seus dados fiscais.` : '.'}
+          </Text>
+        </SectionCard>
+      ) : (
+      <>
       {dados?.exigidoPelaEscola && (
         <SectionCard style={{ backgroundColor: ERP.avisoSoft, borderColor: '#F5D9A8' }}>
           <Text style={{ color: '#8A5A00', fontSize: 13.5, lineHeight: 19 }}>
@@ -236,6 +246,8 @@ export default function FiscalProfessorEscola() {
         <Campo label="Alíquota ISS padrão (%)" value={aliquotaIss} onChangeText={setAliquotaIss} placeholder="Ex.: 2" keyboardType="decimal-pad" />
         <Botao texto="Salvar configuração" variante="secundario" onPress={salvarConfiguracao} carregando={salvandoConfig} />
       </SectionCard>
+      </>
+      )}
 
       <SectionCard titulo="Notas emitidas">
         {!dados || dados.notas.length === 0 ? (
