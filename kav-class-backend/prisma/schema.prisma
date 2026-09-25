@@ -265,6 +265,46 @@ model Escola {
   asaasApiKeyUltimos4      String?
   asaasWebhookToken        String? @unique
 
+  // ─── Fiscal — emissão de NFS-e via Notaas (INSTITUTION Sprint 27, briefing
+  // 24/09/2026) ────────────────────────────────────────────────────────────
+  // Mesmo padrão de segredo do Asaas acima (API Key cifrada em repouso,
+  // AES-256-GCM, reaproveitando a MESMA chave mestra ASAAS_ENCRYPTION_KEY —
+  // é uma chave da plataforma, não exclusiva do Asaas, sem necessidade de
+  // uma env var nova só pra isso). Diferente do Asaas, a Notaas TEM endpoint
+  // de registro de webhook via API (POST /webhooks/endpoints) — por isso
+  // conseguimos registrar o webhook sozinhos na conexão, sem pedir pra
+  // Escola colar nada no painel de terceiro. notaasWebhookToken serve dois
+  // papéis: identifica de qual Escola veio o evento (parte da URL, já que
+  // não há como usar só um path fixo com múltiplos "projetos" Notaas) E é o
+  // segredo HMAC-SHA256 registrado junto — mesmo valor nos dois usos.
+  // 26/09/2026: modelo revisado — em vez do dashboard da própria Notaas,
+  // cnpj/razaoSocial/inscricaoMunicipal/inscricaoEstadual/regimeTributario/
+  // codigoMunicipio SÃO o cadastro fiscal de verdade, usados por nós pra
+  // criar um "projeto" sob a NOSSA organização Notaas (ver
+  // criarEmpresaFiscalNotaas em server.js) — a Escola nunca abre conta lá.
+  // notaasApiKeyCriptografada guarda a API Key ESCOPADA àquele projeto
+  // (gerada por nós, não colada pela Escola).
+  notaasApiKeyCriptografada    String?
+  notaasApiKeyUltimos4         String?
+  notaasWebhookToken           String?   @unique
+  notaasOrgProjectId           String?
+  notaasCodigoServicoPadrao    String?
+  notaasAliquotaIssPadrao      Float?
+  notaasCertificadoNomeArquivo String?
+  notaasCertificadoValidoAte   DateTime?
+  razaoSocial                  String?
+  cnpj                         String?
+  inscricaoMunicipal           String?
+  inscricaoEstadual            String?
+  regimeTributario             String?
+  codigoMunicipio              String?
+  // "Para o professor também, caso a escola exija que ele emita a nota
+  // fiscal pra receber o pagamento" — quando true, fechar a folha do mês
+  // (PUT /api/escola/folha-pagamento/:id/status) dispara emissão automática
+  // usando o Notaas do PRÓPRIO professor (não o da Escola — é ele quem
+  // fatura a Escola, direção oposta da nota aluno→Escola).
+  exigeNotaProfessor           Boolean   @default(false)
+
   // ─── Perfil da Instituição (INSTITUTION, Sprint 1 do briefing 08/09/2026) ───
   // Nullable de propósito: escola já existente continua funcionando sem
   // preencher nada disso até passar por Perfil da Instituição uma vez.
@@ -333,6 +373,7 @@ model Escola {
   movimentacoesEstoque MovimentacaoEstoque[]
   mensagensEquipe      MensagemEquipe[]
   convitesAlunoConta   ConviteAlunoConta[]
+  notasFiscais         NotaFiscal[]
 
   // Feed (Rede Social Fase 4) — postsAutorados: posts feitos EM NOME da
   // Escola (DONO/GESTOR postando como instituição). posts: todo post
@@ -485,6 +526,36 @@ model Professor {
   cpf      String?
   endereco String?
 
+  // ─── Fiscal do próprio professor (INSTITUTION Sprint 28, briefing
+  // 24/09/2026) — quando a Escola exige nota fiscal do professor pra
+  // liberar o pagamento (Escola.exigeNotaProfessor), é o PRÓPRIO professor
+  // (como MEI/PJ) que fatura a Escola — precisa da própria conta/projeto
+  // Notaas, com o próprio CNPJ, distinto do Notaas da Escola (que fatura o
+  // aluno). Mesmo esquema de cifra (AES-256-GCM, ASAAS_ENCRYPTION_KEY) do
+  // Escola.notaasApiKeyCriptografada.
+  // 26/09/2026: mesmo modelo revisado da Escola — o professor informa os
+  // PRÓPRIOS dados fiscais e sobe o PRÓPRIO certificado A1; a KAV CLASS
+  // cadastra o projeto sob a nossa organização Notaas (ver
+  // criarEmpresaFiscalNotaas em server.js), ele nunca abre conta lá.
+  razaoSocial                  String?
+  cnpj                         String?
+  inscricaoMunicipal           String?
+  inscricaoEstadual            String?
+  regimeTributario             String?
+  codigoMunicipio              String?
+  notaasApiKeyCriptografada    String?
+  notaasApiKeyUltimos4         String?
+  notaasWebhookToken           String?   @unique
+  notaasOrgProjectId           String?
+  notaasCertificadoNomeArquivo String?
+  notaasCertificadoValidoAte   DateTime?
+  // Pré-configurados pelo professor, porque a emissão pra Escola acontece
+  // sozinha ao fechar a folha (sem ninguém digitando nada na hora) —
+  // precisam já estar salvos antes, senão a emissão automática falha com
+  // erro claro em vez de travar esperando input.
+  notaasCodigoServicoPadrao    String?
+  notaasAliquotaIssPadrao      Float?
+
   stripeCustomerId String?
   assinaturaStatus StatusAssinaturaProfessor @default(INATIVO)
   assinaturaFim    DateTime?
@@ -535,6 +606,7 @@ model Professor {
   mensagens           Mensagem[]
   mensagensEquipe     MensagemEquipe[]
   convitesAlunoConta  ConviteAlunoConta[]
+  notasFiscais        NotaFiscal[]
   turmas              Turma[]
   matriculas          Matricula[]
   avaliacoes          Avaliacao[]
@@ -857,6 +929,11 @@ model Pagamento {
   // /api/matriculas/:id/faturas) preenchem isso.
   matriculaId String?
   matricula   Matricula? @relation(fields: [matriculaId], references: [id], onDelete: SetNull)
+
+  // Fiscal (INSTITUTION Sprint 27, briefing 24/09/2026) — nota emitida pra
+  // este pagamento específico (aluno→Escola). Opcional: nem toda Escola
+  // emite nota fiscal, e mesmo quem emite pode ter faturas antigas sem.
+  notaFiscal NotaFiscal?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1727,11 +1804,75 @@ model FolhaPagamentoProfessor {
   escolaId    String
   escola      Escola    @relation(fields: [escolaId], references: [id])
 
+  // Fiscal (INSTITUTION Sprint 28, briefing 24/09/2026) — nota que o
+  // PRÓPRIO professor emitiu contra a Escola pra liberar este pagamento,
+  // quando Escola.exigeNotaProfessor=true. Disparada automaticamente ao
+  // fechar a folha (PUT .../status), usando o Notaas do professor.
+  notaFiscal NotaFiscal?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([professorId, mes, ano])
   @@index([escolaId, mes, ano])
+}
+
+// ─── FISCAL — NFS-e via Notaas (INSTITUTION Sprints 27/28, briefing
+// 24/09/2026) ────────────────────────────────────────────────────────────
+// Duas direções possíveis, nunca as duas na mesma linha (por isso
+// pagamentoId/folhaPagamentoId são opcionais e mutuamente exclusivos,
+// validado em server.js — mesmo estilo do resto do schema, sem CHECK
+// constraint):
+//  ALUNO_PARA_ESCOLA: a Escola emite pro aluno (usa o Notaas da Escola).
+//  PROFESSOR_PARA_ESCOLA: o professor emite pra Escola, quando ela exige
+//    nota fiscal pra liberar o pagamento (usa o Notaas do PRÓPRIO professor).
+enum TipoNotaFiscal {
+  ALUNO_PARA_ESCOLA
+  PROFESSOR_PARA_ESCOLA
+}
+
+// Espelha o ciclo de vida assíncrono da Notaas (POST /emitir devolve 202,
+// o resultado de verdade chega por webhook — nfse.issued/nfse.error).
+enum StatusNotaFiscal {
+  PENDENTE
+  EMITIDA
+  ERRO
+  CANCELADA
+}
+
+model NotaFiscal {
+  id     String           @id @default(uuid())
+  tipo   TipoNotaFiscal
+  status StatusNotaFiscal @default(PENDENTE)
+  valor  Float
+
+  // Preenchidos conforme a Notaas processa (nulos enquanto PENDENTE).
+  notaasInvoiceId String? @unique
+  numeroNota      String?
+  chaveAcesso     String?
+  pdfUrl          String?
+  xmlUrl          String?
+  erro            String?
+
+  escolaId String
+  escola   Escola @relation(fields: [escolaId], references: [id])
+
+  // Quem EMITIU (dono da conta/projeto Notaas usada) — a Escola em
+  // ALUNO_PARA_ESCOLA não precisa desse campo (é sempre a própria escolaId);
+  // em PROFESSOR_PARA_ESCOLA é o professor que emitiu.
+  professorId String?
+  professor   Professor? @relation(fields: [professorId], references: [id])
+
+  pagamentoId      String?                  @unique
+  pagamento        Pagamento?               @relation(fields: [pagamentoId], references: [id], onDelete: SetNull)
+  folhaPagamentoId String?                  @unique
+  folhaPagamento   FolhaPagamentoProfessor? @relation(fields: [folhaPagamentoId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime  @default(now())
+  emitidaEm DateTime?
+
+  @@index([escolaId, status])
+  @@index([professorId, status])
 }
 
 // ─── DESPESA FIXA (INSTITUTION Sprint 7, briefing 08/09/2026) ────────────

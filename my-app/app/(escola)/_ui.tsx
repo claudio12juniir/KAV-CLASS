@@ -64,6 +64,9 @@ export const NAV_ESCOLA: GrupoNav[] = [
     { chave: 'financeiro', rota: '/(escola)/financeiro', rotulo: 'Financeiro', icone: 'cash-outline' },
     { chave: 'relatorios', rota: '/(escola)/relatorios', rotulo: 'Relatórios', icone: 'bar-chart-outline' },
   ]},
+  { titulo: 'Fiscal', itens: [
+    { chave: 'fiscal', rota: '/(escola)/fiscal', rotulo: 'Notas Fiscais', icone: 'document-text-outline' },
+  ]},
   { titulo: 'Instituição', itens: [
     { chave: 'configuracoes', rota: '/(escola)/perfil-instituicao', rotulo: 'Configurações', icone: 'options-outline' },
   ]},

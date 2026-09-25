@@ -86,6 +86,154 @@ async function asaasFetch(escola, path, options = {}) {
   return corpo;
 }
 
+// ─── FISCAL — NFS-e via Notaas (INSTITUTION Sprints 27/28, briefing
+// 24/09/2026) ────────────────────────────────────────────────────────────
+// Mesmo esquema de cifra do Asaas acima (AES-256-GCM) — reaproveita
+// ASAAS_ENCRYPTION_KEY como chave mestra da PLATAFORMA (não é exclusiva do
+// Asaas, só nasceu lá primeiro), pra não introduzir uma env var nova só
+// pra isso. Sem essa env var, toda rota fiscal responde 503 (mesmo padrão
+// dos outros guards `if (!stripe)`/`if (!ASAAS_ENCRYPTION_KEY)`).
+const NOTAAS_API_BASE_URL = process.env.NOTAAS_API_BASE_URL || 'https://platform.notaas.com.br/api/v1';
+const NOTAAS_WEBHOOK_URL_BASE = 'https://kav-class-1.onrender.com/api/webhooks/notaas';
+
+function criptografarNotaasApiKey(texto) {
+  const iv = crypto.randomBytes(12);
+  const cifra = crypto.createCipheriv('aes-256-gcm', ASAAS_ENCRYPTION_KEY, iv);
+  const cifrado = Buffer.concat([cifra.update(texto, 'utf8'), cifra.final()]);
+  const tag = cifra.getAuthTag();
+  return Buffer.concat([iv, tag, cifrado]).toString('base64');
+}
+
+function descriptografarNotaasApiKey(valorCifrado) {
+  const dados = Buffer.from(valorCifrado, 'base64');
+  const iv = dados.subarray(0, 12);
+  const tag = dados.subarray(12, 28);
+  const cifrado = dados.subarray(28);
+  const decifra = crypto.createDecipheriv('aes-256-gcm', ASAAS_ENCRYPTION_KEY, iv);
+  decifra.setAuthTag(tag);
+  return Buffer.concat([decifra.update(cifrado), decifra.final()]).toString('utf8');
+}
+
+// Chama a API da Notaas com a API Key CIFRADA de uma Escola ou Professor —
+// `titular` precisa ter vindo de uma query com o campo cifrado explícito no
+// select (segredo, não entra em select genérico). Lança erro com `.status`
+// pra tratarErro devolver o código certo.
+async function notaasFetch(apiKeyCriptografada, path, options = {}) {
+  if (!apiKeyCriptografada) {
+    const erro = new Error('Notaas não conectado.');
+    erro.status = 400;
+    throw erro;
+  }
+  const apiKey = descriptografarNotaasApiKey(apiKeyCriptografada);
+  const resposta = await fetch(`${NOTAAS_API_BASE_URL}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      ...(options.headers || {}),
+    },
+  });
+  const corpo = await resposta.json().catch(() => ({}));
+  if (!resposta.ok) {
+    const mensagem = corpo?.message || corpo?.error || 'Erro ao chamar a Notaas.';
+    const erro = new Error(mensagem);
+    erro.status = resposta.status;
+    throw erro;
+  }
+  return corpo;
+}
+
+// Registra (ou substitui) o webhook do projeto Notaas apontando pra nossa
+// rota única — diferente do Asaas, a Notaas tem endpoint de webhook via API
+// (POST /webhooks/endpoints), então não precisamos pedir pra colar nada no
+// painel de terceiro. `token` é usado como URL (identifica de qual
+// Escola/Professor veio o evento) E como segredo HMAC — mesmo valor.
+async function registrarWebhookNotaas(apiKeyCriptografada, token) {
+  await notaasFetch(apiKeyCriptografada, '/webhooks/endpoints', {
+    method: 'POST',
+    body: JSON.stringify({
+      url: `${NOTAAS_WEBHOOK_URL_BASE}/${token}`,
+      events: ['nfse.issued', 'nfse.error', 'nfse.cancelled'],
+      secret: token,
+    }),
+  });
+}
+
+// ─── FISCAL — Organização Notaas (26/09/2026) ───────────────────────────────
+// Modelo revisado: em vez de cada Escola/Professor criar a própria conta na
+// Notaas e colar a API Key deles, a KAV CLASS usa UM token de organização só
+// nosso (NOTAAS_ORG_TOKEN, prefixo ntaas_org_) pra cadastrar um "projeto"
+// Notaas por Escola/Professor (com o CNPJ/dados fiscais REAIS de quem presta
+// o serviço) e gerar uma API Key escopada só àquele projeto. A nota sai
+// numerada e autorizada pela prefeitura/SEFAZ do CNPJ da Escola/Professor —
+// não do nosso. Isso não elimina o certificado digital A1 (.pfx) próprio do
+// CNPJ: é exigência legal de assinatura da nota, nenhuma plataforma emite
+// nota de um CNPJ sem o certificado dele. Recurso "Organização" aparece
+// documentado como plano Enterprise da Notaas — se o token não tiver esse
+// acesso, notaasOrgFetch abaixo vai falhar com 401/403 e a rota devolve erro
+// claro pro usuário resolver com a Notaas.
+const NOTAAS_ORG_TOKEN = process.env.NOTAAS_ORG_TOKEN || null;
+
+async function notaasOrgFetch(path, options = {}) {
+  if (!NOTAAS_ORG_TOKEN) {
+    const erro = new Error('Integração fiscal (Notaas) não configurada no servidor.');
+    erro.status = 503;
+    throw erro;
+  }
+  const resposta = await fetch(`${NOTAAS_API_BASE_URL}${path}`, {
+    ...options,
+    headers: { 'x-api-key': NOTAAS_ORG_TOKEN, ...(options.headers || {}) },
+  });
+  const tipo = resposta.headers.get('content-type') || '';
+  const corpo = tipo.includes('application/json') ? await resposta.json().catch(() => ({})) : await resposta.text().catch(() => '');
+  if (!resposta.ok) {
+    const mensagem = (typeof corpo === 'object' ? corpo?.message || corpo?.error : corpo) || 'Erro ao chamar a Notaas.';
+    const erro = new Error(mensagem);
+    erro.status = resposta.status;
+    throw erro;
+  }
+  return corpo;
+}
+
+// Orquestra os 3 passos pra dar de alta uma empresa fiscal nova sob a nossa
+// organização: cria o projeto (dados cadastrais), sobe o certificado A1
+// (.pfx) daquele CNPJ, gera a API Key escopada ao projeto. Se qualquer passo
+// falhar depois do projeto criado, o projeto fica órfão na Notaas (sem
+// certificado/chave) — aceitável pro MVP, não tenta desfazer automaticamente.
+// NOTA: o nome do campo com a chave em si na resposta de POST
+// .../api-keys não está 100% confirmado pela documentação pública
+// (`apiKey` foi o mais provável) — tratamento defensivo abaixo cobre as
+// variantes prováveis.
+async function criarEmpresaFiscalNotaas({
+  nomeProjeto, cnpj, razaoSocial, inscricaoMunicipal, inscricaoEstadual, regimeTributario, codigoMunicipio,
+  certificadoBase64, certificadoNomeArquivo, senhaCertificado,
+}) {
+  const projeto = await notaasOrgFetch('/org/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: nomeProjeto, cnpj, razaoSocial, inscricaoMunicipal, inscricaoEstadual, regimeTributario, codigoMunicipio }),
+  });
+
+  const formCertificado = new FormData();
+  formCertificado.append('file', new Blob([Buffer.from(certificadoBase64, 'base64')]), certificadoNomeArquivo || 'certificado.pfx');
+  formCertificado.append('password', senhaCertificado);
+  const certificado = await notaasOrgFetch(`/org/projects/${projeto.id}/certificate`, { method: 'POST', body: formCertificado });
+
+  const chaveResp = await notaasOrgFetch(`/org/projects/${projeto.id}/api-keys`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'kav-class' }),
+  });
+  const apiKey = chaveResp?.apiKey || chaveResp?.key || chaveResp?.token;
+  if (!apiKey) {
+    const erro = new Error('Notaas não retornou a chave do projeto criado.');
+    erro.status = 502;
+    throw erro;
+  }
+
+  return { projetoId: projeto.id, apiKey, certificadoValidoAte: certificado?.validUntil || null, certificadoNomeArquivo: certificado?.fileName || certificadoNomeArquivo || null };
+}
+
 // ─── CLOUDFLARE STREAM (Reels, Epic D, 18/09/2026) ──────────────────────────
 // Direct Creator Upload: o backend só pede à Cloudflare uma URL de upload
 // descartável — o app sobe o arquivo de vídeo direto pra lá, o token da
@@ -451,6 +599,66 @@ app.post('/stream/webhook', express.raw({ type: 'application/json' }), async (re
   }
 
   res.json({ received: true });
+});
+
+// POST /api/webhooks/notaas/:token — resultado assíncrono de emissão/
+// cancelamento de NFS-e (INSTITUTION Sprints 27/28, briefing 24/09/2026).
+// `token` identifica de qual Escola OU Professor veio o evento (cada um tem
+// seu próprio projeto/API Key na Notaas) e é o MESMO valor usado como
+// segredo HMAC no registro do webhook (registrarWebhookNotaas). Usa
+// express.raw (não o json global abaixo) porque a assinatura é calculada
+// sobre o corpo cru, antes de qualquer parse.
+// ⚠️ Formato exato do header de assinatura não confirmado 100% contra uma
+// entrega real da Notaas (documentação pública não deixou claro se o valor
+// vem com prefixo "sha256=" ou só o hex) — aceita os dois formatos por
+// segurança; validar contra um webhook de teste real antes de confiar cego.
+app.post('/api/webhooks/notaas/:token', express.raw({ type: 'application/json' }), async (req, res) => {
+  try {
+    const { token } = req.params;
+    const [escola, professor] = await Promise.all([
+      prisma.escola.findFirst({ where: { notaasWebhookToken: token }, select: { id: true } }),
+      prisma.professor.findFirst({ where: { notaasWebhookToken: token }, select: { id: true } }),
+    ]);
+    if (!escola && !professor) return res.status(401).json({ erro: 'Token inválido.' });
+
+    const corpoCru = req.body.toString('utf8');
+    const assinaturaHeader = String(req.headers['x-notaas-signature'] || '').replace(/^sha256=/, '');
+    const esperado = crypto.createHmac('sha256', token).update(corpoCru).digest('hex');
+    const valido = assinaturaHeader.length === esperado.length &&
+      crypto.timingSafeEqual(Buffer.from(assinaturaHeader), Buffer.from(esperado));
+    if (!valido) return res.status(401).json({ erro: 'Assinatura inválida.' });
+
+    const evento = JSON.parse(corpoCru);
+    const dados = evento.data || {};
+    const notaasInvoiceId = dados.invoiceId;
+    if (!notaasInvoiceId) return res.json({ received: true });
+
+    if (evento.event === 'nfse.issued') {
+      await prisma.notaFiscal.updateMany({
+        where: { notaasInvoiceId },
+        data: { status: 'EMITIDA', numeroNota: dados.nNFSe || null, chaveAcesso: dados.chNFSe || null, emitidaEm: new Date() },
+      });
+    } else if (evento.event === 'nfse.documents_ready') {
+      await prisma.notaFiscal.updateMany({
+        where: { notaasInvoiceId },
+        data: { pdfUrl: dados.pdfUrl || dados.pdf || null, xmlUrl: dados.xmlUrl || dados.xml || null },
+      });
+    } else if (evento.event === 'nfse.error') {
+      await prisma.notaFiscal.updateMany({
+        where: { notaasInvoiceId },
+        data: { status: 'ERRO', erro: dados.message || dados.error || 'Erro ao emitir a nota.' },
+      });
+    } else if (evento.event === 'nfse.cancelled') {
+      await prisma.notaFiscal.updateMany({ where: { notaasInvoiceId }, data: { status: 'CANCELADA' } });
+    }
+
+    res.json({ received: true });
+  } catch (err) {
+    // 200 mesmo em erro interno nosso — evita a Notaas ficar reentregando
+    // (até 5 tentativas com backoff) por um bug daqui, não do lado dela.
+    console.error('[Notaas Webhook] Erro ao processar evento:', err.message);
+    res.status(200).json({ received: true });
+  }
 });
 
 app.use(express.json({ limit: '20mb' }));
@@ -6313,6 +6521,397 @@ app.post('/api/escola/asaas/desconectar', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// FISCAL — categoria nova no INSTITUTION (Sprints 27/28, briefing
+// 24/09/2026): "escola exija que ele emita a nota fiscal pra receber o
+// pagamento, que pelo sistema ela já faça tudo automatizado". Duas
+// direções: Escola emite pro Aluno (esta seção) e Professor emite pra
+// Escola (seção seguinte, mais abaixo perto da folha de pagamento).
+// ═══════════════════════════════════════════════════════════════════════
+
+// POST /api/escola/fiscal/notaas/cadastrar-empresa — dá de alta a Escola
+// como empresa fiscal sob a NOSSA organização Notaas (26/09/2026): a escola
+// nunca precisa ter conta própria na Notaas, só informa os dados fiscais
+// dela e sobe o certificado digital A1 (.pfx) do próprio CNPJ (exigência
+// legal de assinatura da nota — não elimina isso, só elimina a burocracia
+// de abrir conta lá).
+app.post('/api/escola/fiscal/notaas/cadastrar-empresa', async (req, res) => {
+  if (!ASAAS_ENCRYPTION_KEY) return res.status(503).json({ erro: 'Serviço fiscal não configurado nesta instância.' });
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    if (!professor) return;
+
+    const {
+      razaoSocial, cnpj, inscricaoMunicipal, inscricaoEstadual, regimeTributario, codigoMunicipio,
+      certificadoBase64, certificadoNomeArquivo, senhaCertificado,
+    } = req.body;
+    if (!razaoSocial?.trim() || !cnpj?.trim() || !codigoMunicipio?.trim()) {
+      return res.status(400).json({ erro: 'razaoSocial, cnpj e codigoMunicipio são obrigatórios.' });
+    }
+    if (!certificadoBase64 || !senhaCertificado) {
+      return res.status(400).json({ erro: 'Envie o certificado digital A1 (.pfx) e a senha dele.' });
+    }
+
+    const escolaAtual = await prisma.escola.findUnique({ where: { id: professor.escolaId }, select: { nome: true, notaasWebhookToken: true } });
+    const webhookToken = escolaAtual.notaasWebhookToken || crypto.randomBytes(24).toString('hex');
+
+    let resultado;
+    try {
+      resultado = await criarEmpresaFiscalNotaas({
+        nomeProjeto: `escola-${professor.escolaId}`,
+        cnpj: cnpj.trim(), razaoSocial: razaoSocial.trim(),
+        inscricaoMunicipal: inscricaoMunicipal?.trim() || undefined,
+        inscricaoEstadual: inscricaoEstadual?.trim() || undefined,
+        regimeTributario: regimeTributario?.trim() || undefined,
+        codigoMunicipio: codigoMunicipio.trim(),
+        certificadoBase64, certificadoNomeArquivo, senhaCertificado,
+      });
+      const apiKeyCriptografada = criptografarNotaasApiKey(resultado.apiKey);
+      await registrarWebhookNotaas(apiKeyCriptografada, webhookToken);
+
+      await prisma.escola.update({
+        where: { id: professor.escolaId },
+        data: {
+          razaoSocial: razaoSocial.trim(), cnpj: cnpj.trim(),
+          inscricaoMunicipal: inscricaoMunicipal?.trim() || null,
+          inscricaoEstadual: inscricaoEstadual?.trim() || null,
+          regimeTributario: regimeTributario?.trim() || null,
+          codigoMunicipio: codigoMunicipio.trim(),
+          notaasOrgProjectId: resultado.projetoId,
+          notaasApiKeyCriptografada: apiKeyCriptografada,
+          notaasApiKeyUltimos4: resultado.apiKey.slice(-4),
+          notaasWebhookToken: webhookToken,
+          notaasCertificadoNomeArquivo: resultado.certificadoNomeArquivo,
+          notaasCertificadoValidoAte: resultado.certificadoValidoAte ? new Date(resultado.certificadoValidoAte) : null,
+        },
+      });
+    } catch (err) {
+      return res.status(err.status && err.status < 500 ? 400 : 502).json({ erro: 'Não foi possível cadastrar a empresa fiscal na Notaas: ' + err.message });
+    }
+
+    res.json({ ok: true, mensagem: 'Empresa fiscal cadastrada! A escola já pode emitir notas.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao cadastrar empresa fiscal.');
+  }
+});
+
+app.post('/api/escola/fiscal/notaas/desconectar', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    if (!professor) return;
+    await prisma.escola.update({
+      where: { id: professor.escolaId },
+      data: { notaasApiKeyCriptografada: null, notaasApiKeyUltimos4: null, notaasOrgProjectId: null, notaasCertificadoNomeArquivo: null, notaasCertificadoValidoAte: null },
+    });
+    res.json({ mensagem: 'Notaas desconectado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao desconectar a Notaas.');
+  }
+});
+
+app.get('/api/escola/fiscal/configuracao', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    if (!professor) return;
+    const escola = await prisma.escola.findUnique({
+      where: { id: professor.escolaId },
+      select: {
+        razaoSocial: true, cnpj: true, inscricaoMunicipal: true, inscricaoEstadual: true, regimeTributario: true, codigoMunicipio: true,
+        notaasCodigoServicoPadrao: true, notaasAliquotaIssPadrao: true,
+        notaasApiKeyUltimos4: true, notaasCertificadoNomeArquivo: true, notaasCertificadoValidoAte: true,
+        exigeNotaProfessor: true,
+      },
+    });
+    res.json({ ...escola, notaasConectado: !!escola.notaasApiKeyUltimos4 });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar configuração fiscal.');
+  }
+});
+
+app.put('/api/escola/fiscal/configuracao', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    if (!professor) return;
+    const { notaasCodigoServicoPadrao, notaasAliquotaIssPadrao, exigeNotaProfessor } = req.body;
+    const data = {};
+    if (notaasCodigoServicoPadrao !== undefined) data.notaasCodigoServicoPadrao = notaasCodigoServicoPadrao?.trim() || null;
+    if (notaasAliquotaIssPadrao !== undefined) data.notaasAliquotaIssPadrao = notaasAliquotaIssPadrao === null ? null : Number(notaasAliquotaIssPadrao);
+    if (typeof exigeNotaProfessor === 'boolean') data.exigeNotaProfessor = exigeNotaProfessor;
+    await prisma.escola.update({ where: { id: professor.escolaId }, data });
+    res.json({ mensagem: 'Configuração fiscal atualizada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar configuração fiscal.');
+  }
+});
+
+// GET /api/escola/fiscal/pendentes — pagamentos já PAGOs que ainda não têm
+// nota emitida (aba "Pendentes" da categoria Fiscal).
+app.get('/api/escola/fiscal/pendentes', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    if (!professor) return;
+    const pendentes = await prisma.pagamento.findMany({
+      where: { professor: { escolaId: professor.escolaId }, status: 'PAGO', notaFiscal: null },
+      include: { aluno: { select: { nome: true } } },
+      orderBy: { dataPagamento: 'desc' },
+      take: 200,
+    });
+    res.json(pendentes);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao listar pagamentos pendentes de nota.');
+  }
+});
+
+app.get('/api/escola/fiscal/notas', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    if (!professor) return;
+    const notas = await prisma.notaFiscal.findMany({
+      where: { escolaId: professor.escolaId },
+      include: {
+        pagamento: { select: { id: true, valor: true, aluno: { select: { nome: true } } } },
+        folhaPagamento: { select: { id: true, mes: true, ano: true, professor: { select: { nome: true } } } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json(notas);
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao listar notas fiscais.');
+  }
+});
+
+// POST /api/escola/pagamentos/:id/emitir-nota — emissão manual (a escola
+// escolhe quais pagamentos viram nota, botão por botão) — diferente da
+// emissão automática do professor pra escola (mais abaixo), que dispara
+// sozinha ao fechar a folha. Emitir nota fiscal de verdade tem consequência
+// tributária real, então esta direção fica sempre como ação explícita da
+// escola, nunca automática por padrão.
+app.post('/api/escola/pagamentos/:id/emitir-nota', async (req, res) => {
+  try {
+    const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
+    if (!professor) return;
+
+    const escola = await prisma.escola.findUnique({
+      where: { id: professor.escolaId },
+      select: { nome: true, notaasApiKeyCriptografada: true, notaasCodigoServicoPadrao: true, notaasAliquotaIssPadrao: true },
+    });
+    if (!escola?.notaasApiKeyCriptografada) return res.status(400).json({ erro: 'Conecte a Notaas em Fiscal → Configurações antes de emitir notas.' });
+
+    const pagamento = await prisma.pagamento.findFirst({
+      where: { id: req.params.id, professor: { escolaId: professor.escolaId } },
+      include: {
+        aluno: { select: { nome: true, cpf: true, email: true, responsavel: { select: { nome: true, cpf: true, email: true } } } },
+        notaFiscal: true,
+      },
+    });
+    if (!pagamento) return res.status(404).json({ erro: 'Pagamento não encontrado nesta Escola.' });
+    if (pagamento.notaFiscal) return res.status(400).json({ erro: 'Esse pagamento já tem nota fiscal.' });
+
+    const { codigoServico, descricaoServico } = req.body;
+    const codigo = codigoServico?.trim() || escola.notaasCodigoServicoPadrao;
+    if (!codigo) return res.status(400).json({ erro: 'Informe o código de serviço (ou configure um padrão em Fiscal → Configurações).' });
+
+    // Responsável financeiro tem prioridade sobre o próprio aluno (é quem
+    // efetivamente paga, quando existe — ver ResponsavelFinanceiro).
+    const tomadorNome = pagamento.aluno.responsavel?.nome || pagamento.aluno.nome;
+    const tomadorDocumento = pagamento.aluno.responsavel?.cpf || pagamento.aluno.cpf;
+    const tomadorEmail = pagamento.aluno.responsavel?.email || pagamento.aluno.email;
+
+    const notaFiscal = await prisma.notaFiscal.create({
+      data: { tipo: 'ALUNO_PARA_ESCOLA', valor: pagamento.valor, escolaId: professor.escolaId, pagamentoId: pagamento.id },
+    });
+
+    try {
+      // ⚠️ campo "cnpj" no tomador é o único documentado publicamente pra
+      // identificação fiscal de quem recebe a nota — não confirmado se a
+      // Notaas espera um campo "cpf" separado pra pessoa física. Validar
+      // contra sandbox real antes de confiar cego (ver runbook).
+      const resposta = await notaasFetch(escola.notaasApiKeyCriptografada, '/emitir', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': notaFiscal.id },
+        body: JSON.stringify({
+          tomador: { nome: tomadorNome, cnpj: tomadorDocumento || undefined, email: tomadorEmail || undefined },
+          servico: { codigo, descricao: descricaoServico?.trim() || 'Mensalidade de curso' },
+          valores: { total: pagamento.valor, aliquotaIss: escola.notaasAliquotaIssPadrao || undefined },
+        }),
+      });
+      await prisma.notaFiscal.update({ where: { id: notaFiscal.id }, data: { notaasInvoiceId: resposta.invoiceId } });
+      res.status(201).json({ mensagem: 'Nota em processamento — o status atualiza sozinho quando a Notaas confirmar (webhook).', notaFiscalId: notaFiscal.id });
+    } catch (err) {
+      await prisma.notaFiscal.update({ where: { id: notaFiscal.id }, data: { status: 'ERRO', erro: err.message } });
+      res.status(err.status || 500).json({ erro: 'Erro ao emitir nota: ' + err.message });
+    }
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao emitir nota fiscal.');
+  }
+});
+
+// ─── Fiscal do professor (Sprint 28) — quando a Escola exige nota pra
+// liberar o pagamento, é o professor quem fatura a Escola com o PRÓPRIO
+// Notaas (CNPJ próprio, MEI/PJ) — nunca o da Escola.
+
+app.get('/api/professor/fiscal', exigirProfessor, async (req, res) => {
+  try {
+    const professor = await prisma.professor.findUnique({
+      where: { id: req.auth.id },
+      select: {
+        razaoSocial: true, cnpj: true, inscricaoMunicipal: true, inscricaoEstadual: true, regimeTributario: true, codigoMunicipio: true,
+        notaasApiKeyUltimos4: true, notaasCodigoServicoPadrao: true, notaasAliquotaIssPadrao: true,
+        notaasCertificadoNomeArquivo: true, notaasCertificadoValidoAte: true,
+        escola: { select: { exigeNotaProfessor: true, nome: true } },
+      },
+    });
+    if (!professor) return res.status(404).json({ erro: 'Professor não encontrado.' });
+    const notas = await prisma.notaFiscal.findMany({
+      where: { professorId: req.auth.id, tipo: 'PROFESSOR_PARA_ESCOLA' },
+      include: { folhaPagamento: { select: { mes: true, ano: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({
+      ...professor,
+      notaasConectado: !!professor.notaasApiKeyUltimos4,
+      exigidoPelaEscola: professor.escola.exigeNotaProfessor,
+      escolaNome: professor.escola.nome,
+      notas,
+    });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao carregar dados fiscais.');
+  }
+});
+
+app.put('/api/professor/fiscal/configuracao', exigirProfessor, async (req, res) => {
+  try {
+    const { notaasCodigoServicoPadrao, notaasAliquotaIssPadrao } = req.body;
+    const data = {};
+    if (notaasCodigoServicoPadrao !== undefined) data.notaasCodigoServicoPadrao = notaasCodigoServicoPadrao?.trim() || null;
+    if (notaasAliquotaIssPadrao !== undefined) data.notaasAliquotaIssPadrao = notaasAliquotaIssPadrao === null ? null : Number(notaasAliquotaIssPadrao);
+    await prisma.professor.update({ where: { id: req.auth.id }, data });
+    res.json({ mensagem: 'Configuração fiscal atualizada.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao atualizar configuração fiscal.');
+  }
+});
+
+// POST /api/professor/fiscal/notaas/cadastrar-empresa — mesmo modelo da
+// Escola (26/09/2026): o professor informa os PRÓPRIOS dados fiscais
+// (CNPJ MEI/PJ) e sobe o PRÓPRIO certificado A1 — a KAV CLASS cadastra o
+// projeto sob a nossa organização Notaas, o professor nunca abre conta lá.
+app.post('/api/professor/fiscal/notaas/cadastrar-empresa', exigirProfessor, async (req, res) => {
+  if (!ASAAS_ENCRYPTION_KEY) return res.status(503).json({ erro: 'Serviço fiscal não configurado nesta instância.' });
+  try {
+    const {
+      razaoSocial, cnpj, inscricaoMunicipal, inscricaoEstadual, regimeTributario, codigoMunicipio,
+      certificadoBase64, certificadoNomeArquivo, senhaCertificado,
+    } = req.body;
+    if (!razaoSocial?.trim() || !cnpj?.trim() || !codigoMunicipio?.trim()) {
+      return res.status(400).json({ erro: 'razaoSocial, cnpj e codigoMunicipio são obrigatórios.' });
+    }
+    if (!certificadoBase64 || !senhaCertificado) {
+      return res.status(400).json({ erro: 'Envie o certificado digital A1 (.pfx) e a senha dele.' });
+    }
+
+    const professorAtual = await prisma.professor.findUnique({ where: { id: req.auth.id }, select: { notaasWebhookToken: true } });
+    const webhookToken = professorAtual.notaasWebhookToken || crypto.randomBytes(24).toString('hex');
+
+    let resultado;
+    try {
+      resultado = await criarEmpresaFiscalNotaas({
+        nomeProjeto: `professor-${req.auth.id}`,
+        cnpj: cnpj.trim(), razaoSocial: razaoSocial.trim(),
+        inscricaoMunicipal: inscricaoMunicipal?.trim() || undefined,
+        inscricaoEstadual: inscricaoEstadual?.trim() || undefined,
+        regimeTributario: regimeTributario?.trim() || undefined,
+        codigoMunicipio: codigoMunicipio.trim(),
+        certificadoBase64, certificadoNomeArquivo, senhaCertificado,
+      });
+      const apiKeyCriptografada = criptografarNotaasApiKey(resultado.apiKey);
+      await registrarWebhookNotaas(apiKeyCriptografada, webhookToken);
+
+      await prisma.professor.update({
+        where: { id: req.auth.id },
+        data: {
+          razaoSocial: razaoSocial.trim(), cnpj: cnpj.trim(),
+          inscricaoMunicipal: inscricaoMunicipal?.trim() || null,
+          inscricaoEstadual: inscricaoEstadual?.trim() || null,
+          regimeTributario: regimeTributario?.trim() || null,
+          codigoMunicipio: codigoMunicipio.trim(),
+          notaasOrgProjectId: resultado.projetoId,
+          notaasApiKeyCriptografada: apiKeyCriptografada,
+          notaasApiKeyUltimos4: resultado.apiKey.slice(-4),
+          notaasWebhookToken: webhookToken,
+          notaasCertificadoNomeArquivo: resultado.certificadoNomeArquivo,
+          notaasCertificadoValidoAte: resultado.certificadoValidoAte ? new Date(resultado.certificadoValidoAte) : null,
+        },
+      });
+    } catch (err) {
+      return res.status(err.status && err.status < 500 ? 400 : 502).json({ erro: 'Não foi possível cadastrar sua empresa fiscal na Notaas: ' + err.message });
+    }
+
+    res.json({ ok: true, mensagem: 'Empresa fiscal cadastrada! Suas notas pra escola agora saem automaticamente.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao cadastrar empresa fiscal.');
+  }
+});
+
+app.post('/api/professor/fiscal/notaas/desconectar', exigirProfessor, async (req, res) => {
+  try {
+    await prisma.professor.update({
+      where: { id: req.auth.id },
+      data: { notaasApiKeyCriptografada: null, notaasApiKeyUltimos4: null, notaasOrgProjectId: null, notaasCertificadoNomeArquivo: null, notaasCertificadoValidoAte: null },
+    });
+    res.json({ mensagem: 'Notaas desconectado.' });
+  } catch (err) {
+    tratarErro(err, res, 'Erro ao desconectar a Notaas.');
+  }
+});
+
+// Emissão automática da nota professor→Escola (chamada de dentro de
+// PUT /api/escola/folha-pagamento/:id/status quando a folha fecha, ver mais
+// abaixo). Não bloqueia o fechamento da folha se o professor ainda não
+// conectou a Notaas — registra a pendência com erro claro e avisa o
+// professor por push, em vez de travar o financeiro da escola inteira.
+async function emitirNotaFolhaPagamento(folha) {
+  const jaExiste = await prisma.notaFiscal.findUnique({ where: { folhaPagamentoId: folha.id } });
+  if (jaExiste) return;
+
+  const valor = folha.valorAjustado ?? folha.valorCalculado;
+  const notaFiscal = await prisma.notaFiscal.create({
+    data: { tipo: 'PROFESSOR_PARA_ESCOLA', valor, escolaId: folha.escolaId, professorId: folha.professorId, folhaPagamentoId: folha.id },
+  });
+
+  if (!folha.professor.notaasApiKeyCriptografada) {
+    await prisma.notaFiscal.update({ where: { id: notaFiscal.id }, data: { status: 'ERRO', erro: 'Professor ainda não conectou a própria conta Notaas.' } });
+    if (folha.professor.expoPushToken) {
+      enviarPushNotificacao(
+        folha.professor.expoPushToken,
+        'Nota fiscal pendente',
+        'A escola fechou sua folha de pagamento, mas você ainda não conectou sua conta Notaas. Conecte em Fiscal pra receber.',
+        { tipo: 'NOTA_FISCAL_PENDENTE', folhaPagamentoId: folha.id }
+      ).catch((err) => console.error('[Push] Falha ao notificar nota fiscal pendente:', err.message));
+    }
+    return;
+  }
+  if (!folha.professor.notaasCodigoServicoPadrao) {
+    await prisma.notaFiscal.update({ where: { id: notaFiscal.id }, data: { status: 'ERRO', erro: 'Professor não configurou um código de serviço padrão.' } });
+    return;
+  }
+
+  try {
+    const resposta = await notaasFetch(folha.professor.notaasApiKeyCriptografada, '/emitir', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': notaFiscal.id },
+      body: JSON.stringify({
+        tomador: { nome: folha.escola.nome, cnpj: folha.escola.cnpj || undefined },
+        servico: { codigo: folha.professor.notaasCodigoServicoPadrao, descricao: `Aulas ministradas — ${String(folha.mes).padStart(2, '0')}/${folha.ano}` },
+        valores: { total: valor, aliquotaIss: folha.professor.notaasAliquotaIssPadrao || undefined },
+      }),
+    });
+    await prisma.notaFiscal.update({ where: { id: notaFiscal.id }, data: { notaasInvoiceId: resposta.invoiceId } });
+  } catch (err) {
+    await prisma.notaFiscal.update({ where: { id: notaFiscal.id }, data: { status: 'ERRO', erro: err.message } });
+  }
+}
+
 // POST /api/matriculas/:id/cobranca-automatica/asaas/iniciar — dono da
 // matrícula (professor/GESTOR/DONO ou o próprio aluno) ativa cobrança
 // recorrente via Asaas. Cria (ou reaproveita) o Customer e a Subscription
@@ -7171,6 +7770,12 @@ app.post('/api/escola/folha-pagamento/:id/comprovantes', async (req, res) => {
 });
 
 // PUT /api/escola/folha-pagamento/:id/status — abre/fecha a folha do mês.
+// Fiscal (INSTITUTION Sprint 28, briefing 24/09/2026): fechar a folha, com
+// Escola.exigeNotaProfessor=true, dispara emissão automática da nota do
+// professor pra Escola — "que pelo sistema ela já faça tudo automatizado",
+// pedido explícito do usuário. Não bloqueia o fechamento se a emissão falhar
+// (ver emitirNotaFolhaPagamento) — financeiro da escola não pode travar por
+// um professor que ainda não conectou a própria conta Notaas.
 app.put('/api/escola/folha-pagamento/:id/status', async (req, res) => {
   try {
     const professor = await exigirPapelNaEscola(req, res, ['DONO', 'GESTOR'], 'financeiro');
@@ -7183,6 +7788,20 @@ app.put('/api/escola/folha-pagamento/:id/status', async (req, res) => {
       data: { status },
     });
     if (!count) return res.status(404).json({ erro: 'Folha não encontrada.' });
+
+    if (status === 'FECHADA') {
+      const folha = await prisma.folhaPagamentoProfessor.findUnique({
+        where: { id: req.params.id },
+        include: {
+          professor: { select: { id: true, notaasApiKeyCriptografada: true, notaasCodigoServicoPadrao: true, notaasAliquotaIssPadrao: true, expoPushToken: true } },
+          escola: { select: { exigeNotaProfessor: true, nome: true, cnpj: true } },
+        },
+      });
+      if (folha?.escola.exigeNotaProfessor) {
+        emitirNotaFolhaPagamento(folha).catch((err) => console.error('[Fiscal] Falha ao emitir nota automática da folha:', err.message));
+      }
+    }
+
     res.json({ mensagem: status === 'FECHADA' ? 'Folha fechada.' : 'Folha reaberta.' });
   } catch (err) {
     tratarErro(err, res, 'Erro ao atualizar status da folha.');
