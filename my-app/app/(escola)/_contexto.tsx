@@ -1,5 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
+import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
 import { BASE_URL, fetchComRetry } from '../api';
 
 type Papel = 'DONO' | 'GESTOR' | 'PROFESSOR' | 'SECRETARIA' | 'FUNCIONARIO';
@@ -59,7 +60,24 @@ export function EscolaProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  useEffect(() => { recarregarPerfil(); }, [recarregarPerfil]);
+  // 27/09/2026: reavalia a cada foco, não só no mount — sem isso, trocar de
+  // conta (logout + login com outro usuário) sem fechar o app reaproveitava
+  // esta mesma instância de EscolaProvider e nunca recarregava o perfil
+  // novo, deixando o usuário preso nos dados da conta anterior (ver mesmo
+  // comentário em (professor)/_layout.tsx). `ultimoTokenRef` evita refazer
+  // essa checagem (e piscar o loader) toda vez que só se navega dentro do
+  // próprio ERP com a mesma conta.
+  const ultimoTokenRef = useRef<string | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const token = await SecureStore.getItemAsync('kav_token');
+        if (token && token === ultimoTokenRef.current) return;
+        ultimoTokenRef.current = token;
+        recarregarPerfil();
+      })();
+    }, [recarregarPerfil]),
+  );
 
   const valor: EscolaContextoValor = {
     carregando, papel, pacote, nomeEscola, nomeAdmin, fotoAdmin, professorId,

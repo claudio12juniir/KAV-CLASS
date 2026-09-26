@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Tabs, router } from 'expo-router';
+import { Tabs, router, useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { CORES } from '../../constants/theme';
@@ -16,34 +16,42 @@ function icone(nome: keyof typeof Ionicons.glyphMap, nomeAtivo: keyof typeof Ion
 
 // Aluno de uma Escola de verdade (PACOTE_ESCOLA) não usa mais o app do
 // aluno SELF — tem shell próprio, tema escuro, em app/(aluno-escola)/. Esse
-// gate decide isso uma vez, com dado fresco, antes de montar o Drawer, no
-// mesmo espírito de RedirecionadorEscola em (professor)/_layout.tsx. Falha
-// de rede não bloqueia ninguém (fail-open): segue pro app normal.
+// gate decide isso com dado fresco, antes de montar o Drawer, no mesmo
+// espírito de RedirecionadorEscola em (professor)/_layout.tsx (mesmo
+// comentário sobre reavaliar a cada foco via `ultimoTokenRef`, não só no
+// mount — ver lá o porquê). Falha de rede não bloqueia ninguém (fail-open):
+// segue pro app normal.
 function RedirecionadorEscolaAluno({ children }: { children: React.ReactNode }) {
   const [decidido, setDecidido] = useState(false);
   const [vaiRedirecionar, setVaiRedirecionar] = useState(false);
+  const ultimoTokenRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const token = await SecureStore.getItemAsync('kav_token');
-        const res = await fetchComRetry(`${BASE_URL}/api/aluno/perfil`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const perfil = await res.json();
-          if (perfil.escola?.pacote === 'PACOTE_ESCOLA') {
-            setVaiRedirecionar(true);
-            router.replace('/(aluno-escola)' as any);
-            return;
-          }
+  const verificar = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      if (token && token === ultimoTokenRef.current) return;
+
+      setDecidido(false);
+      const res = await fetchComRetry(`${BASE_URL}/api/aluno/perfil`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const perfil = await res.json();
+        if (perfil.escola?.pacote === 'PACOTE_ESCOLA') {
+          setVaiRedirecionar(true);
+          router.replace('/(aluno-escola)' as any);
+          return;
         }
-      } catch {
-        // Sem conexão: segue pro app mobile normal, que já tem seu próprio tratamento de erro por tela.
       }
+      ultimoTokenRef.current = token;
+    } catch {
+      // Sem conexão: segue pro app mobile normal, que já tem seu próprio tratamento de erro por tela.
+    } finally {
       setDecidido(true);
-    })();
+    }
   }, []);
+
+  useFocusEffect(useCallback(() => { verificar(); }, [verificar]));
 
   if (!decidido || vaiRedirecionar) {
     return (

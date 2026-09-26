@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Tabs, router } from 'expo-router';
+import { Tabs, router, useFocusEffect } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View } from 'react-native';
 import SyncLoader from '../../components/SyncLoader';
 import { CORES } from '../../constants/theme';
@@ -16,50 +16,65 @@ function icone(nome: keyof typeof Ionicons.glyphMap, nomeAtivo: keyof typeof Ion
 
 // DONO/GESTOR de uma Escola no Pacote Escola não usam mais o app mobile do
 // professor autônomo — a experiência inteira deles é o painel institucional
-// em app/(escola)/. Esse gate decide isso uma vez, com dado fresco (não
-// cache), antes de montar o Drawer, pra ninguém ver o shell errado nem por
-// um instante. Ver docs/roadmap-escola.md.
+// em app/(escola)/. Esse gate decide isso com dado fresco (não cache), antes
+// de montar o Drawer, pra ninguém ver o shell errado nem por um instante.
+// Ver docs/roadmap-escola.md.
+//
+// 27/09/2026: reavalia a cada foco (useFocusEffect), não só no mount — sem
+// isso, logar com uma conta diferente (ex.: sair da própria conta e entrar
+// como diretora de uma escola) sem fechar o app reaproveitava esta mesma
+// instância de componente (o `router.replace('/(professor)')` do login não
+// força remount), então o gate nunca rechecava e o usuário ficava preso na
+// sessão antiga. `ultimoTokenRef` evita rechecar (e resetar a navegação das
+// Tabs) toda vez que o usuário só troca de aba dentro do próprio app — só
+// dispara a verificação de verdade quando o token realmente mudou.
 function RedirecionadorEscola({ children }: { children: React.ReactNode }) {
   const [decidido, setDecidido] = useState(false);
   const [vaiRedirecionar, setVaiRedirecionar] = useState(false);
+  const ultimoTokenRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const token = await SecureStore.getItemAsync('kav_token');
-        const professorId = (await SecureStore.getItemAsync('kav_professor_id')) || '';
-        const res = await fetchComRetry(`${BASE_URL}/api/professor/perfil?professorId=${professorId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const perfil = await res.json();
-          // SECRETARIA (INSTITUTION, 21/09/2026) entra pelo mesmo painel do
-          // DONO/GESTOR — as telas que ela alcança (Equipe, Alunos,
-          // Financeiro etc.) são as de app/(escola)/, só que filtradas por
-          // permissoesSecretaria; não tem shell próprio.
-          const ehAdminDeEscola = (perfil.papel === 'DONO' || perfil.papel === 'GESTOR' || perfil.papel === 'SECRETARIA') && perfil.escola?.pacote === 'PACOTE_ESCOLA';
-          if (ehAdminDeEscola) {
-            setVaiRedirecionar(true);
-            router.replace('/(escola)');
-            return;
-          }
+  const verificar = useCallback(async () => {
+    try {
+      const token = await SecureStore.getItemAsync('kav_token');
+      if (token && token === ultimoTokenRef.current) return;
 
-          // Professor raso (não DONO/GESTOR) de uma Escola de verdade também
-          // não usa mais o app do professor autônomo — tem shell próprio,
-          // tema escuro, em app/(professor-escola)/. Ver plano INSTITUTION.
-          const ehProfessorDeEscola = perfil.papel === 'PROFESSOR' && perfil.escola?.pacote === 'PACOTE_ESCOLA';
-          if (ehProfessorDeEscola) {
-            setVaiRedirecionar(true);
-            router.replace('/(professor-escola)' as any);
-            return;
-          }
+      setDecidido(false);
+      const professorId = (await SecureStore.getItemAsync('kav_professor_id')) || '';
+      const res = await fetchComRetry(`${BASE_URL}/api/professor/perfil?professorId=${professorId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const perfil = await res.json();
+        // SECRETARIA (INSTITUTION, 21/09/2026) entra pelo mesmo painel do
+        // DONO/GESTOR — as telas que ela alcança (Equipe, Alunos,
+        // Financeiro etc.) são as de app/(escola)/, só que filtradas por
+        // permissoesSecretaria; não tem shell próprio.
+        const ehAdminDeEscola = (perfil.papel === 'DONO' || perfil.papel === 'GESTOR' || perfil.papel === 'SECRETARIA') && perfil.escola?.pacote === 'PACOTE_ESCOLA';
+        if (ehAdminDeEscola) {
+          setVaiRedirecionar(true);
+          router.replace('/(escola)');
+          return;
         }
-      } catch {
-        // Sem conexão: segue pro app mobile normal, que já tem seu próprio tratamento de erro por tela.
+
+        // Professor raso (não DONO/GESTOR) de uma Escola de verdade também
+        // não usa mais o app do professor autônomo — tem shell próprio,
+        // tema escuro, em app/(professor-escola)/. Ver plano INSTITUTION.
+        const ehProfessorDeEscola = perfil.papel === 'PROFESSOR' && perfil.escola?.pacote === 'PACOTE_ESCOLA';
+        if (ehProfessorDeEscola) {
+          setVaiRedirecionar(true);
+          router.replace('/(professor-escola)' as any);
+          return;
+        }
       }
+      ultimoTokenRef.current = token;
+    } catch {
+      // Sem conexão: segue pro app mobile normal, que já tem seu próprio tratamento de erro por tela.
+    } finally {
       setDecidido(true);
-    })();
+    }
   }, []);
+
+  useFocusEffect(useCallback(() => { verificar(); }, [verificar]));
 
   if (!decidido || vaiRedirecionar) {
     return (

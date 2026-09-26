@@ -2,8 +2,8 @@
 // compartilhado entre o gate (_layout.tsx) e todas as telas via contexto, em
 // vez de cada tela buscar o perfil de novo só pra montar o shell.
 import * as SecureStore from 'expo-secure-store';
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { router } from 'expo-router';
+import React, { createContext, useCallback, useContext, useRef, useState } from 'react';
+import { router, useFocusEffect } from 'expo-router';
 import { BASE_URL, fetchComRetry } from '../api';
 
 type Papel = 'DONO' | 'GESTOR' | 'PROFESSOR';
@@ -68,7 +68,20 @@ export function ProfessorEscolaProvider({ children }: { children: React.ReactNod
     }
   }, []);
 
-  useEffect(() => { recarregarPerfil(); }, [recarregarPerfil]);
+  // 27/09/2026: reavalia a cada foco, não só no mount — mesmo motivo do
+  // comentário em (escola)/_contexto.tsx: sem isso, trocar de conta sem
+  // fechar o app deixava o professor preso nos dados da conta anterior.
+  const ultimoTokenRef = useRef<string | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const token = await SecureStore.getItemAsync('kav_token');
+        if (token && token === ultimoTokenRef.current) return;
+        ultimoTokenRef.current = token;
+        recarregarPerfil();
+      })();
+    }, [recarregarPerfil]),
+  );
 
   const sair = useCallback(async () => {
     await SecureStore.deleteItemAsync('kav_token');
